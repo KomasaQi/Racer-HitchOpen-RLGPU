@@ -1,4 +1,4 @@
-# XCAR RL Drift Control 🏎️
+# GPU Accelerated RL Race Car for HitchOpen World AI Championship 🏎️
 
 <img width="962" alt="Image" src="https://github.com/user-attachments/assets/55ce48ad-ee49-40f6-8071-91fe5aa969e7" />
 
@@ -27,18 +27,6 @@ Create a conda environment using the provided environment.yml file:
 conda env create -f environment.yml
 ```
 
-### Submodules 📦
-This project uses Git submodules. After cloning the repository, initialize and update the submodules:
-
-```bash
-git submodule init
-git submodule update
-```
-
-The following submodule is included:
-- **rl_games**: Reinforcement learning algorithm library (forked from [Denys88/rl_games])
-  - Path: `rl_games`
-  - URL: https://github.com/yiwenlu66/rl_games.git
 
 ## Quick Start 🚀
 
@@ -115,7 +103,6 @@ The project consists of several key components:
 │   ├── eight_drift_iwd/
 │   ├── continuous_drift_iwd/
 │   └── state_tracker_iwd/
-├── rl_games/              # RL algorithm library (submodule)
 ├── utils/                  # Utility functions
 │   ├── generate_segment_racetrack.py
 │   └── rlgame_utils.py
