@@ -62,6 +62,27 @@ python run.py train fixed_circle_iwd \
     --epochs 500
 ```
 
+```bash
+cd experiments/continuous_drift_iwd # Change to the experiment directory
+
+# train the controller
+python ../../run.py train continuous_drift_iwd --mlp-size-last 16 --horizon 256 --num-parallel 2000 --lr-schedule adaptive --epochs 400  --disturbed --randomize-tyre small --exp-name default --car-preset xcar
+
+# test the controller
+python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode hybrid
+python plot.py --filename hybrid_ref_exp
+python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode circle
+python plot.py --filename circle_ref_exp
+python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode eight
+python plot.py --filename eight_ref_exp
+python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode three
+python plot.py --filename three_ref_exp
+python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode olympic
+python plot.py --filename olympic_ref_exp
+python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode variable_curvature
+python plot.py --filename variable_curvature_ref_exp
+```
+
 Common training flags:
 - `--car-preset`: Vehicle configuration (xcar, racecar, sensorcar)
 - `--device`: Computing device
@@ -116,6 +137,12 @@ The project consists of several key components:
 ## Contributing 🤝
 
 Contributions are welcome! Please feel free to submit a Pull Request.
+
+> **Current Contributors:**
+> - Komasa Qi, School of Vehicle and Mobility, THU, komasaqi@foxmail.com
+> - Zhantao Wang, Digital China, wangztq@digitalchina.com
+> - Yuhang Wu, College of AI, Tsinghua University
+
 
 ## License 📄
 
