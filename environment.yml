@@ -1,0 +1,25 @@
+name: racer-env
+channels:
+  - defaults
+  - nvidia
+  - pytorch
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+    - torch==2.7.1+cu128
+    - torchdiffeq==0.2.5
+    - tensorboardX>=1.6.0
+    - ray>=1.1.0
+    - setproctitle>=1.2.2
+    - psutil>=5.8.0
+    - tqdm>=4.62.0
+    - rl-games==1.5.2
+    - icecream==2.2.0
+    - numpy=1.26.4
+    - matplotlib>=3.0.0
+    - pandas>=1.0.0
+    - pyyaml>=5.1
+    - gym>=0.17.2
+    - tensorboard==2.21.0
