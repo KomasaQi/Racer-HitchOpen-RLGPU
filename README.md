@@ -66,7 +66,7 @@ python run.py train fixed_circle_iwd \
 cd experiments/continuous_drift_iwd # Change to the experiment directory
 
 # train the controller
-python ../../run.py train continuous_drift_iwd --mlp-size-last 16 --horizon 256 --num-parallel 2000 --lr-schedule adaptive --epochs 400  --disturbed --randomize-tyre small --exp-name default --car-preset xcar
+python ../../run.py train continuous_drift_iwd --mlp-size-last 16 --horizon 128 --num-parallel 2000 --lr-schedule adaptive --epochs 400  --disturbed --randomize-tyre small --exp-name default --car-preset xcar
 
 # test the controller
 python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode hybrid

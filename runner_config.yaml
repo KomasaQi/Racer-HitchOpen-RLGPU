@@ -46,6 +46,7 @@ params:
     full_experiment_name: default
     env_name: rlgpu
     ppo: True
+    torch_compile: True  # if compile the model to accelerate training
     mixed_precision: True
     normalize_input: True
     normalize_value: True
