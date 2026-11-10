@@ -171,3 +171,56 @@ python run.py train continuous_drift_iwd --car-preset fullsize_racecar_ev \
 # legacy XCAR plant (6 states, 100 Hz, torchdiffeq euler)
 python run.py train continuous_drift_iwd --car-preset xcar --plant iwd --exp-name xcar_legacy
 ```
+
+## Drift task: observation, critic and reference scale
+
+The `continuous_drift_iwd` task keeps XCAR's reward structure and reference
+generation but makes the policy executable on a real car.
+
+**Observation (30).** r, ax, ay, az, four wheel linear speeds, the previous
+command (delta, throttle, brake), the tracking errors (lateral, course,
+curvature, progress) and three preview points expressed in the course frame
+(x, y, dpsi, beta_ref, kappa_ref).  The plant state (beta, V, vx, vy, absolute
+pose) is a simulation detail and is *not* observed.  ax/ay are the body frame
+specific forces averaged over the control period (five 100 Hz substeps); az is
+gravity for a planar vehicle, which is what a real IMU reads.  Every channel has
+a fixed physical scale so it is O(1) at the start of training.
+
+**Privileged critic (48).** `--asymmetric` feeds the critic a separate 48 channel
+state (beta, V, vx, vy, r, kappa, kappa_ref, r_ref, beta_ref, the errors,
+ax/ay/az, wheel speeds, per wheel slip, Fz, Fy, the previous commands and the
+preview) through its own MLP 256-128-64 with no shared backbone, using rl_games'
+`central_value_config`.  The preview must be in the privileged state: without it
+the value estimate cannot see the path and learning is slower.
+
+**Reference scale.** The wheelbase ratio (2.65 m / 0.35 m) scales XCAR's 1 m
+reference circle to 7.6 m and its 1.84 m/s drift speed (beta -0.85) to 5.1 m/s,
+which matches the real vehicle experiments in the drift literature:
+
+| work | trajectory | speed |
+|---|---|---|
+| XCAR 2025 (1:8 scale) | R = 1 m | V = 1.84 m/s, beta -0.85 |
+| Stanford MARTY 2016 (1450 kg) | Req = 5.2 / 8.2 / 11.2 m | Veq = 6.24 m/s |
+| Stanford 2023 TIV (EV) | path radius 7-12 m | drift at Ux 6.55, Uy -4.59 m/s |
+| Stanford 2024 TIV (torque vectoring) | R = 10 m | 6.5-9 m/s (R 30/40 m: 12-18) |
+| Tsinghua 2025 (1615 kg, real car) | centre radius 11 m, width 5.5 m | 4.4-10.4 m/s |
+
+The hybrid reference ("--ref-mode hybrid") draws random curvature segments with
+|kappa| in 0.7-1.06 XCAR units, i.e. R = 8.2-10.6 m after scaling, inside the
+5-12 m real band, and `--curv-scale 0.6` moves it to 13-18 m ("big circles", as
+in the real experiments).  Lateral acceleration is 0.28 g at the scaled values
+against 0.48-1.0 g in the real experiments; this car's drift capability limits it
+to about 4.5 m/s at R = 12 m, which is why the larger radii help.
+
+**Best configuration found.** `--ref-mode hybrid --curv-scale 0.6 --beta-scale
+0.15 --beta-weight 10 --pos-weight 8 --pos-cap 3 --dir-weight 4 --yaw-weight 6
+--alive-bonus 2.5 --stall-speed 2.5 --offpath-scale 1.4 --recover-weight 1.5
+--gamma 0.99 --tau 0.95 --asymmetric --randomize-tyre ev_wide`.  Mean evaluated
+survival is ~11 s (30 s cap, 3 % of episodes reach it) with |beta - beta_ref|
+0.09 rad on the hybrid reference under friction randomisation 0.75-1.25.
+
+Failure is dominated by the car slowly leaving the lateral corridor: its actual
+curvature tracks the reference within ~0.03 1/m while 0.01 is needed to stay
+inside for 30 s.  Reward shaping levers tried and rejected are recorded in the
+git history (unbounded yaw/curvature penalties, a lateral "straighten when off
+the line" gate, a pure pursuit steering reference, longer curvature segments).

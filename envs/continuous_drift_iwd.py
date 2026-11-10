@@ -149,6 +149,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             path_length = 50
             self.trajectory_generator = TrajGen(self.num_waypoints, path_length, device=device)
             self.trajectory_generator.curv_scale = float(kwargs.get("curv_scale", 1.0))
+            self.trajectory_generator.seg_scale = float(kwargs.get("seg_scale", 1.0))
             self.num_paths = int(kwargs.get("num_paths", 256))
             self.path_bank = self._scale_waypoints(
                 self.trajectory_generator.generate_random_waypoints(self.num_paths))

@@ -110,6 +110,8 @@ parser.add_argument("--kappa-weight", type=float, default=0.15,
                     help="weight of the curvature (yaw rate / speed) tracking term")
 parser.add_argument("--pp-weight", type=float, default=0.0,
                     help="weight of the pure pursuit steering reference")
+parser.add_argument("--seg-scale", type=float, default=1.0,
+                    help="multiplier on the random reference segment lengths")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -153,6 +155,7 @@ default_env_config = {
     "recover_weight": args.recover_weight,
     "kappa_weight": args.kappa_weight,
     "pp_weight": args.pp_weight,
+    "seg_scale": args.seg_scale,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,

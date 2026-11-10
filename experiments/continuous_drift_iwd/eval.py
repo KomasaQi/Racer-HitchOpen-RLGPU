@@ -90,6 +90,7 @@ def main():
     ap.add_argument("--stall-speed", type=float, default=2.0)
     ap.add_argument("--alive-bonus", type=float, default=0.0)
     ap.add_argument("--curv-scale", type=float, default=1.0)
+    ap.add_argument("--seg-scale", type=float, default=1.0)
     ap.add_argument("--yaw-weight", type=float, default=0.0)
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
@@ -106,7 +107,7 @@ def main():
                                 spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
                                 offpath_scale=args.offpath_scale, course_fail=args.course_fail,
                                 stall_speed=args.stall_speed, alive_bonus=args.alive_bonus,
-                                curv_scale=args.curv_scale, grip_scale=args.grip_scale,
+                                curv_scale=args.curv_scale, seg_scale=args.seg_scale, grip_scale=args.grip_scale,
                                 yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()

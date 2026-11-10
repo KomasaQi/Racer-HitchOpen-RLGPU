@@ -14,7 +14,11 @@ class TrajGen:
 
         num_scenes = n
         # Random segment lengths and curvature
-        segment_length = torch.rand((num_scenes, self.path_length // 3), device=self.device) * 5.0 + 3.0
+        # Segment length in XCAR units; seg_scale lengthens the constant curvature
+        # stretches, i.e. makes the reference a longer circular arc per segment
+        # (curriculum: fewer curvature changes per episode).
+        seg_scale = getattr(self, "seg_scale", 1.0)
+        segment_length = (torch.rand((num_scenes, self.path_length // 3), device=self.device) * 5.0 + 3.0) * seg_scale
 
         threshold = torch.cumsum(segment_length, dim=1)  # (n, path_length)
         
