@@ -85,6 +85,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.yaw_cap = float(kwargs.get("yaw_cap", 4.0))
         self.kappa_cap = float(kwargs.get("kappa_cap", 4.0))
         self.course_limit = float(kwargs.get("course_fail", 1.0))
+        self.beta_gate_scale = float(kwargs.get("beta_gate_scale", 0.8))
+        self.recover_weight = float(kwargs.get("recover_weight", 0.0))
 
         n_ctrl = 3 if self.pedals else 4
         self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 15
@@ -423,6 +425,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             "delta": self.u_cmd[:, 0],
             "wheel": wheel_speed,
             "angle_diff": angle_diff, "signed_pos_diff": signed_pos_diff,
+            "e_pos": signed_pos_diff / self.length_scale,
             "beta_diff": beta_diff, "kappa_ref": kappa_ref,
             "prog": self.step_progress, "failed": failed.float(),
         }
@@ -502,8 +505,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # and runs off the path, which is by far the dominant failure).  The
         # demanded sideslip fades out as the lateral error grows, i.e. drift on
         # the line, straighten to come back.
-        beta_gate = torch.clamp(1.0 - (signed_pos_diff / (0.8 * s)) ** 2, 0.0, 1.0)
+        beta_gate = torch.clamp(1.0 - (signed_pos_diff / (self.beta_gate_scale * s)) ** 2, 0.0, 1.0)
         rew_beta = - (beta - self.beta_ref * beta_gate) ** 2
+        # Potential based recovery term: reward REDUCING the lateral error, not
+        # just having a small one.  The static quadratic gives no direction at the
+        # operating point and the car never learns to come back to the line.
+        if prev is not None and prev.get("e_pos") is not None:
+            rew_recover = (torch.abs(prev["e_pos"]) - torch.abs(now["e_pos"])) / self.dt
+        else:
+            rew_recover = torch.zeros_like(rew_beta)
         rew_lowspeed = torch.clamp(v, 0., 0.5 * self.speed_scale) - 0.5 * self.speed_scale
         rew_sf = - ((vfrx - wheel[:, 1]) / self.speed_scale) ** 2 \
                  - ((vflx - wheel[:, 0]) / self.speed_scale) ** 2
@@ -517,6 +527,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         terms = {
             "pos": self.pos_weight * rew_pos,
+            "recover": self.recover_weight * rew_recover,
             "dir": self.dir_weight * rew_dir,
             "prog": 0.2 * rew_prog,
             "smooth": 0.015 * rew_smooth,
