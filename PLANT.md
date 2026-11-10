@@ -228,9 +228,9 @@ cap, corridor 1.4 L, stall 2.5 m/s):
 
 | reference radius | mu = 0.75 | mu = 1.00 | mu = 1.25 |
 |---|---|---|---|
-| R 14-18 m | 7.25 s, 0.077 | **10.79 s, 0.097** | 10.16 s, 0.146 |
-| R 11-14 m | 5.87 s, 0.079 | 10.05 s, 0.096 | 8.42 s, 0.146 |
-| R 8-11 m | 4.66 s, 0.086 | 9.32 s, 0.101 | 6.98 s, 0.158 |
+| R 14-18 m | 7.60 s, 0.076 | **12.76 s, 0.094** | 10.03 s, 0.143 |
+| R 11-14 m | 5.97 s, 0.078 | 10.52 s, 0.096 | 8.53 s, 0.147 |
+| R 8-11 m | 4.39 s, 0.085 | 8.50 s, 0.100 | 6.88 s, 0.154 |
 
 Cells are mean survival and |beta - beta_ref| in rad.  The sideslip error grows
 with the available friction (0.08 -> 0.15 rad): the policy self selects a larger
@@ -282,7 +282,7 @@ the task back into XCAR's formulation and gives the upper bound:
 
 | actor observation | best mean survival | best full-length rate | off path failures | course failures | typical speed |
 |---|---|---|---|---|---|
-| 30 channels (real car) | 10.8-11.9 s | 3-4 % | 180+ | 6 | 3.5 m/s |
+| 30 channels (real car) | 12.76 s | 4 % | 180+ | 6 | 3.7 m/s |
 | 34 channels (+ beta, V, vx, vy) | **15.61 s** | **15 %** | **1** | **0** | 1.5 m/s |
 
 So restricting the observation to what the car can measure costs about a quarter
