@@ -444,8 +444,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.no_progress_count[is_done] = 0
 
         def gen_random_state(indices):
-            random_indices = torch.bernoulli(0.8 * torch.ones((len(indices),), device=self.device))
-            self.progress[indices] = self.progress[indices] * random_indices.bool()
+            # The XCAR code spawned 20 % of the episodes at the path start at
+            # rest (bernoulli mask multiplied into the state).  For a 1320 kg car
+            # that is "enter a drift from standstill", which it cannot do yet and
+            # which consumed a fifth of every batch; the equilibrium spawn below
+            # is used for all episodes instead.
             prog = self.progress[indices]
             waypoints = self.path_bank[self.path_id[indices], prog, :]
 
@@ -482,7 +485,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 psid = -torch.sign(beta) * (1 + torch.rand(prog.shape, device=self.device) * 2) / self.speed_scale
 
             x, y, psi, xd, yd, psid = map(lambda t: torch.unsqueeze(t, 1), [x, y, psi, xd, yd, psid])
-            return torch.cat([x, y, psi, xd, yd, psid], 1) * random_indices.unsqueeze(1)
+            return torch.cat([x, y, psi, xd, yd, psid], 1)
 
         self.s[is_done, :] = 0
         self.s[is_done, :6] = gen_random_state(is_done.nonzero().squeeze(-1))
