@@ -222,6 +222,20 @@ friction randomisation 0.75-1.25.  A policy trained on a single curvature scale
 specialises instead: 11.6 s at R 13-18 m but only 4.3 s at R 8-11 m, which is why
 the curvature is randomised per path.
 
+
+**Evaluated behaviour** (v57 policy, hybrid reference, 64 episodes per cell, 600 step
+cap, corridor 1.4 L, stall 2.5 m/s):
+
+| reference radius | mu = 0.75 | mu = 1.00 | mu = 1.25 |
+|---|---|---|---|
+| R 14-18 m | 7.16 s, 0.077 | **11.85 s, 0.096** | 10.21 s, 0.147 |
+| R 11-14 m | 5.73 s, 0.079 | 10.11 s, 0.096 | 7.68 s, 0.145 |
+| R 8-11 m | 4.62 s, 0.085 | 8.31 s, 0.100 | 6.55 s, 0.147 |
+
+Cells are mean survival and |beta - beta_ref| in rad.  The sideslip error grows
+with the available friction (0.08 -> 0.15 rad): the policy self selects a larger
+drift on high grip and a more conservative one on a slippery surface.  Low
+friction combined with a tight radius is the binding constraint (4.6 s).
 **The achievable sideslip is about 5 deg.** Demanding 0.40 rad with the beta
 weight raised to 20 leaves the actual sideslip at 0.09 rad and only adds penalty
 (mean survival unchanged at 11.4 s), i.e. this vehicle saturates at a light
