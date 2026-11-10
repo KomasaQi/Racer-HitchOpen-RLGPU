@@ -62,6 +62,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # what the vehicle can hold (--beta-scale 1.0 restores the XCAR value).
         self.beta_scale = float(kwargs.get("beta_scale", 1.0))
         self.beta_weight = float(kwargs.get("beta_weight", 1.6))
+        self.pos_weight = float(kwargs.get("pos_weight", 2.4))
+        self.progress_gate = 0.5 * self.length_scale
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
 
@@ -209,9 +211,19 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         beta_diff = torch.atan2(torch.sin(diff[:, :, 3]), torch.cos(diff[:, :, 3]))
         kappa_diff = diff[:, :, 4]
         self.step_progress = torch.argmin(pos_diff, 1)
+        # Progress gating: if the closest reference point is far away the car is
+        # sliding wide, and the argmin would otherwise jump up to the whole
+        # look-ahead window (19 waypoints) in one step and desynchronise the
+        # reference.  Freeze progress and do not count it as "stalled" while the
+        # car is off the reference; the position error already punishes that.
+        best_dist = pos_diff.gather(1, self.step_progress.unsqueeze(1)).squeeze(1)
+        on_path = best_dist < self.progress_gate
+        self.step_progress = torch.where(on_path, self.step_progress,
+                                         torch.zeros_like(self.step_progress))
         self.progress = (self.progress + self.step_progress)
-        self.no_progress_count[self.step_progress != 0] = 0
-        self.no_progress_count[self.step_progress == 0] += 1
+        stalled = (self.step_progress == 0) & on_path
+        self.no_progress_count[~stalled] = 0
+        self.no_progress_count[stalled] += 1
 
         # u = vector from nearest waypoint to current pos; v = velocity direction at nearest waypoint
         # theta = angle from u to v
@@ -378,7 +390,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         rew_kappa = - ((now["kappa"] - kappa_ref) * s) ** 2
         rew_final = -is_failed
 
-        rew = 2.4 * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa
+        rew = self.pos_weight * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa
         return rew
 
     def done(self):
