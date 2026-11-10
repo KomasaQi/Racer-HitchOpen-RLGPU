@@ -296,3 +296,14 @@ speed target is 7.9 s at a 6 m/s target, 10.4 s at 3.8 m/s and 8.0 s at 2.0 m/s,
 so the sweet spot is around 3.5-4 m/s; forcing faster (stall threshold 3.0 -> 4.5)
 gives 7.9 -> 4.8 s.  Above roughly 2 m/s the sustained drift itself becomes the
 unstable part for this vehicle.
+**What did not help.** Recorded so the next iteration does not repeat it: reward
+weights around the final configuration (beta 2..20, pos 2..8, dir 0.5..4.0, yaw
+0..6, alive 0..4.0, recover 0..1.5, kappa 0.15..2.0); a lateral "straighten when
+off the line" gate (it makes the reference curve away faster); a pure pursuit
+steering reference (it fights the countersteer a drift needs); longer curvature
+segments (short segments re-centre the error, long ones let it accumulate);
+horizon 128 with gamma 0.999 / tau 0.97 (9.14 s against 10.1 s at horizon 32, so
+the specified horizon is not the limiter); low-friction and tight-radius biased
+domain randomisation (the weak cell is a physical limit, not a coverage gap); a
+speed target below 3.5 m/s or above 4.5 m/s; and forcing a larger sideslip
+(demanding 0.40 rad leaves the actual sideslip at 0.09 rad).
