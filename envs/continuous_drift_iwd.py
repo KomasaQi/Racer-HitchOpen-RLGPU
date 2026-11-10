@@ -496,7 +496,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         rew_smooth = self.smooth_scale * (
             - ((delta - prev["delta"]) ** 2
                + 1e-2 * (((wheel - prev["wheel"]) / self.speed_ref) ** 2).sum(dim=1)))
-        rew_beta = - beta_diff ** 2
+        # Adaptive drift target: holding a fixed sideslip locks the drift radius,
+        # so a car that has drifted away from the line cannot recover while it is
+        # still demanded to drift (observed: the policy holds the reference beta
+        # and runs off the path, which is by far the dominant failure).  The
+        # demanded sideslip fades out as the lateral error grows, i.e. drift on
+        # the line, straighten to come back.
+        beta_gate = torch.clamp(1.0 - (signed_pos_diff / (0.8 * s)) ** 2, 0.0, 1.0)
+        rew_beta = - (beta - self.beta_ref * beta_gate) ** 2
         rew_lowspeed = torch.clamp(v, 0., 0.5 * self.speed_scale) - 0.5 * self.speed_scale
         rew_sf = - ((vfrx - wheel[:, 1]) / self.speed_scale) ** 2 \
                  - ((vflx - wheel[:, 0]) / self.speed_scale) ** 2
