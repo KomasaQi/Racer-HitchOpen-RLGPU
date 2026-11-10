@@ -114,6 +114,8 @@ parser.add_argument("--pp-weight", type=float, default=0.0,
                     help="weight of the pure pursuit steering reference")
 parser.add_argument("--seg-scale", type=float, default=1.0,
                     help="multiplier on the random reference segment lengths")
+parser.add_argument("--obs-privileged", action="store_true",
+                    help="append beta/V/vx/vy to the actor observation (upper bound)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -159,6 +161,7 @@ default_env_config = {
     "kappa_weight": args.kappa_weight,
     "pp_weight": args.pp_weight,
     "seg_scale": args.seg_scale,
+    "obs_privileged": args.obs_privileged,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,

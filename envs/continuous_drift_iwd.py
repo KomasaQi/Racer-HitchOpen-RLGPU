@@ -92,7 +92,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.pp_weight = float(kwargs.get("pp_weight", 0.0))
 
         n_ctrl = 3 if self.pedals else 4
-        self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 15
+        # --obs-privileged appends the plant quantities the real car cannot
+        # measure (beta, V, vx, vy) to the actor observation, which turns the
+        # task back into the original XCAR formulation and gives the upper bound
+        # the restricted observation is compared against.
+        self.obs_privileged = bool(kwargs.get("obs_privileged", False))
+        self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 15 + (4 if self.obs_privileged else 0)
         # Fixed per channel scaling so every channel is O(1) at the start of
         # training; rl_games adds its own running normalisation on top.
         wheel_scale = 3.0 / self.speed_ref
@@ -105,6 +110,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         for _ in range(3):
             scale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0, 1.0]
         self.obs_scale = torch.tensor(scale, device=self.device, dtype=torch.float32)
+        self.priv_concat_scale = torch.tensor([1.0, 0.25, 0.25, 0.25], device=self.device)
         # privileged critic channels: beta, v, r, vx, vy, kappa, kappa_ref, r_ref,
         # beta_ref, e_pos, e_dir, ax, ay, az, wheels, slip, fz, fy, commands
         pscale = ([1.0, 0.1, 0.5, 0.1, 0.1, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0,
@@ -458,6 +464,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         obs_list = [t.unsqueeze(1) for t in scalars]
         obs_list.extend(la_converted)
         obs = torch.cat(obs_list, 1) * self.obs_scale
+        if self.obs_privileged:
+            priv = torch.stack([self.es[:, 7], self.es[:, 6], self.es[:, 3], self.es[:, 4]], dim=1)
+            obs = torch.cat([obs, priv * self.priv_concat_scale], dim=1)
         if self.asymmetric:
             # privileged critic input: everything the simulation knows and the
             # car cannot measure (sideslip, absolute speed, tyre forces/slips)
