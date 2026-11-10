@@ -88,6 +88,11 @@ def main():
     ap.add_argument("--offpath-scale", type=float, default=1.0)
     ap.add_argument("--course-fail", type=float, default=1.0)
     ap.add_argument("--stall-speed", type=float, default=2.0)
+    ap.add_argument("--alive-bonus", type=float, default=0.0)
+    ap.add_argument("--yaw-weight", type=float, default=0.0)
+    ap.add_argument("--beta-weight", type=float, default=1.6)
+    ap.add_argument("--dir-weight", type=float, default=0.5)
+    ap.add_argument("--pos-weight", type=float, default=2.4)
     ap.add_argument("--spawn-mode", default="equilibrium")
     ap.add_argument("--spawn-speed", type=float, default=6.5)
     args = ap.parse_args()
@@ -97,7 +102,9 @@ def main():
                                 control_mode=args.control_mode, beta_scale=args.beta_scale,
                                 spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
                                 offpath_scale=args.offpath_scale, course_fail=args.course_fail,
-                                stall_speed=args.stall_speed, train=True)
+                                stall_speed=args.stall_speed, alive_bonus=args.alive_bonus,
+                                yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
+                                dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()
     policy = Policy(args.checkpoint, torch.device(args.device))
     policy.reset_hidden(torch.ones(args.n, dtype=torch.bool, device=args.device))
