@@ -1,0 +1,109 @@
+"""Deterministic policy evaluation for continuous_drift_iwd.
+
+Loads an rl_games checkpoint, rebuilds the actor MLP, and runs the environment
+with many parallel agents, reporting drift tracking quality, episode outcomes
+and failure reasons.  This does not use the rl_games player, so evaluation is
+fast and does not need one environment per process.
+
+    cd experiments/continuous_drift_iwd
+    python eval.py ../../runs/continuous_drift_iwd_<exp>/nn/continuous_drift_iwd.pth \
+        --car-preset fullsize_racecar_ev --ref-mode circle --n 256 --steps 600
+"""
+import argparse
+import os
+import sys
+
+import torch
+
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "xcar-simulation"))
+sys.path.insert(0, os.path.join(ROOT, "utils"))
+
+from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+
+
+def load_actor(path):
+    ck = torch.load(path, map_location="cpu", weights_only=False)
+    sd = ck["model"] if "model" in ck else ck
+    w = {k.replace("_orig_mod.", ""): v for k, v in sd.items()}
+    mean = w["running_mean_std.running_mean"].float()
+    var = w["running_mean_std.running_var"].float()
+    layers = []
+    i = 0
+    while f"a2c_network.actor_mlp.{i}.weight" in w:
+        layers.append((w[f"a2c_network.actor_mlp.{i}.weight"].float(),
+                       w[f"a2c_network.actor_mlp.{i}.bias"].float()))
+        i += 2
+    mu = (w["a2c_network.mu.weight"].float(), w["a2c_network.mu.bias"].float())
+    return mean, var, layers, mu
+
+
+def act(mean, var, layers, mu, obs):
+    """Deterministic action = actor mean, with the rl_games input normalisation."""
+    x = (obs - mean) / torch.sqrt(var + 1e-5)
+    x = torch.clamp(x, -5.0, 5.0)
+    for w, b in layers:
+        x = torch.nn.functional.elu(torch.nn.functional.linear(x, w, b))
+    return torch.nn.functional.linear(x, mu[0], mu[1])
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("checkpoint")
+    ap.add_argument("--car-preset", default="fullsize_racecar_ev")
+    ap.add_argument("--control-mode", default="pedals")
+    ap.add_argument("--ref-mode", default="circle")
+    ap.add_argument("--n", type=int, default=256)
+    ap.add_argument("--steps", type=int, default=600)
+    ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--seed", type=int, default=0)
+    args = ap.parse_args()
+
+    torch.manual_seed(args.seed)
+    env = ContinuousDriftIWDEnv(args.car_preset, args.n, args.device, ref_mode=args.ref_mode,
+                                control_mode=args.control_mode, train=True)
+    obs = env.reset()
+    mean, var, layers, mu = load_actor(args.checkpoint)
+    dev = torch.device(args.device)
+    mean, var = mean.to(dev), var.to(dev)
+    layers = [(w.to(dev), b.to(dev)) for w, b in layers]
+    mu = (mu[0].to(dev), mu[1].to(dev))
+
+    fails = torch.zeros(args.n, device=dev)
+    succ = torch.zeros(args.n, device=dev)
+    reason = [0, 0, 0]        # no_progress, large heading error, off path
+    beta_err, v_hist, alive_hist = [], [], []
+    for _ in range(args.steps):
+        a = act(mean, var, layers, mu, obs)
+        done_prev = env.is_done.clone()
+        obs, reward, done, info = env.step(a)
+        beta_err.append((env.es[:, 7] - env.beta_ref).abs().mean().item())
+        v_hist.append(env.es[:, 6].mean().item())
+        alive_hist.append(float((env.is_done == 0).float().mean()))
+        newly = (done_prev == 0) & (env.is_done != 0)
+        fails[newly & (env.is_done == 1)] += 1
+        succ[newly & (env.is_done == 2)] += 1
+        if newly.any():
+            npc = env.no_progress_count >= env.no_progress_limit
+            ang = env.angle_diff.abs() > 1.0
+            pos = env.signed_pos_diff.abs() > env.length_scale
+            reason[0] += int((newly & npc).sum())
+            reason[1] += int((newly & ang).sum())
+            reason[2] += int((newly & pos).sum())
+
+    n_done = int((fails + succ).sum().item())
+    print(f"checkpoint {os.path.basename(args.checkpoint)}  preset={args.car_preset} "
+          f"ref={args.ref_mode} mode={args.control_mode}")
+    print(f"  {args.n} envs x {args.steps} control steps ({args.steps * env.dt:.1f} s each)")
+    print(f"  episodes finished {n_done}: failed {int(fails.sum())} succeeded {int(succ.sum())}")
+    print(f"  mean episode length {args.steps * args.n / max(n_done, 1) * env.dt:.2f} s")
+    print(f"  failure reasons: no_progress {reason[0]}  heading {reason[1]}  off_path {reason[2]}")
+    print(f"  mean |beta - beta_ref| {sum(beta_err) / len(beta_err):.3f} rad "
+          f"(last 100 steps {sum(beta_err[-100:]) / min(100, len(beta_err)):.3f})")
+    print(f"  mean speed {sum(v_hist) / len(v_hist):.2f} m/s  "
+          f"alive fraction {sum(alive_hist) / len(alive_hist):.2f}")
+
+
+if __name__ == "__main__":
+    main()

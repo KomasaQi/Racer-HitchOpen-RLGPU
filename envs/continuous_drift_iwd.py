@@ -36,7 +36,6 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # env parameters
         self.max_steps = int(round(30.0 / self.dt))
         self.quiet = kwargs.get("quiet", False)
-        self.no_progress_limit = max(int(round(0.2 / self.dt)), 2)
         self.smooth_scale = 0.01 / self.dt   # keep reward per unit time constant
 
         self.pedals = self.control_mode == "pedals"
@@ -48,11 +47,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # A full-size car cannot follow a 1 m radius curve (minimum steering
         # radius is L/tan(max_steer) ~ 5.4 m), so the whole reference is scaled
         # with the wheelbase ratio.  Everything metric is expressed in XCAR
-        # units and multiplied by ``length_scale`` on the way in.
+        # units and multiplied by ``length_scale`` on the way in, everything
+        # with the unit of time by ``speed_scale = sqrt(length_scale)``.
         wheelbase = float(self.preset["lF"] + self.preset["lR"])
         self.length_scale = wheelbase / 0.35
         self.speed_scale = math.sqrt(self.length_scale)
         self.speed_ref = 10.0 * self.speed_scale
+        # "no progress" (0.2 s for the XCAR) stretched with the vehicle time scale
+        self.no_progress_limit = max(int(round(0.2 * self.speed_scale / self.dt)), 2)
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
 
@@ -362,7 +364,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         size = torch.sum(is_done)
         self.step_count[is_done] = 0
-        self.waypoints[is_done] = self._scale_waypoints(self.trajectory_generator.generate_random_waypoints(is_done.sum().item()))
+        if hasattr(self, "trajectory_generator"):
+            # hybrid mode: every episode gets a freshly generated reference
+            self.waypoints[is_done] = self._scale_waypoints(
+                self.trajectory_generator.generate_random_waypoints(is_done.sum().item()))
         self.progress[is_done] = torch.randint(self.num_waypoints // 2, (size,), device=self.device)
         self.step_progress[is_done] = 0
         self.no_progress_count[is_done] = 0
@@ -401,7 +406,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.u_cmd[is_done, :] = 0
         self.randomize(is_done)
         if self.plant_name == "fast":
-            self.s[is_done, 6:10] = self.s[is_done, 3:4] / self.wheel_radius[is_done]
+            self.plant.init_wheels_mask(self.s, is_done)
             self.plant.reset_guess(is_done)
             if self.disturbance_param is not None:
                 self.tyre_scale[is_done] = 1.0

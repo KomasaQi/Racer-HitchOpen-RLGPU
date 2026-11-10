@@ -289,11 +289,24 @@ class FastRacerPlant:
         return torch.zeros((n, NUM_STATES), device=self.device, dtype=self.dtype)
 
     def init_wheels(self, s: torch.Tensor, slip: float = 0.0) -> torch.Tensor:
-        """Set wheel speeds to the pure-rolling value implied by the body state."""
+        """Set wheel speeds to the pure-rolling value implied by the body state.
+
+        The rolling speed follows the *body* longitudinal velocity
+        ``vx*cos(psi) + vy*sin(psi)``, not the world frame ``vx``: at a non zero
+        heading (or a large sideslip) those differ a lot and a reset that used
+        the world component would start with completely wrong wheel speeds.
+        """
         _, _, radius, _ = self.geometry()
-        vx = s[:, 3]
-        omega = vx.unsqueeze(1) * (1.0 + slip) / radius
-        s[:, 6:10] = omega
+        psi = s[:, 2]
+        vx_body = torch.cos(psi) * s[:, 3] + torch.sin(psi) * s[:, 4]
+        s[:, 6:10] = (1.0 + slip) * vx_body.unsqueeze(1) / radius
+        return s
+
+    def init_wheels_mask(self, s: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        _, _, radius, _ = self.geometry()
+        psi = s[mask, 2]
+        vx_body = torch.cos(psi) * s[mask, 3] + torch.sin(psi) * s[mask, 4]
+        s[mask, 6:10] = vx_body.unsqueeze(1) / radius[mask]
         return s
 
     def settle_wheels(self, s: torch.Tensor) -> torch.Tensor:
