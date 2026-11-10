@@ -77,6 +77,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.yaw_scale = float(kwargs.get("yaw_scale", 0.5))
         self.progress_gate = 0.5 * self.length_scale
         self.stall_speed = float(kwargs.get("stall_speed", 2.0))
+        # Failure thresholds as multiples of the vehicle length scale.  Survival
+        # is the first objective, so the corridor and the course limits are
+        # configurable and can be tightened later (curriculum).
+        self.offpath_limit = float(kwargs.get("offpath_scale", 1.0)) * self.length_scale
+        self.course_limit = float(kwargs.get("course_fail", 1.0))
 
         n_ctrl = 3 if self.pedals else 4
         self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 15
@@ -389,8 +394,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # grace period instead of the original "progress >= 5" guard: the progress
         # based guard never fires for a car that stops on the first waypoints
         failed = (self.step_count > 10) & ((self.no_progress_count >= self.no_progress_limit)
-                                        | (torch.abs(angle_diff) > 1.)
-                                        | (torch.abs(signed_pos_diff) > self.length_scale))
+                                        | (torch.abs(angle_diff) > self.course_limit)
+                                        | (torch.abs(signed_pos_diff) > self.offpath_limit))
         if self.train:
             succeeded = (self.step_count >= self.max_steps) | (self.progress >= self.num_waypoints - 100)
         else:

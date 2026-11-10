@@ -85,6 +85,9 @@ def main():
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--beta-scale", type=float, default=1.0)
+    ap.add_argument("--offpath-scale", type=float, default=1.0)
+    ap.add_argument("--course-fail", type=float, default=1.0)
+    ap.add_argument("--stall-speed", type=float, default=2.0)
     ap.add_argument("--spawn-mode", default="equilibrium")
     ap.add_argument("--spawn-speed", type=float, default=6.5)
     args = ap.parse_args()
@@ -92,7 +95,9 @@ def main():
     torch.manual_seed(args.seed)
     env = ContinuousDriftIWDEnv(args.car_preset, args.n, args.device, ref_mode=args.ref_mode,
                                 control_mode=args.control_mode, beta_scale=args.beta_scale,
-                                spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed, train=True)
+                                spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
+                                offpath_scale=args.offpath_scale, course_fail=args.course_fail,
+                                stall_speed=args.stall_speed, train=True)
     obs = env.reset()
     policy = Policy(args.checkpoint, torch.device(args.device))
     policy.reset_hidden(torch.ones(args.n, dtype=torch.bool, device=args.device))
@@ -115,8 +120,8 @@ def main():
         succ[newly & (env.is_done == 2)] += 1
         if newly.any():
             npc = env.no_progress_count >= env.no_progress_limit
-            ang = env.angle_diff.abs() > 1.0
-            pos = env.signed_pos_diff.abs() > env.length_scale
+            ang = env.angle_diff.abs() > env.course_limit
+            pos = env.signed_pos_diff.abs() > env.offpath_limit
             reason[0] += int((newly & npc).sum())
             reason[1] += int((newly & ang).sum())
             reason[2] += int((newly & pos).sum())

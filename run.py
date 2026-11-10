@@ -88,6 +88,12 @@ parser.add_argument("--asymmetric", action="store_true",
                     help="privileged critic on a separate network (no shared backbone)")
 parser.add_argument("--resume", type=str, default=None,
                     help="checkpoint to warm start training from (curriculum continuation)")
+parser.add_argument("--stall-speed", type=float, default=2.0,
+                    help="speed below which a car counts as stalled (episode failed)")
+parser.add_argument("--offpath-scale", type=float, default=1.0,
+                    help="off path failure threshold in vehicle length scales")
+parser.add_argument("--course-fail", type=float, default=1.0,
+                    help="course error failure threshold [rad]")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -120,6 +126,9 @@ default_env_config = {
     "dir_weight": args.dir_weight,
     "yaw_weight": args.yaw_weight,
     "alive_bonus": args.alive_bonus,
+    "stall_speed": args.stall_speed,
+    "offpath_scale": args.offpath_scale,
+    "course_fail": args.course_fail,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
@@ -147,6 +156,12 @@ default_env_config = {
             "B": [8., 12.],
             "C": [1.7, 2.1],
             "D": [0.9, 1.1],
+        },
+        # "different road surfaces": peak friction 0.75 - 1.25
+        "ev_wide": {
+            "B": [7., 13.],
+            "C": [1.6, 2.2],
+            "D": [0.75, 1.25],
         },
     }[args.randomize_tyre],
     "random_seed": args.seed,
