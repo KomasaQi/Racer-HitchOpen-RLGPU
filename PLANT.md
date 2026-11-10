@@ -251,3 +251,28 @@ the line" gate, a pure pursuit steering reference, longer curvature segments).
 When comparing runs, evaluate a run *directory* rather than the best-reward
 checkpoint: after a reward weight change the old best usually stays unbeaten and
 the checkpoint then holds the previous policy.
+
+**Reproducing the best run.**
+
+```bash
+python run.py train continuous_drift_iwd --car-preset fullsize_racecar_ev \
+    --ref-mode hybrid --num-parallel 131072 --horizon 32 --epochs 1400 \
+    --plant fast --control-mode pedals --gamma 0.99 --tau 0.95 --rnn --asymmetric \
+    --minibatch 65536 --disturbed --randomize-tyre ev_wide \
+    --curv-scale-range 0.55,0.9 --beta-scale 0.15 --beta-weight 10 \
+    --pos-weight 8 --pos-cap 3 --dir-weight 4 --yaw-weight 6 --yaw-cap 4 \
+    --beta-gate-scale 5 --recover-weight 1.5 --spawn-mode equilibrium \
+    --spawn-speed 4.5 --spawn-beta-frac 1 --speed-weight 1.5 --speed-target 3.8 \
+    --alive-bonus 2.5 --stall-speed 2.5 --offpath-scale 1.4 --course-fail 1.6 \
+    --exp-name drift_ev
+
+# evaluate a run directory (newest snapshot) or a single checkpoint
+python experiments/continuous_drift_iwd/eval.py runs/drift_ev/nn \
+    --ref-mode hybrid --curv-scale 0.7 --beta-scale 0.15 --spawn-speed 4.5 \
+    --offpath-scale 1.4 --course-fail 1.6 --stall-speed 2.5 --alive-bonus 2.5 \
+    --grip-scale 1.0
+```
+
+The policy behind the numbers above is archived at
+`experiments/continuous_drift_iwd/runs/drift_ev_best/`; the evaluation command
+above works on that directory unchanged.
