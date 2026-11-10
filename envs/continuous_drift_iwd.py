@@ -81,6 +81,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # is the first objective, so the corridor and the course limits are
         # configurable and can be tightened later (curriculum).
         self.offpath_limit = float(kwargs.get("offpath_scale", 1.0)) * self.length_scale
+        self.pos_cap = float(kwargs.get("pos_cap", 1.0))
         self.course_limit = float(kwargs.get("course_fail", 1.0))
 
         n_ctrl = 3 if self.pedals else 4
@@ -480,7 +481,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # geometry scale) so that the reward weights keep their meaning across
         # vehicle sizes; dimensionless quantities are used directly.
         s = self.length_scale
-        rew_pos = - (signed_pos_diff / s) ** 2
+        # saturate the lateral penalty: far off the path the episode is about to
+        # fail anyway, and an unbounded quadratic made long episodes massively
+        # negative (reward -2000 per episode at a relaxed corridor)
+        rew_pos = - torch.clamp((signed_pos_diff / s) ** 2, max=self.pos_cap)
         rew_dir = - angle_diff ** 2
         rew_prog = torch.clamp(prog, 0.0, 5.0 * s)
         rew_smooth = self.smooth_scale * (

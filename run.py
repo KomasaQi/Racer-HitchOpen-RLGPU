@@ -94,6 +94,8 @@ parser.add_argument("--offpath-scale", type=float, default=1.0,
                     help="off path failure threshold in vehicle length scales")
 parser.add_argument("--course-fail", type=float, default=1.0,
                     help="course error failure threshold [rad]")
+parser.add_argument("--pos-cap", type=float, default=1.0,
+                    help="saturation of the squared lateral error penalty")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -129,6 +131,7 @@ default_env_config = {
     "stall_speed": args.stall_speed,
     "offpath_scale": args.offpath_scale,
     "course_fail": args.course_fail,
+    "pos_cap": args.pos_cap,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
