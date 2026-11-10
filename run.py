@@ -64,6 +64,16 @@ parser.add_argument("--beta-weight", type=float, default=1.6,
                     help="reward weight of the sideslip tracking term")
 parser.add_argument("--pos-weight", type=float, default=2.4,
                     help="reward weight of the lateral tracking error")
+parser.add_argument("--spawn-mode", type=str, default="equilibrium",
+                    choices=["equilibrium", "legacy"])
+parser.add_argument("--spawn-speed", type=float, default=6.5,
+                    help="drift speed used by the equilibrium spawn [m/s]")
+parser.add_argument("--spawn-beta-frac", type=float, default=1.0,
+                    help="fraction of the reference sideslip at spawn (curriculum)")
+parser.add_argument("--speed-weight", type=float, default=0.0,
+                    help="weight of the speed regulation term around --speed-target")
+parser.add_argument("--speed-target", type=float, default=None,
+                    help="speed target of the regulation term (default: spawn speed)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -93,6 +103,12 @@ default_env_config = {
     "beta_scale": args.beta_scale,
     "beta_weight": args.beta_weight,
     "pos_weight": args.pos_weight,
+    "spawn_mode": args.spawn_mode,
+    "spawn_speed": args.spawn_speed,
+    "spawn_beta_frac": args.spawn_beta_frac,
+    "speed_weight": args.speed_weight,
+    "speed_target": (args.speed_target if args.speed_target is not None
+                     else args.spawn_speed),
     "disturbance_param": (0.97, 0.03) if args.disturbed else None,
     "randomize_param": {
         None: {},

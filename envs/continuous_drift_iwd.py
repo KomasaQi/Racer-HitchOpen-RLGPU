@@ -64,6 +64,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.beta_weight = float(kwargs.get("beta_weight", 1.6))
         self.pos_weight = float(kwargs.get("pos_weight", 2.4))
         self.progress_gate = 0.5 * self.length_scale
+        # "equilibrium" spawns start near the drift equilibrium of the local
+        # reference (see gen_random_state); "legacy" keeps the XCAR wide
+        # randomization.  spawn_speed is the target drift speed on the reference.
+        self.spawn_mode = str(kwargs.get("spawn_mode", "equilibrium"))
+        self.spawn_speed = float(kwargs.get("spawn_speed", 6.5))
+        self.spawn_beta_frac = float(kwargs.get("spawn_beta_frac", 1.0))
+        # Speed regulation around the drift operating speed.  XCAR's rspeed only
+        # punishes V < 0.5 m/s, which at our scale (drift speed ~6.5 m/s) leaves
+        # "slow down until the drift collapses" as a reward improving local
+        # optimum; this term closes that hole.
+        self.speed_target = float(kwargs.get("speed_target", self.spawn_speed))
+        self.speed_weight = float(kwargs.get("speed_weight", 0.0))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
 
@@ -388,9 +400,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         rew_sf = - ((vfrx - wheel[:, 1]) / self.speed_scale) ** 2 \
                  - ((vflx - wheel[:, 0]) / self.speed_scale) ** 2
         rew_kappa = - ((now["kappa"] - kappa_ref) * s) ** 2
+        rew_speed = - ((v - self.speed_target) / self.speed_target) ** 2
         rew_final = -is_failed
 
-        rew = self.pos_weight * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa
+        rew = self.pos_weight * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa + self.speed_weight * rew_speed
         return rew
 
     def done(self):
@@ -445,15 +458,28 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             x += 0.1 * self.length_scale * torch.randn_like(x)
             y += 0.1 * self.length_scale * torch.randn_like(y)
 
-            random_V = torch.rand(prog.shape, device=self.device) * 3 * self.speed_scale
-            random_beta = torch.sign(beta) * torch.rand(prog.shape, device=self.device) * self.beta_scale
-
-            psi = veldir - random_beta
-            psi += 0.1 * torch.randn_like(psi)
-
-            xd = random_V * torch.cos(random_beta + psi)
-            yd = random_V * torch.sin(random_beta + psi)
-            psid = -torch.sign(beta) * (1 + torch.rand(prog.shape, device=self.device) * 2) / self.speed_scale
+            if self.spawn_mode == "equilibrium":
+                # Start on the drift equilibrium of the local reference: the
+                # sideslip magnitude follows the reference sign, the speed and
+                # the yaw rate follow the local curvature.  The XCAR paper
+                # randomizes beta over [-1,1] rad and V over [0,3] m/s, which for
+                # a 7.6x larger car means dropping it into arbitrary spins; the
+                # policy then never sees the equilibrium it has to hold, so the
+                # task becomes recovering from a spin rather than drifting.
+                beta0 = beta * self.spawn_beta_frac * torch.clamp(1.0 + 0.25 * torch.randn_like(beta), 0.3, 1.4)
+                v0 = self.spawn_speed * torch.clamp(1.0 + 0.20 * torch.randn_like(beta), 0.5, 1.6)
+                psi = veldir - beta0 + 0.1 * torch.randn_like(veldir)
+                xd = v0 * torch.cos(beta0 + psi)
+                yd = v0 * torch.sin(beta0 + psi)
+                psid = v0 * kappa
+            else:
+                random_V = torch.rand(prog.shape, device=self.device) * 3 * self.speed_scale
+                random_beta = torch.sign(beta) * torch.rand(prog.shape, device=self.device) * self.beta_scale
+                psi = veldir - random_beta
+                psi += 0.1 * torch.randn_like(psi)
+                xd = random_V * torch.cos(random_beta + psi)
+                yd = random_V * torch.sin(random_beta + psi)
+                psid = -torch.sign(beta) * (1 + torch.rand(prog.shape, device=self.device) * 2) / self.speed_scale
 
             x, y, psi, xd, yd, psid = map(lambda t: torch.unsqueeze(t, 1), [x, y, psi, xd, yd, psid])
             return torch.cat([x, y, psi, xd, yd, psid], 1) * random_indices.unsqueeze(1)
@@ -462,6 +488,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.s[is_done, :6] = gen_random_state(is_done.nonzero().squeeze(-1))
         self.u[is_done, :] = 0
         self.u_cmd[is_done, :] = 0
+        if self.pedals and self.spawn_mode == "equilibrium":
+            # A car teleported into a drift was, physically, already
+            # countersteering and on the throttle.  The observation contains the
+            # previous command, and a zero previous command at a 0.75 rad
+            # sideslip spawn is inconsistent -- without this the policy has no
+            # information at all at the first step (its recurrent state is
+            # empty) and learns to lift off, which collapses the drift.
+            beta_wp = self.path_bank[self.path_id[is_done], self.progress[is_done], 3]
+            self.u_cmd[is_done, 0] = (0.55 * beta_wp).clamp(-self.max_steer, self.max_steer)
+            self.u_cmd[is_done, 1] = 0.55
         self.randomize(is_done)
         if self.plant_name == "fast":
             self.plant.init_wheels_mask(self.s, is_done)
