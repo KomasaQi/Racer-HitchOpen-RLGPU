@@ -212,15 +212,28 @@ in the real experiments).  Lateral acceleration is 0.28 g at the scaled values
 against 0.48-1.0 g in the real experiments; this car's drift capability limits it
 to about 4.5 m/s at R = 12 m, which is why the larger radii help.
 
-**Best configuration found.** `--ref-mode hybrid --curv-scale 0.6 --beta-scale
-0.15 --beta-weight 10 --pos-weight 8 --pos-cap 3 --dir-weight 4 --yaw-weight 6
---alive-bonus 2.5 --stall-speed 2.5 --offpath-scale 1.4 --recover-weight 1.5
---gamma 0.99 --tau 0.95 --asymmetric --randomize-tyre ev_wide`.  Mean evaluated
-survival is ~11 s (30 s cap, 3 % of episodes reach it) with |beta - beta_ref|
-0.09 rad on the hybrid reference under friction randomisation 0.75-1.25.
+**Best configuration found.** `--ref-mode hybrid --curv-scale-range 0.55,1.1
+--beta-scale 0.15 --beta-weight 10 --pos-weight 8 --pos-cap 3 --dir-weight 4
+--yaw-weight 6 --alive-bonus 2.5 --stall-speed 2.5 --offpath-scale 1.4
+--recover-weight 1.5 --gamma 0.99 --tau 0.95 --asymmetric --randomize-tyre
+ev_wide`.  Mean evaluated survival is 6.7 s at R 8-11 m, 7.9 s at R 10-13 m and
+10.6 s at R 13-18 m (30 s cap), with |beta - beta_ref| 0.09 rad everywhere under
+friction randomisation 0.75-1.25.  A policy trained on a single curvature scale
+specialises instead: 11.6 s at R 13-18 m but only 4.3 s at R 8-11 m, which is why
+the curvature is randomised per path.
+
+**The achievable sideslip is about 5 deg.** Demanding 0.40 rad with the beta
+weight raised to 20 leaves the actual sideslip at 0.09 rad and only adds penalty
+(mean survival unchanged at 11.4 s), i.e. this vehicle saturates at a light
+drift in the R 8-18 m, 4-6 m/s operating point, unlike the 1:8 XCAR which holds
+45-55 deg at 1.84 m/s on a 1 m circle.  beta_ref should therefore be set to
+0.10-0.15 rather than larger.
 
 Failure is dominated by the car slowly leaving the lateral corridor: its actual
 curvature tracks the reference within ~0.03 1/m while 0.01 is needed to stay
 inside for 30 s.  Reward shaping levers tried and rejected are recorded in the
 git history (unbounded yaw/curvature penalties, a lateral "straighten when off
 the line" gate, a pure pursuit steering reference, longer curvature segments).
+When comparing runs, evaluate a run *directory* rather than the best-reward
+checkpoint: after a reward weight change the old best usually stays unbeaten and
+the checkpoint then holds the previous policy.
