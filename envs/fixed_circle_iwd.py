@@ -10,7 +10,10 @@ from gpu_vectorized_car_env import GPUVectorizedCarEnv
 class FixedCircleIWDEnv(GPUVectorizedCarEnv):
     """Example 2IWD task of CCW circling around (0, 1) with radius 1 and sideslip angle -1."""
     def __init__(self, preset_name, n, device, **kwargs):
-        super().__init__(preset_name, n, device=device, drivetrain="2iwd", **kwargs)
+        for _k in ("plant", "control_mode", "dt", "physics_dt"):
+            kwargs.pop(_k, None)
+        super().__init__(preset_name, n, device=device, plant="iwd", drivetrain="2iwd",
+                         dt=0.01, **kwargs)
         self.max_steps = 1000
 
         self.num_states = 10

@@ -28,20 +28,25 @@ parser.add_argument("train_or_test", type=str, help="Train or test")
 parser.add_argument("env", type=str)
 parser.add_argument("--car-preset", type=str, default="racecar")
 parser.add_argument("--device", type=str, default='cuda:0')
-parser.add_argument("--dt", type=float, default=0.01)
+parser.add_argument("--plant", type=str, default="fast", choices=["fast", "iwd"],
+                    help="fast = FastPlant (10 states, pedals); iwd = legacy XCAR plant")
+parser.add_argument("--control-mode", type=str, default="pedals", choices=["pedals", "wheel_speed"])
+parser.add_argument("--dt", type=float, default=None,
+                    help="control period; default 0.05 s (20 Hz) for the fast plant, 0.01 s for iwd")
+parser.add_argument("--physics-dt", type=float, default=0.01, help="physics step of the fast plant (100 Hz)")
 parser.add_argument("--rnn", action='store_true')
 parser.add_argument("--disturbed", action='store_true')
 parser.add_argument("--randomize-tyre", nargs='?', const='big', default=None, type=str)
 parser.add_argument("--seed", type=int, default=2025)
 parser.add_argument("--exp-name", type=str, default="default")
 parser.add_argument("--epochs", type=int, default=1000)
-parser.add_argument("--num-parallel", type=int, default=100000)
+parser.add_argument("--num-parallel", type=int, default=16384)
 parser.add_argument("--lr-schedule", type=str, default="adaptive")
 parser.add_argument("--mini-epochs", type=int, default=5)
 parser.add_argument("--mlp-size-last", type=int, default=64)
-parser.add_argument("--gamma", type=float, default=0.99)
-parser.add_argument("--tau", type=float, default=0.95)
-parser.add_argument("--horizon", type=int, default=200)
+parser.add_argument("--gamma", type=float, default=0.999)
+parser.add_argument("--tau", type=float, default=0.97)
+parser.add_argument("--horizon", type=int, default=128)
 parser.add_argument("--score-to-win", type=int, default=20000)
 parser.add_argument("--save-freq", type=int, default=10)
 parser.add_argument("--epoch-index", type=int, default=-1, help="For test only, -1 for using latest")
@@ -73,7 +78,10 @@ envs = {
 
 # Common env config
 default_env_config = {
-    "dt": args.dt,
+    "dt": args.dt if args.dt is not None else (0.01 if args.plant == "iwd" else 0.05),
+    "plant": args.plant,
+    "control_mode": args.control_mode,
+    "physics_dt": args.physics_dt,
     "disturbance_param": (0.97, 0.03) if args.disturbed else None,
     "randomize_param": {
         None: {},

@@ -1,3 +1,27 @@
+# Vehicle presets for the XCAR-derived FastPlant.
+#
+# Common keys (all optional, defaults in fast_plant.DEFAULT_PARAMS):
+#   lF/lR  : CG to front/rear axle [m]          Tf/Tr : front/rear track [m]
+#   m      : total mass [kg]                    h     : CG height [m]
+#   Iz     : yaw inertia [kg m^2]               g     : gravity [m/s^2]
+#   rF/rR  : wheel radius [m]                   IwF/IwR : wheel spin inertia [kg m^2]
+#   B/C/D/E: XCAR isotropic combined-slip Magic Formula (D = peak friction coefficient)
+#   tyre_scale_front/rear : per-axle multiplier on D (front/rear balance)
+#   slip_v_floor          : denominator floor of the slip ratio [m/s]
+#   roll_share_front      : lambda_f, share of lateral load transfer on the front axle
+#   rho_air, aero_Ax/Ay, aero_Cdx/Cdy, aero_Clx/Cly, aero_xp/zp, wind_x/y
+#                         : one-pressure-center aerodynamic model (x fwd, y left, z up;
+#                           Clx/Cly < 0 means downforce)
+#   drivetrain            : rwd | fwd | awd | iwd (pedals mode)
+#   gear_ratio            : motor-to-wheel reduction
+#   max_power_w, motor    : torque envelope [[rpm, N m], ...] at the motor shaft
+#   coast_torque_nm       : zero-pedal driveline drag, axle total [N m]
+#   lsd_kd/lsd_tau_max    : viscous LSD coupling gain [N m s/rad] and per-side cap [N m]
+#   brake_pressure_max_mpa, brake_torque_front/rear_nm_per_mpa
+#   rolling_resistance    : rolling resistance coefficient
+#   max_steer_rad         : front road wheel steering limit [rad]
+#   wheel_speed_kp        : gain of the legacy wheel-speed command adapter
+
 racecar:
   parameters:
     lF: 0.19
@@ -11,6 +35,36 @@ racecar:
     C: 2.13
     D: 0.382
     E: 1.
+    # --- FastPlant extensions ---
+    rF: 0.0565
+    rR: 0.0565
+    IwF: 0.0024
+    IwR: 0.0024
+    slip_v_floor: 0.5
+    slip_alpha_v_floor: 0.5
+    roll_share_front: 0.55
+    drivetrain: rwd
+    gear_ratio: 1.0
+    max_power_w: 600.
+    motor: [[0., 1.0], [2000., 1.0], [6000., 0.4], [8000., 0.]]
+    lsd_kd: 0.05
+    lsd_tau_max: 0.6
+    brake_pressure_max_mpa: 3.
+    brake_torque_front_nm_per_mpa: 0.05
+    brake_torque_rear_nm_per_mpa: 0.03
+    rho_air: 1.206
+    aero_Ax: 0.028
+    aero_Ay: 0.09
+    aero_Cdx: 0.35
+    aero_Cdy: 1.0
+    aero_Clx: 0.
+    aero_Cly: 0.
+    aero_xp: 0.
+    aero_zp: 0.
+    rolling_resistance: 0.012
+    max_steer_rad: 0.45
+    wheel_speed_kp: 2.
+
 sensorcar:
   parameters:
     lF: 0.185
@@ -24,6 +78,36 @@ sensorcar:
     C: 2.55
     D: 0.3
     E: 1.
+    # --- FastPlant extensions ---
+    rF: 0.0565
+    rR: 0.0565
+    IwF: 0.0024
+    IwR: 0.0024
+    slip_v_floor: 0.5
+    slip_alpha_v_floor: 0.5
+    roll_share_front: 0.55
+    drivetrain: rwd
+    gear_ratio: 1.0
+    max_power_w: 600.
+    motor: [[0., 1.0], [2000., 1.0], [6000., 0.4], [8000., 0.]]
+    lsd_kd: 0.05
+    lsd_tau_max: 0.6
+    brake_pressure_max_mpa: 3.
+    brake_torque_front_nm_per_mpa: 0.05
+    brake_torque_rear_nm_per_mpa: 0.03
+    rho_air: 1.206
+    aero_Ax: 0.028
+    aero_Ay: 0.09
+    aero_Cdx: 0.35
+    aero_Cdy: 1.0
+    aero_Clx: 0.
+    aero_Cly: 0.
+    aero_xp: 0.
+    aero_zp: 0.
+    rolling_resistance: 0.012
+    max_steer_rad: 0.45
+    wheel_speed_kp: 2.
+
 xcar:
   parameters:
     lF: 0.175
@@ -40,3 +124,100 @@ xcar:
     D: 0.35
     E: 1.
     Iw: 0.0024
+    # --- FastPlant extensions ---
+    IwF: 0.0024
+    IwR: 0.0024
+    slip_v_floor: 0.5
+    slip_alpha_v_floor: 0.5
+    roll_share_front: 0.55
+    drivetrain: rwd
+    gear_ratio: 1.0
+    max_power_w: 600.
+    motor: [[0., 1.0], [2000., 1.0], [6000., 0.4], [8000., 0.]]
+    lsd_kd: 0.05
+    lsd_tau_max: 0.6
+    brake_pressure_max_mpa: 3.
+    brake_torque_front_nm_per_mpa: 0.05
+    brake_torque_rear_nm_per_mpa: 0.03
+    rho_air: 1.206
+    aero_Ax: 0.028
+    aero_Ay: 0.09
+    aero_Cdx: 0.35
+    aero_Cdy: 1.0
+    aero_Clx: 0.
+    aero_Cly: 0.
+    aero_xp: 0.
+    aero_zp: 0.
+    rolling_resistance: 0.012
+    max_steer_rad: 0.45
+    wheel_speed_kp: 2.
+
+# ---------------------------------------------------------------------------
+# Full-size RWD EV race car, the FastPlant target for the CarSim EV conversion.
+#
+# Chassis data: CarSim 2019.0 "Exotic Sports Car / Exotic Racecar, Mid-Engine [L]"
+#   sprung mass 1200 kg, CG height 375 mm, wheelbase 2650 mm (lF 1455 / lR 1195),
+#   sprung yaw inertia 1065.2 kg m^2.  Total mass adds the unsprung corners
+#   (~120 kg); total yaw inertia adds the unsprung contribution (~285 kg m^2).
+# Powertrain: workspace 384 kW direct-drive motor map with the 3.44:1 final drive
+#   of the CarSim rear-drive powertrain.  Brakes: 400 / 175 N m per MPa at 6 MPa.
+# Aero: CarSim screenshot CdA = 0.80, ClA = 1.70 (downforce), Ax = 2.2 m^2,
+#   Ay = 6.5 m^2, one pressure center at the CG (xp = zp = 0).
+# Tire: one isotropic XCAR combined-slip curve, D = peak friction coefficient.
+#   tyre_scale_front/rear carry the front/rear balance; the flat-road nominal
+#   friction of the CarSim scenario is 1.0.
+# ---------------------------------------------------------------------------
+fullsize_racecar_ev:
+  parameters:
+    lF: 1.455
+    lR: 1.195
+    Tf: 1.650
+    Tr: 1.600
+    m: 1320.0
+    h: 0.375
+    g: 9.81
+    Iz: 1350.0
+    rF: 0.32355
+    rR: 0.33280
+    IwF: 1.9
+    IwR: 2.2
+    # isotropic XCAR tire, peak at ~0.11 combined slip
+    B: 10.0
+    C: 1.90
+    D: 1.00
+    E: 0.97
+    tyre_scale_front: 1.00
+    tyre_scale_rear: 1.05
+    slip_v_floor: 1.0
+    slip_alpha_v_floor: 1.0
+    load_sensitivity: 0.0
+    roll_share_front: 0.55
+    drivetrain: rwd
+    gear_ratio: 3.44
+    drive_efficiency: 0.92
+    max_power_w: 384000.
+    motor: [[0., 2400.], [250., 2400.], [500., 2400.], [750., 2400.],
+            [1000., 2400.], [1250., 2400.], [1500., 2400.], [1600., 2293.62],
+            [1800., 2038.77], [2000., 1834.89], [2500., 1467.91], [3000., 1223.26],
+            [3500., 1048.51], [4000., 917.45], [4500., 815.51], [5000., 733.96],
+            [5500., 667.23], [6000., 611.63], [6500., 564.58], [7000., 524.26],
+            [7500., 489.30], [8000., 458.72], [8500., 431.74], [9000., 407.75],
+            [9200., 398.89]]
+    coast_torque_nm: 0.0
+    wheel_speed_kp: 600.
+    lsd_kd: 20.0
+    lsd_tau_max: 300.0
+    brake_pressure_max_mpa: 6.0
+    brake_torque_front_nm_per_mpa: 400.0
+    brake_torque_rear_nm_per_mpa: 175.0
+    rho_air: 1.206
+    aero_Ax: 2.20
+    aero_Ay: 6.50
+    aero_Cdx: 0.364
+    aero_Cdy: 1.00
+    aero_Clx: -0.773
+    aero_Cly: 0.0
+    aero_xp: 0.0
+    aero_zp: 0.0
+    rolling_resistance: 0.012
+    max_steer_rad: 0.45

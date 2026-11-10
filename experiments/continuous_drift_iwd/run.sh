@@ -1,15 +1,22 @@
 #!/bin/sh
-python ../../run.py train continuous_drift_iwd --mlp-size-last 16 --horizon 20 --num-parallel 20000 --lr-schedule adaptive --epochs 1000 $env_variant --disturbed --randomize-tyre small --exp-name default --car-preset xcar
+# Full-size RWD EV FastPlant, 20 Hz control / 100 Hz physics, pedals interface.
+# The legacy XCAR wheel-speed interface is kept as a second mode for A/B runs
+# (--control-mode wheel_speed) and the original plant as --plant iwd.
+set -e
+EXP=${EXP:-ev_pedals_v1}
+CAR=${CAR:-fullsize_racecar_ev}
 
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --horizon 20 --num-parallel 20000 --lr-schedule adaptive --epochs 1000 $env_variant --disturbed --randomize-tyre small --exp-name default --car-preset xcar --ref-mode hybrid
+python ../../run.py train continuous_drift_iwd \
+    --car-preset $CAR --num-parallel 16384 --horizon 128 \
+    --gamma 0.999 --tau 0.97 --epochs 300 \
+    --plant fast --control-mode pedals --exp-name $EXP
+
+python ../../run.py test continuous_drift_iwd --car-preset $CAR \
+    --plant fast --control-mode pedals --exp-name $EXP --ref-mode hybrid
 python plot.py --filename hybrid_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --horizon 20 --num-parallel 20000 --lr-schedule adaptive --epochs 1000 $env_variant --disturbed --randomize-tyre small --exp-name default --car-preset xcar --ref-mode circle
+python ../../run.py test continuous_drift_iwd --car-preset $CAR \
+    --plant fast --control-mode pedals --exp-name $EXP --ref-mode circle
 python plot.py --filename circle_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --horizon 20 --num-parallel 20000 --lr-schedule adaptive --epochs 1000 $env_variant --disturbed --randomize-tyre small --exp-name default --car-preset xcar --ref-mode eight
+python ../../run.py test continuous_drift_iwd --car-preset $CAR \
+    --plant fast --control-mode pedals --exp-name $EXP --ref-mode eight
 python plot.py --filename eight_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --horizon 20 --num-parallel 20000 --lr-schedule adaptive --epochs 1000 $env_variant --disturbed --randomize-tyre small --exp-name default --car-preset xcar --ref-mode three
-python plot.py --filename three_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --horizon 20 --num-parallel 20000 --lr-schedule adaptive --epochs 1000 $env_variant --disturbed --randomize-tyre small --exp-name default --car-preset xcar --ref-mode olympic
-python plot.py --filename olympic_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --horizon 20 --num-parallel 20000 --lr-schedule adaptive --epochs 1000 $env_variant --disturbed --randomize-tyre small --exp-name default --car-preset xcar --ref-mode variable_curvature
-python plot.py --filename variable_curvature_ref_exp

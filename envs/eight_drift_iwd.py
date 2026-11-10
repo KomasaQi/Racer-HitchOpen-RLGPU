@@ -9,7 +9,10 @@ from gpu_vectorized_car_env import GPUVectorizedCarEnv
 
 class EightDriftIWDEnv(GPUVectorizedCarEnv):
     def __init__(self, preset_name, n, device, **kwargs):
-        super().__init__(preset_name, n, device=device, drivetrain="2iwd", **kwargs)
+        for _k in ("plant", "control_mode", "dt", "physics_dt"):
+            kwargs.pop(_k, None)
+        super().__init__(preset_name, n, device=device, plant="iwd", drivetrain="2iwd",
+                         dt=0.01, **kwargs)
         self.max_steps = 2000
 
         self.num_states = 26

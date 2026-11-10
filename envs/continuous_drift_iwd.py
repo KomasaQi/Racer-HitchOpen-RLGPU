@@ -13,31 +13,59 @@ sys.path.append(os.path.join(file_path, "../utils"))
 from gpu_vectorized_car_env import GPUVectorizedCarEnv
 from generate_segment_racetrack import TrajGen
 
+
 class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
-    def __init__(self, preset_name, n, device, ref_mode="hybrid", initial_state=None, **kwargs):
-        # Initialize the parent class with specific parameters
-        super().__init__(preset_name, n, device=device, drivetrain="iwd", initial_state=initial_state, **kwargs)
+    """Continuous drifting on random / fixed reference trajectories.
 
-        # Set environment parameters
-        self.max_steps = 3000
-        self.num_states = 31
+    ``control_mode="pedals"`` (default with the FastPlant): the policy commands
+    ``[steer, throttle, brake]`` at ``dt`` (20 Hz by default) while the plant is
+    integrated at ``physics_dt`` (100 Hz).
+
+    ``control_mode="wheel_speed"``: the legacy XCAR action
+    ``[steer, v_fl, v_fr, v_rl, v_rr]`` is kept so the same task can be trained
+    with the old command interface (the FastPlant then runs a wheel speed
+    servo instead of the motor + LSD).
+    """
+
+    def __init__(self, preset_name, n, device, ref_mode="hybrid", initial_state=None,
+                 plant="fast", control_mode="pedals", **kwargs):
+        super().__init__(preset_name, n, device=device, plant=plant,
+                         control_mode=control_mode, drivetrain="iwd",
+                         initial_state=initial_state, **kwargs)
+
+        # env parameters
+        self.max_steps = int(round(30.0 / self.dt))
         self.quiet = kwargs.get("quiet", False)
+        self.no_progress_limit = max(int(round(0.2 / self.dt)), 2)
+        self.smooth_scale = 0.01 / self.dt   # keep reward per unit time constant
 
+        self.pedals = self.control_mode == "pedals"
+        # r, beta, v, kappa, vflx, vfrx (6) + control (3 or 4) + 4 wheel speeds
+        # + angle/pos/beta/kappa/progress (5) + 3 look-ahead waypoints (15)
+        self.num_states = 6 + (3 if self.pedals else 4) + 4 + 5 + 15
+
+        # The reference geometry of this task was authored for the 0.35 m XCAR.
+        # A full-size car cannot follow a 1 m radius curve (minimum steering
+        # radius is L/tan(max_steer) ~ 5.4 m), so the whole reference is scaled
+        # with the wheelbase ratio.  Everything metric is expressed in XCAR
+        # units and multiplied by ``length_scale`` on the way in.
+        wheelbase = float(self.preset["lF"] + self.preset["lR"])
+        self.length_scale = wheelbase / 0.35
+        self.speed_scale = math.sqrt(self.length_scale)
+        self.speed_ref = 10.0 * self.speed_scale
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
-        self.num_actions = 5
-        self.action_space = gym.spaces.Box(low=np.array([-0.46, 1., 1., 1., 1.]), high=np.array([0.46, 7., 7., 7., 7.]), shape=(self.num_actions,))
         self.state_space = self.observation_space
 
         dummy_obs = torch.zeros((self.n, self.num_states), device=self.device)
         self.recent_obs = [dummy_obs, dummy_obs]  # most recent first
-
         self.train = kwargs.get("train", False)
+        self.wheel_radius = self.plant.geometry()[2]
 
         if ref_mode == "hybrid":
             self.num_waypoints = 10000
             path_length = 50
             self.trajectory_generator = TrajGen(self.num_waypoints, path_length, device=device)
-            self.waypoints = self.trajectory_generator.generate_random_waypoints(self.n)
+            self.waypoints = self._scale_waypoints(self.trajectory_generator.generate_random_waypoints(self.n))
         # circle trajectory
         elif ref_mode == "circle":
             self.num_waypoints = 2512      # one waypoint per 0.005m
@@ -48,7 +76,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             waypoint_veldir = torch.atan2(torch.sin(waypoint_veldir), torch.cos(waypoint_veldir))
             waypoint_betaref = -torch.ones((self.num_waypoints, ))
             waypoint_kappa = torch.ones((self.num_waypoints, )) / radius
-            self.waypoints = torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_betaref, waypoint_kappa), dim=1).to(self.device)
+            self.waypoints = self._scale_waypoints(torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_betaref, waypoint_kappa), dim=1).to(self.device))
             self.waypoints = self.waypoints.unsqueeze(0).expand(self.n, -1, -1)
         # eight-shaped trajectory
         elif ref_mode == "eight":
@@ -72,7 +100,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 torch.ones((self.num_waypoints // 2, )) / radius,
                 -torch.ones((self.num_waypoints // 2, )) / radius,
             ))
-            self.waypoints = torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_betaref, waypoint_kappa), dim=1).to(self.device)
+            self.waypoints = self._scale_waypoints(torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_betaref, waypoint_kappa), dim=1).to(self.device))
             self.waypoints = self.waypoints.unsqueeze(0).expand(self.n, -1, -1)
         elif ref_mode == "three":
             path_length = 12 * torch.pi
@@ -84,7 +112,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
             curvature = torch.tensor([1, -1, 1, -1], device=self.device)
 
-            self.waypoints = traj_gen.generate_custom_waypoints(segment_length, curvature)
+            self.waypoints = self._scale_waypoints(traj_gen.generate_custom_waypoints(segment_length, curvature))
         elif ref_mode == "olympic":
             path_length = 18 * torch.pi
             self.num_waypoints = int(path_length / 0.005)
@@ -95,19 +123,19 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
             curvature = torch.tensor([1, -1, 1, -1, 1, -1], device=self.device)
 
-            self.waypoints = traj_gen.generate_custom_waypoints(segment_length, curvature)
+            self.waypoints = self._scale_waypoints(traj_gen.generate_custom_waypoints(segment_length, curvature))
         elif ref_mode == "variable_curvature":
             circle_length_small_start = 4.5 * torch.pi
             circle_length_small_mid = 5 * torch.pi
             circle_length_small_end = 4.5 * torch.pi
             sin_length = math.asin(1 / 2) * 8
-            circle_length_large = (torch.pi - (math.asin(1 / 2) + math.sqrt(3) / 2 - 1) * 8)  * 2 * 2
+            circle_length_large = (torch.pi - (math.asin(1 / 2) + math.sqrt(3) / 2 - 1) * 8) * 2 * 2
 
             path_length = circle_length_small_start + sin_length + circle_length_large + sin_length + circle_length_small_mid + sin_length + circle_length_large + sin_length + circle_length_small_end
             self.num_waypoints = int(path_length / 0.005)
 
             traj_gen = TrajGen(num_waypoints=self.num_waypoints, path_length=path_length, device=self.device)
-            self.waypoints = traj_gen.generate_variable_curvature_waypoints()
+            self.waypoints = self._scale_waypoints(traj_gen.generate_variable_curvature_waypoints())
             self.waypoints = self.waypoints.expand(self.n, -1, -1)
         else:
             raise ValueError("Invalid ref_mode")
@@ -125,6 +153,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)   # 0 = not done, 1 = failed, 2 = succeeded
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
+        self._now = None
+        self._prev = None
+
+    def _scale_waypoints(self, wp):
+        """Scale an XCAR-sized reference geometry to this vehicle's size."""
+        if abs(self.length_scale - 1.0) < 1e-9:
+            return wp
+        out = wp.clone()
+        out[..., 0] *= self.length_scale
+        out[..., 1] *= self.length_scale
+        out[..., 4] /= self.length_scale
+        return out
 
     def update_recent_obs(self, obs):
         self.recent_obs[1] = self.recent_obs[0]
@@ -177,13 +217,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         r = self.es[:, 2]
         beta = self.es[:, 7]
         v = self.es[:, 6]
-        vfrx = self.es[:, 8]
-        vflx = self.es[:, 9]
-        last_delta = self.u[:, 0]
-        last_omegafr = self.u[:, 1]
-        last_omegafl = self.u[:, 2]
-        last_omegarr = self.u[:, 3]
-        last_omegarl = self.u[:, 4]
+        vflx = self.es[:, 8]
+        vfrx = self.es[:, 9]
+        wheel_speed = self.s[:, 6:10] * self.wheel_radius       # actual surface speed
         kappa = r / (v + 1e-6)
 
         xd = self.s[:, 3]
@@ -201,7 +237,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         # look ahead 3m
         if self.train:
-            la_inds = [(self.progress + i).unsqueeze(-1)for i in (200, 400, 600)]
+            la_inds = [(self.progress + i).unsqueeze(-1) for i in (200, 400, 600)]
             for la_ind in la_inds:
                 la_ind[la_ind >= self.num_waypoints] = self.num_waypoints - 1
         else:
@@ -226,7 +262,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             return torch.cat([x2, y2, veldir2, beta2, kappa1], 1)
         la_converted = [convert(waypoints) for waypoints in la]
 
-        failed = (self.progress >= 5) & ((self.no_progress_count >= 20) | (torch.abs(angle_diff) > 1.) | (torch.abs(signed_pos_diff) > 1.))
+        failed = (self.progress >= 5) & ((self.no_progress_count >= self.no_progress_limit)
+                                        | (torch.abs(angle_diff) > 1.)
+                                        | (torch.abs(signed_pos_diff) > self.length_scale))
         if self.train:
             succeeded = (self.step_count >= self.max_steps) | (self.progress >= self.num_waypoints - 100)
         else:
@@ -234,48 +272,61 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.is_done[failed] = 1
         self.is_done[succeeded] = 2
 
-        r, beta, v, kappa, vfrx, vflx, last_delta, last_omegafr, last_omegafl, last_omegarr, last_omegarl, angle_diff, signed_pos_diff, beta_diff, kappa_ref, prog, is_failed = map(lambda t: torch.unsqueeze(t, 1), [r, beta, v, kappa, vfrx, vflx, last_delta, last_omegafr, last_omegafl, last_omegarr, last_omegarl, angle_diff, signed_pos_diff, beta_diff, kappa_ref, self.step_progress, failed.to(dtype=torch.float32)])
+        if self.pedals:
+            ctrl = [self.u_cmd[:, 0], self.u_cmd[:, 1], self.u_cmd[:, 2]]
+        else:
+            ctrl = [self.u[:, 1], self.u[:, 2], self.u[:, 3], self.u[:, 4]]
 
-        obs_list = [r, beta, v, kappa, vfrx, vflx, last_delta,  last_omegafr, last_omegafl, last_omegarr, last_omegarl, angle_diff, signed_pos_diff, beta_diff, kappa_ref, prog]
+        self._prev = self._now
+        self._now = {
+            "beta": beta, "v": v, "kappa": kappa, "vflx": vflx, "vfrx": vfrx,
+            "delta": self.u_cmd[:, 0],
+            "wheel": wheel_speed,
+            "angle_diff": angle_diff, "signed_pos_diff": signed_pos_diff,
+            "beta_diff": beta_diff, "kappa_ref": kappa_ref,
+            "prog": self.step_progress, "failed": failed.float(),
+        }
+
+        scalars = [r, beta, v, kappa, vflx, vfrx] + ctrl
+        scalars += [wheel_speed[:, i] for i in range(4)]
+        scalars += [angle_diff, signed_pos_diff, beta_diff, kappa_ref, self.step_progress]
+        obs_list = [t.unsqueeze(1) for t in scalars]
         obs_list.extend(la_converted)
         obs = torch.cat(obs_list, 1)
-
         return obs
 
     def reward(self):
-        obs = self.recent_obs[0]
-        last_obs = self.recent_obs[1]
+        now, prev = self._now, self._prev
+        beta = now["beta"]
+        v = now["v"]
+        vfrx, vflx = now["vfrx"], now["vflx"]
+        delta = now["delta"]
+        wheel = now["wheel"]
+        angle_diff = now["angle_diff"]
+        signed_pos_diff = now["signed_pos_diff"]
+        beta_diff = now["beta_diff"]
+        kappa_ref = now["kappa_ref"]
+        prog = now["prog"]
+        is_failed = now["failed"]
 
-        beta = obs[:, 1]
-        v = obs[:, 2]
-        kappa = obs[:, 3]
-        vfrx = obs[:, 4]
-        vflx = obs[:, 5]
-        delta = obs[:, 6]
-        omegafr = obs[:, 7]
-        omegafl = obs[:, 8]
-        omegarr = obs[:, 9]
-        omegarl = obs[:, 10]
-        last_delta = last_obs[:, 6]
-        last_omegafr = last_obs[:, 7]
-        last_omegafl = last_obs[:, 8]
-        last_omegarr = last_obs[:, 9]
-        last_omegarl = last_obs[:, 10]
-        angle_diff = obs[:, 11]
-        signed_pos_diff = obs[:, 12]
-        beta_diff = obs[:, 13]
-        kappa_ref = obs[:, 14]
-        prog = obs[:, 15]
-        is_failed = obs[:, 16]
+        if prev is None:
+            return torch.zeros(self.n, device=self.device)
 
-        rew_pos = - signed_pos_diff ** 2
+        # Metric quantities are normalised back to XCAR units (the reference
+        # geometry scale) so that the reward weights keep their meaning across
+        # vehicle sizes; dimensionless quantities are used directly.
+        s = self.length_scale
+        rew_pos = - (signed_pos_diff / s) ** 2
         rew_dir = - angle_diff ** 2
-        rew_prog = torch.clamp(prog, 0.0, 5.0)
-        rew_smooth = - ((delta - last_delta) ** 2 + 1e-2 * ((omegafr - last_omegafr) ** 2 + (omegafl - last_omegafl) ** 2 + (omegarr - last_omegarr) ** 2 + (omegarl - last_omegarl) ** 2))
+        rew_prog = torch.clamp(prog, 0.0, 5.0 * s)
+        rew_smooth = self.smooth_scale * (
+            - ((delta - prev["delta"]) ** 2
+               + 1e-2 * (((wheel - prev["wheel"]) / self.speed_ref) ** 2).sum(dim=1)))
         rew_beta = - beta_diff ** 2
-        rew_lowspeed = torch.clamp(v, 0., 0.5) - 0.5
-        rew_sf = - (vfrx - omegafr) ** 2 - (vflx - omegafl) ** 2
-        rew_kappa = -(kappa - kappa_ref) ** 2
+        rew_lowspeed = torch.clamp(v, 0., 0.5 * self.speed_scale) - 0.5 * self.speed_scale
+        rew_sf = - ((vfrx - wheel[:, 1]) / self.speed_scale) ** 2 \
+                 - ((vflx - wheel[:, 0]) / self.speed_scale) ** 2
+        rew_kappa = - ((now["kappa"] - kappa_ref) * s) ** 2
         rew_final = -is_failed
 
         rew = 2.4 * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + 1.6 * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa
@@ -290,6 +341,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
+        self._now = None
+        self._prev = None
         return self.obs()
 
     def info(self):
@@ -299,12 +352,17 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         return info_dict
 
     def reset_done_envs(self):
-        """Only reset envs that are already done."""
+        """Only reset envs that are already done.
+
+        No host/device synchronisation here: every op below is a no-op for an
+        empty selection, so the ``any()`` check that used to guard it (and cost
+        one CUDA sync per control step) is not needed.
+        """
         is_done = self.is_done.bool()
 
         size = torch.sum(is_done)
         self.step_count[is_done] = 0
-        self.waypoints[is_done] = self.trajectory_generator.generate_random_waypoints(is_done.sum().item())
+        self.waypoints[is_done] = self._scale_waypoints(self.trajectory_generator.generate_random_waypoints(is_done.sum().item()))
         self.progress[is_done] = torch.randint(self.num_waypoints // 2, (size,), device=self.device)
         self.step_progress[is_done] = 0
         self.no_progress_count[is_done] = 0
@@ -321,10 +379,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             beta = waypoints[:, 3]
             kappa = waypoints[:, 4]
 
-            x += 0.1 * torch.randn_like(x)
-            y += 0.1 * torch.randn_like(y)
+            x += 0.1 * self.length_scale * torch.randn_like(x)
+            y += 0.1 * self.length_scale * torch.randn_like(y)
 
-            random_V = torch.rand(prog.shape, device=self.device) * 3
+            random_V = torch.rand(prog.shape, device=self.device) * 3 * self.speed_scale
             random_beta = torch.sign(beta) * torch.rand(prog.shape, device=self.device)
 
             psi = veldir - random_beta
@@ -332,14 +390,21 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
             xd = random_V * torch.cos(random_beta + psi)
             yd = random_V * torch.sin(random_beta + psi)
-            psid = -torch.sign(beta) * (1 + torch.rand(prog.shape, device=self.device) * 2)
+            psid = -torch.sign(beta) * (1 + torch.rand(prog.shape, device=self.device) * 2) / self.speed_scale
 
             x, y, psi, xd, yd, psid = map(lambda t: torch.unsqueeze(t, 1), [x, y, psi, xd, yd, psid])
             return torch.cat([x, y, psi, xd, yd, psid], 1) * random_indices.unsqueeze(1)
 
-        self.s[is_done, :] = gen_random_state(is_done.nonzero().squeeze(-1))
+        self.s[is_done, :] = 0
+        self.s[is_done, :6] = gen_random_state(is_done.nonzero().squeeze(-1))
         self.u[is_done, :] = 0
+        self.u_cmd[is_done, :] = 0
         self.randomize(is_done)
+        if self.plant_name == "fast":
+            self.s[is_done, 6:10] = self.s[is_done, 3:4] / self.wheel_radius[is_done]
+            self.plant.reset_guess(is_done)
+            if self.disturbance_param is not None:
+                self.tyre_scale[is_done] = 1.0
         self.is_done[:] = 0
 
     def step(self, action, **kwargs):

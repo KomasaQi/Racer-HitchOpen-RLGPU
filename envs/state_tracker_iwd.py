@@ -11,7 +11,10 @@ from icecream import ic
 class StateTrackerIWDEnv(GPUVectorizedCarEnv):
 
     def __init__(self, preset_name, n, device, ref_mode, **kwargs):
-        super().__init__(preset_name, n, drivetrain="2iwd", device=device, **kwargs)
+        for _k in ("plant", "control_mode", "dt", "physics_dt"):
+            kwargs.pop(_k, None)
+        super().__init__(preset_name, n, plant="iwd", drivetrain="2iwd", device=device,
+                         dt=0.01, **kwargs)
         self.min_steps = 1500
 
         self.num_states = 15

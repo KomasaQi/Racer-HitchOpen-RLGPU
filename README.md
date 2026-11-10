@@ -52,35 +52,31 @@ We currently support several drift control environments:
 
 ## Training 🎯
 
-Training scripts are provided for each environment in the `experiments` directory. Key parameters can be configured through command line arguments:
+The default plant is `fast`: a full-size RWD EV (10 states, motor + LSD + wheel
+spin, longitudinal *and* lateral load transfer, 2D aero) running at 20 Hz
+control / 100 Hz physics. See [PLANT.md](PLANT.md) for the model, the presets
+and the known limitations. The original XCAR IWD plant is still available with
+`--plant iwd`.
 
 ```bash
-python run.py train fixed_circle_iwd \
-    --car-preset xcar \
-    --device cuda:0 \
-    --num-parallel 100000 \
-    --epochs 500
+# CarSim-sized RWD EV, pedals interface, 20 Hz control
+python run.py train continuous_drift_iwd --car-preset fullsize_racecar_ev \
+    --num-parallel 16384 --horizon 128 --gamma 0.999 --tau 0.97 \
+    --plant fast --control-mode pedals --exp-name ev_pedals_v1
+
+# check the plant before spending GPU time
+cd xcar-simulation && python plant_check.py fullsize_racecar_ev
 ```
 
 ```bash
 cd experiments/continuous_drift_iwd # Change to the experiment directory
 
 # train the controller
-python ../../run.py train continuous_drift_iwd --mlp-size-last 16 --horizon 128 --num-parallel 2000 --lr-schedule adaptive --epochs 400  --disturbed --randomize-tyre small --exp-name default --car-preset xcar
+./run.sh
 
 # test the controller
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode hybrid
+python ../../run.py test continuous_drift_iwd --mlp-size-last 64 --exp-name ev_pedals_v1 --car-preset fullsize_racecar_ev --ref-mode hybrid
 python plot.py --filename hybrid_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode circle
-python plot.py --filename circle_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode eight
-python plot.py --filename eight_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode three
-python plot.py --filename three_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode olympic
-python plot.py --filename olympic_ref_exp
-python ../../run.py test continuous_drift_iwd --mlp-size-last 16 --exp-name default --car-preset xcar --ref-mode variable_curvature
-python plot.py --filename variable_curvature_ref_exp
 ```
 
 Common training flags:
