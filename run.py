@@ -193,6 +193,12 @@ default_env_config = {
             "C": [1.6, 2.2],
             "D": [0.75, 1.25],
         },
+        # low friction biased: the evaluated weak spot is the slippery surface
+        "ev_low": {
+            "B": [9., 11.],
+            "C": [1.8, 2.05],
+            "D": [0.60, 1.05],
+        },
     }[args.randomize_tyre],
     "random_seed": args.seed,
     "quiet": args.quiet,
