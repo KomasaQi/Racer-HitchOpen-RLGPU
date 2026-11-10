@@ -139,6 +139,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # optimum; this term closes that hole.
         self.speed_target = float(kwargs.get("speed_target", self.spawn_speed))
         self.speed_weight = float(kwargs.get("speed_weight", 0.0))
+        self.speed_hinge = bool(kwargs.get("speed_hinge", False))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
         if self.asymmetric:
@@ -547,7 +548,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # step, swamping the alive bonus and every other term
         rew_kappa = - torch.clamp(((now["kappa"] - kappa_ref) * s) ** 2, max=self.kappa_cap)
         rew_yaw = - torch.clamp(((now["r"] - now["r_ref"]) / self.yaw_scale) ** 2, max=self.yaw_cap)
-        rew_speed = - ((v - self.speed_target) / self.speed_target) ** 2
+        # One sided linear speed term: the quadratic form has almost no gradient
+        # at low speed, so the policy settles at 1.5 m/s where the alive bonus
+        # dominates and then dies of its own slow pace.  Only being BELOW the
+        # target is penalised, linearly, so the incentive is constant.
+        if self.speed_hinge:
+            rew_speed = - torch.clamp((self.speed_target - v) / self.speed_target, min=0.0)
+        else:
+            rew_speed = - ((v - self.speed_target) / self.speed_target) ** 2
         rew_final = -is_failed
 
         terms = {

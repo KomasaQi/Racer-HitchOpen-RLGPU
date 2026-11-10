@@ -116,6 +116,8 @@ parser.add_argument("--seg-scale", type=float, default=1.0,
                     help="multiplier on the random reference segment lengths")
 parser.add_argument("--obs-privileged", action="store_true",
                     help="append beta/V/vx/vy to the actor observation (upper bound)")
+parser.add_argument("--speed-hinge", action="store_true",
+                    help="one sided linear speed penalty instead of the quadratic")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -162,6 +164,7 @@ default_env_config = {
     "pp_weight": args.pp_weight,
     "seg_scale": args.seg_scale,
     "obs_privileged": args.obs_privileged,
+    "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
