@@ -212,19 +212,20 @@ in the real experiments).  Lateral acceleration is 0.28 g at the scaled values
 against 0.48-1.0 g in the real experiments; this car's drift capability limits it
 to about 4.5 m/s at R = 12 m, which is why the larger radii help.
 
-**Best configuration found.** `--ref-mode hybrid --curv-scale-range 0.55,1.1
+**Best configuration found.** `--ref-mode hybrid --curv-scale-range 0.55,0.9
 --beta-scale 0.15 --beta-weight 10 --pos-weight 8 --pos-cap 3 --dir-weight 4
 --yaw-weight 6 --alive-bonus 2.5 --stall-speed 2.5 --offpath-scale 1.4
---recover-weight 1.5 --gamma 0.99 --tau 0.95 --asymmetric --randomize-tyre
-ev_wide`.  Mean evaluated survival is 6.7 s at R 8-11 m, 7.9 s at R 10-13 m and
-10.6 s at R 13-18 m (30 s cap), with |beta - beta_ref| 0.09 rad everywhere under
-friction randomisation 0.75-1.25.  A policy trained on a single curvature scale
+--recover-weight 1.5 --spawn-speed 4.5 --speed-weight 1.5 --speed-target 3.8
+--gamma 0.99 --tau 0.95 --asymmetric --randomize-tyre ev_wide`.  Mean evaluated
+survival is 8.5 s at R 8-11 m, 10.5 s at R 10-13 m and 12.8 s at R 13-18 m
+(30 s cap), with |beta - beta_ref| 0.09-0.10 rad everywhere under friction
+randomisation 0.75-1.25.  A policy trained on a single curvature scale
 specialises instead: 11.6 s at R 13-18 m but only 4.3 s at R 8-11 m, which is why
 the curvature is randomised per path.
 
 
-**Evaluated behaviour** (v57 policy, hybrid reference, 64 episodes per cell, 600 step
-cap, corridor 1.4 L, stall 2.5 m/s):
+**Evaluated behaviour** (archived policy, hybrid reference, 128 episodes per
+cell, 600 step cap, corridor 1.4 L, stall 2.5 m/s):
 
 | reference radius | mu = 0.75 | mu = 1.00 | mu = 1.25 |
 |---|---|---|---|
@@ -235,7 +236,7 @@ cap, corridor 1.4 L, stall 2.5 m/s):
 Cells are mean survival and |beta - beta_ref| in rad.  The sideslip error grows
 with the available friction (0.08 -> 0.15 rad): the policy self selects a larger
 drift on high grip and a more conservative one on a slippery surface.  Low
-friction combined with a tight radius is the binding constraint (4.6 s).
+friction combined with a tight radius is the binding constraint (4.4 s).
 **The achievable sideslip is about 5 deg.** Demanding 0.40 rad with the beta
 weight raised to 20 leaves the actual sideslip at 0.09 rad and only adds penalty
 (mean survival unchanged at 11.4 s), i.e. this vehicle saturates at a light
