@@ -276,3 +276,23 @@ python experiments/continuous_drift_iwd/eval.py runs/drift_ev/nn \
 The policy behind the numbers above is archived at
 `experiments/continuous_drift_iwd/runs/drift_ev_best/`; the evaluation command
 above works on that directory unchanged.
+**Observability ablation.** `--obs-privileged` appends the plant quantities the
+real car cannot measure (beta, V, vx, vy) to the actor observation, which turns
+the task back into XCAR's formulation and gives the upper bound:
+
+| actor observation | best mean survival | best full-length rate | off path failures | course failures | typical speed |
+|---|---|---|---|---|---|
+| 30 channels (real car) | 11.85 s | 3-4 % | 180+ | 6 | 3.5 m/s |
+| 34 channels (+ beta, V, vx, vy) | **15.61 s** | **15 %** | **1** | **0** | 1.5 m/s |
+
+So restricting the observation to what the car can measure costs about a quarter
+of the survival time, four times the success rate and essentially all of the
+lateral tracking failures: the tracking limit is an observability limit rather
+than a control one.  The privileged policy in turn trades speed for stability
+and then dies of its own slow pace (96 % of its failures are the stall rule).
+
+**Speed is not monotone.** The evaluated mean survival against the commanded
+speed target is 7.9 s at a 6 m/s target, 10.4 s at 3.8 m/s and 8.0 s at 2.0 m/s,
+so the sweet spot is around 3.5-4 m/s; forcing faster (stall threshold 3.0 -> 4.5)
+gives 7.9 -> 4.8 s.  Above roughly 2 m/s the sustained drift itself becomes the
+unstable part for this vehicle.
