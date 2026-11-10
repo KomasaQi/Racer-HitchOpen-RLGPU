@@ -180,6 +180,13 @@ default_env_config = {
             "C": [2, 2.5],
             "D": [0.3, 0.4],
         },
+        # the 1:8 XCAR preset of this plant (nominal B 4.5, C 1.8, D 0.35):
+        # +/-20 % shape and D in [0.30, 0.40], as randomised in the XCAR paper
+        "xcar_scale": {
+            "B": [3.6, 5.4],
+            "C": [1.6, 2.0],
+            "D": [0.30, 0.40],
+        },
         # full-size EV preset: +/-20 % on the Magic Formula shape and +/-10 % peak
         # friction, loosely following the XCAR paper's tire randomization
         "ev": {
