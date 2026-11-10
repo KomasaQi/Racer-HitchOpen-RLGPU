@@ -11,6 +11,7 @@ failure reasons.  No rl_games player, so evaluation is fast.
 """
 import argparse
 import os
+import glob
 import sys
 
 import torch
@@ -111,7 +112,15 @@ def main():
                                 yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()
-    policy = Policy(args.checkpoint, torch.device(args.device))
+    ckpt = args.checkpoint
+    if os.path.isdir(ckpt) or ckpt.endswith("nn"):
+        # pick the newest per-epoch snapshot instead of the best-reward one
+        cands = glob.glob(os.path.join(ckpt, "last_*.pth"))
+        if not cands:
+            cands = [os.path.join(ckpt, "continuous_drift_iwd.pth")]
+        ckpt = max(cands, key=os.path.getmtime)
+    policy = Policy(ckpt, torch.device(args.device))
+    args.checkpoint = ckpt
     policy.reset_hidden(torch.ones(args.n, dtype=torch.bool, device=args.device))
 
     dev = torch.device(args.device)
