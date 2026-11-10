@@ -96,6 +96,8 @@ def main():
     ap.add_argument("--pos-weight", type=float, default=2.4)
     ap.add_argument("--spawn-mode", default="equilibrium")
     ap.add_argument("--spawn-speed", type=float, default=6.5)
+    ap.add_argument("--grip-scale", type=float, default=1.0,
+                    help="global friction multiplier (evaluate on different surfaces)")
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
@@ -104,7 +106,7 @@ def main():
                                 spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
                                 offpath_scale=args.offpath_scale, course_fail=args.course_fail,
                                 stall_speed=args.stall_speed, alive_bonus=args.alive_bonus,
-                                curv_scale=args.curv_scale,
+                                curv_scale=args.curv_scale, grip_scale=args.grip_scale,
                                 yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()
