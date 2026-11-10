@@ -84,11 +84,12 @@ def main():
     ap.add_argument("--steps", type=int, default=600)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--beta-scale", type=float, default=1.0)
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
     env = ContinuousDriftIWDEnv(args.car_preset, args.n, args.device, ref_mode=args.ref_mode,
-                                control_mode=args.control_mode, train=True)
+                                control_mode=args.control_mode, beta_scale=args.beta_scale, train=True)
     obs = env.reset()
     policy = Policy(args.checkpoint, torch.device(args.device))
     policy.reset_hidden(torch.ones(args.n, dtype=torch.bool, device=args.device))
