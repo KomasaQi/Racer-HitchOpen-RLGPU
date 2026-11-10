@@ -620,8 +620,19 @@ class FastRacerPlant:
         steps over which ``command`` is held constant (zero order hold).
         """
         h = float(dt) / max(int(substeps), 1)
-        for _ in range(max(int(substeps), 1)):
+        n_sub = max(int(substeps), 1)
+        ax_sum = None
+        ay_sum = None
+        for _ in range(n_sub):
             deriv, extras = self.derivatives(s, command, mode=mode)
+            # The accelerometer reading is the average over the control period,
+            # not the instantaneous value of the last physics substep.
+            if ax_sum is None:
+                ax_sum = extras["ax"].clone()
+                ay_sum = extras["ay"].clone()
+            else:
+                ax_sum += extras["ax"]
+                ay_sum += extras["ay"]
             s[:, :6] = s[:, :6] + h * deriv[:, :6]
             # semi-implicit wheel spin: backward Euler linearised on the tire
             # longitudinal stiffness, stable at low speed where the slip ratio
@@ -633,6 +644,8 @@ class FastRacerPlant:
                 # a wheel may not reverse through zero within one physics step
                 s[:, 6:10] = torch.clamp(s[:, 6:10], min=0.0, max=2500.0)
             s[:, 2] = torch.atan2(torch.sin(s[:, 2]), torch.cos(s[:, 2]))
+        extras["ax"] = ax_sum / n_sub
+        extras["ay"] = ay_sum / n_sub
         return s, extras
 
     # -- observation ------------------------------------------------------

@@ -39,10 +39,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.smooth_scale = 0.01 / self.dt   # keep reward per unit time constant
 
         self.pedals = self.control_mode == "pedals"
-        # observed: yaw rate (1) + previous commands (3/4) + wheel speeds (4)
-        # + lateral/course/curvature errors and progress (4) + 3 preview points
-        # x 5.  The plant state (10) is a simulation detail and not observed.
-        self.num_states = (1 + (3 if self.pedals else 4) + 4 + 4) + 15
+        # observed: yaw rate + 3 accelerometer axes + previous commands (3/4)
+        # + wheel speeds (4) + lateral/course/curvature errors and progress (4)
+        # + 3 preview points x 5.  The plant state (10) is a simulation detail and
+        # is not observed.
 
         # The reference geometry of this task was authored for the 0.35 m XCAR.
         # A full-size car cannot follow a 1 m radius curve (minimum steering
@@ -77,6 +77,21 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.yaw_scale = float(kwargs.get("yaw_scale", 0.5))
         self.progress_gate = 0.5 * self.length_scale
         self.stall_speed = float(kwargs.get("stall_speed", 2.0))
+
+        n_ctrl = 3 if self.pedals else 4
+        self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 15
+        # Fixed per channel scaling so every channel is O(1) at the start of
+        # training; rl_games adds its own running normalisation on top.
+        wheel_scale = 3.0 / self.speed_ref
+        ctrl_scale = ([1.0 / self.max_steer, 1.0, 1.0] if self.pedals
+                      else [1.0 / self.max_steer] + [wheel_scale] * 4)
+        scale = [0.5, 0.1, 0.1, 0.1]          # r, ax, ay, az
+        scale += ctrl_scale
+        scale += [wheel_scale] * 4
+        scale += [1.0, 1.0, 1.0, 0.1]         # e_pos, e_dir, e_kappa, progress
+        for _ in range(3):
+            scale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0, 1.0]
+        self.obs_scale = torch.tensor(scale, device=self.device, dtype=torch.float32)
         # "equilibrium" spawns start near the drift equilibrium of the local
         # reference (see gen_random_state); "legacy" keeps the XCAR wide
         # randomization.  spawn_speed is the target drift speed on the reference.
@@ -307,7 +322,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # over-estimates the speed by ~50 % and makes r_ref = v_est*kappa_ref
         # drive the policy into over-rotation (the observed course failures).
         v_est = wheel_speed[:, :2].mean(dim=1).clamp(min=0.5)
-        kappa_est = r / v_est
+        kappa_est = (r / v_est).clamp(-2.0, 2.0)   # bounded curvature estimate
 
         xd = self.s[:, 3]
         yd = self.s[:, 4]
@@ -385,13 +400,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         # observed: ego state + previous commands + tracking errors + preview
         e_pos = signed_pos_diff / self.length_scale
-        e_kappa = kappa_diff * self.length_scale
-        scalars = [r] + ctrl
+        e_kappa = (kappa_diff * self.length_scale).clamp(-5.0, 5.0)
+        # accelerometer: body frame specific force averaged over the control
+        # period; az is gravity for a planar vehicle (a real IMU still reads it)
+        ax_acc = self.extras["ax"] if self.extras is not None else torch.zeros_like(r)
+        ay_acc = self.extras["ay"] if self.extras is not None else torch.zeros_like(r)
+        az_acc = torch.full_like(r, float(self.plant.g))
+        scalars = [r, ax_acc, ay_acc, az_acc] + ctrl
         scalars += [wheel_speed[:, i] for i in range(4)]
         scalars += [e_pos, angle_diff, e_kappa, self.step_progress.float()]
         obs_list = [t.unsqueeze(1) for t in scalars]
         obs_list.extend(la_converted)
-        obs = torch.cat(obs_list, 1)
+        obs = torch.cat(obs_list, 1) * self.obs_scale
         return obs
 
     def reward(self):

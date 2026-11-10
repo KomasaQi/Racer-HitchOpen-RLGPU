@@ -25,7 +25,7 @@ class TrajGen:
         # launched one kernel per scene and dominated the cost of every episode
         # reset once thousands of environments finished episodes in parallel.
         query = s.unsqueeze(0).expand(num_scenes, -1)
-        seg = torch.searchsorted(threshold.contiguous(), query).clamp(max=threshold.shape[1] - 1)
+        seg = torch.searchsorted(threshold.contiguous(), query.contiguous()).clamp(max=threshold.shape[1] - 1)
         kappa = torch.gather(curvature, 1, seg)                        # (n, W)
         
         # Integrate curvature to get heading angle theta
