@@ -100,6 +100,8 @@ parser.add_argument("--yaw-cap", type=float, default=4.0,
                     help="saturation of the squared yaw rate error")
 parser.add_argument("--kappa-cap", type=float, default=4.0,
                     help="saturation of the squared curvature error")
+parser.add_argument("--curv-scale", type=float, default=1.0,
+                    help="multiplier on the hybrid reference curvature (1/radius)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -138,6 +140,7 @@ default_env_config = {
     "pos_cap": args.pos_cap,
     "yaw_cap": args.yaw_cap,
     "kappa_cap": args.kappa_cap,
+    "curv_scale": args.curv_scale,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,

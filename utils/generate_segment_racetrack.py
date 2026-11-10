@@ -18,7 +18,12 @@ class TrajGen:
 
         threshold = torch.cumsum(segment_length, dim=1)  # (n, path_length)
         
-        curvature = (torch.rand_like(threshold, device=self.device) * 0.36 + 0.7) * torch.sign(torch.randn_like(threshold))
+        # XCAR units: |kappa| in [kmin, kmax] per 1 m of path.  ``curv_scale``
+        # multiplies the curvature, i.e. divides the radii, so the reference can
+        # be moved towards the larger drift circles used in real vehicle
+        # experiments without touching the vehicle scaling.
+        curv_scale = getattr(self, "curv_scale", 1.0)
+        curvature = (torch.rand_like(threshold, device=self.device) * 0.36 + 0.7) * curv_scale * torch.sign(torch.randn_like(threshold))
         
         # Vectorised segment lookup. ``torch.searchsorted`` accepts a batched
         # sorted sequence, which replaces the per-scene python loop.  That loop
