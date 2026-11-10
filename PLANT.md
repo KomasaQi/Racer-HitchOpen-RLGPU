@@ -135,6 +135,27 @@ python plant_check.py fullsize_racecar_ev
 It prints acceleration, braking, steady-state cornering, lateral limit, LSD,
 aero, wheel-spin and throughput probes.
 
+## Measured throughput (RTX 5070 Laptop, 8 GB)
+
+| what | envs | wall time per control step | env-steps / s |
+|---|---|---|---|
+| FastPlant, raw step (5 substeps) | 20 000 | 28.6 ms | 0.70 M |
+| FastPlant, raw step (5 substeps) | 2 000 | 29.3 ms | 0.07 M |
+| full `continuous_drift_iwd` inside PPO | 8 192 | 47 ms | 0.17 M |
+| legacy XCAR plant (100 Hz, 1 step) | 20 000 | 4.9 ms | 4.1 M |
+| legacy full-size plant (v3.5.7, 2 substeps) | 4 096 | ~84 ms | 0.049 M |
+
+Per *simulated* second (what actually matters for RL) the new plant costs
+20 x 28.6 ms = 572 ms per wall second at 20 000 envs, against 100 x 4.9 ms =
+489 ms for the original XCAR plant: ~17 % more for 10 states, five physics
+substeps per action and a much richer model.  Against the legacy full-size
+plant it is roughly an order of magnitude faster per simulated second.
+
+The cost is dominated by kernel launch overhead (every tensor is only
+`(n, 4)`), not by arithmetic. Reducing it further means fewer, larger kernels
+(fusing the substep loop with `torch.compile`/CUDA graphs) — a framework
+change to JAX would not help and is not practical on native Windows anyway.
+
 ## Running
 
 ```bash

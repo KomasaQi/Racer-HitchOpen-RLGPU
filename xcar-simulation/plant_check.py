@@ -74,13 +74,13 @@ def probe_acceleration(preset, device):
     for i in range(6000):
         s, ex = plant.step(s, cmd(0.0, q, 0.0, device), dt=dt, substeps=1)
         slip_r = float(ex["sx"][0, 2:].mean())
-        q = max(0.0, min(1.0, q + 1.5 * (slip_r + 0.10) * dt))
+        q = max(0.0, min(1.0, q + 30.0 * (slip_r + 0.10) * dt))
         v = speed_of(s)
         vmax = max(vmax, v)
         if t100 is None and v * 3.6 >= 100.0:
             t100 = (i + 1) * dt
     print(f"  slip limited launch  : t(100 km/h)={t100 if t100 else float('nan'):5.2f} s  "
-          f"v_max={vmax * 3.6:6.1f} km/h")
+          f"v_max={vmax * 3.6:6.1f} km/h (target rear slip -0.10)")
 
 
 def probe_braking(preset, device, v0=27.78):
