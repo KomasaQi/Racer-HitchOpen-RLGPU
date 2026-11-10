@@ -64,6 +64,17 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.beta_weight = float(kwargs.get("beta_weight", 1.6))
         self.pos_weight = float(kwargs.get("pos_weight", 2.4))
         self.dir_weight = float(kwargs.get("dir_weight", 0.5))
+        # yaw rate tracking: the under-turning failure mode.  r is an IMU
+        # measurement and ``r_ref = v_est * kappa_ref`` is computable on the car
+        # (wheel speed estimate x previewed curvature), so this is a legal,
+        # dense signal for "keep rotating at the rate the path needs".
+        # Every task term except progress is a penalty, so with an all negative
+        # per step reward "die quickly" is a local optimum (observed: the policy
+        # learned to stop, which ends the episode).  A constant alive bonus makes
+        # surviving strictly better than terminating.
+        self.alive_bonus = float(kwargs.get("alive_bonus", 0.0))
+        self.yaw_weight = float(kwargs.get("yaw_weight", 0.0))
+        self.yaw_scale = float(kwargs.get("yaw_scale", 0.5))
         self.progress_gate = 0.5 * self.length_scale
         self.stall_speed = float(kwargs.get("stall_speed", 2.0))
         # "equilibrium" spawns start near the drift equilibrium of the local
@@ -339,7 +350,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         la_converted = [convert(waypoints) for waypoints in la]
 
-        failed = (self.progress >= 5) & ((self.no_progress_count >= self.no_progress_limit)
+        # grace period instead of the original "progress >= 5" guard: the progress
+        # based guard never fires for a car that stops on the first waypoints
+        failed = (self.step_count > 10) & ((self.no_progress_count >= self.no_progress_limit)
                                         | (torch.abs(angle_diff) > 1.)
                                         | (torch.abs(signed_pos_diff) > self.length_scale))
         if self.train:
@@ -357,6 +370,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self._prev = self._now
         self._now = {
             "beta": beta, "v": v, "kappa": r / (v + 1e-6),   # true curvature: reward only
+            "r": r, "r_ref": v_est * kappa_ref,
             "vflx": vflx, "vfrx": vfrx,
             "delta": self.u_cmd[:, 0],
             "wheel": wheel_speed,
@@ -408,10 +422,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         rew_sf = - ((vfrx - wheel[:, 1]) / self.speed_scale) ** 2 \
                  - ((vflx - wheel[:, 0]) / self.speed_scale) ** 2
         rew_kappa = - ((now["kappa"] - kappa_ref) * s) ** 2
+        rew_yaw = - ((now["r"] - now["r_ref"]) / self.yaw_scale) ** 2
         rew_speed = - ((v - self.speed_target) / self.speed_target) ** 2
         rew_final = -is_failed
 
-        rew = self.pos_weight * rew_pos + self.dir_weight * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa + self.speed_weight * rew_speed
+        rew = self.pos_weight * rew_pos + self.dir_weight * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa + self.speed_weight * rew_speed + self.yaw_weight * rew_yaw + self.alive_bonus
         return rew
 
     def done(self):

@@ -79,6 +79,11 @@ parser.add_argument("--sigma-init", type=float, default=0.0,
 parser.add_argument("--entropy-coef", type=float, default=0.0)
 parser.add_argument("--dir-weight", type=float, default=0.5,
                     help="reward weight of the course (heading) error")
+parser.add_argument("--yaw-weight", type=float, default=0.0,
+                    help="reward weight of the yaw rate tracking term")
+parser.add_argument("--yaw-scale", type=float, default=0.5, help="normalisation of the yaw error [rad/s]")
+parser.add_argument("--alive-bonus", type=float, default=0.0,
+                    help="constant reward per surviving control step")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -109,6 +114,9 @@ default_env_config = {
     "beta_weight": args.beta_weight,
     "pos_weight": args.pos_weight,
     "dir_weight": args.dir_weight,
+    "yaw_weight": args.yaw_weight,
+    "alive_bonus": args.alive_bonus,
+    "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
     "spawn_speed": args.spawn_speed,
     "spawn_beta_frac": args.spawn_beta_frac,
