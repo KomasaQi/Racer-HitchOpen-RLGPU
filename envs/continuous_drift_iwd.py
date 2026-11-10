@@ -64,6 +64,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.beta_weight = float(kwargs.get("beta_weight", 1.6))
         self.pos_weight = float(kwargs.get("pos_weight", 2.4))
         self.progress_gate = 0.5 * self.length_scale
+        self.stall_speed = float(kwargs.get("stall_speed", 2.0))
         # "equilibrium" spawns start near the drift equilibrium of the local
         # reference (see gen_random_state); "legacy" keeps the XCAR wide
         # randomization.  spawn_speed is the target drift speed on the reference.
@@ -235,7 +236,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.where(on_path, self.step_progress,
                                          torch.zeros_like(self.step_progress))
         self.progress = (self.progress + self.step_progress)
-        stalled = (self.step_progress == 0) & on_path
+        # "stalled" means the car is actually stopped, not merely that the
+        # nearest reference point did not advance within a control step: a
+        # drifting car legitimately holds or loses ground for tens of steps while
+        # it slides, and XCAR's pure progress counter killed those episodes.
+        stalled = (self.step_progress == 0) & on_path & (self._v_hint < self.stall_speed)
         self.no_progress_count[~stalled] = 0
         self.no_progress_count[stalled] += 1
 
@@ -294,6 +299,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         veldir = torch.atan2(yd, xd)
         veldir[torch.hypot(xd, yd) < 0.01] = psi[torch.hypot(xd, yd) < 0.01]
 
+        self._v_hint = v
         self.find_nearest_waypoint(x, y, veldir, beta, kappa_est)
         angle_diff = self.angle_diff
         signed_pos_diff = self.signed_pos_diff
