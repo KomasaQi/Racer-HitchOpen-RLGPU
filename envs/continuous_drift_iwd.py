@@ -92,9 +92,23 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         for _ in range(3):
             scale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0, 1.0]
         self.obs_scale = torch.tensor(scale, device=self.device, dtype=torch.float32)
+        # privileged critic channels: beta, v, r, vx, vy, kappa, kappa_ref, r_ref,
+        # beta_ref, e_pos, e_dir, ax, ay, az, wheels, slip, fz, fy, commands
+        pscale = ([1.0, 0.1, 0.5, 0.1, 0.1, 1.0, 1.0, 0.5, 1.0, 1.0, 1.0,
+                   0.1, 0.1, 0.1]
+                  + [wheel_scale] * 4 + [0.5] * 4 + [0.3] * 4 + [0.3] * 4
+                  + list(ctrl_scale))
+        for _ in range(3):
+            pscale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0, 1.0]
+        self.priv_scale = torch.tensor(pscale, device=self.device, dtype=torch.float32)
         # "equilibrium" spawns start near the drift equilibrium of the local
         # reference (see gen_random_state); "legacy" keeps the XCAR wide
         # randomization.  spawn_speed is the target drift speed on the reference.
+        # Asymmetric actor critic: when enabled, reset/step return
+        # {"obs": actor_obs, "states": privileged_state} and the critic is a
+        # separate network that sees the drift / absolute state quantities the
+        # actor cannot measure.
+        self.asymmetric = bool(kwargs.get("asymmetric", False))
         self.spawn_mode = str(kwargs.get("spawn_mode", "equilibrium"))
         self.spawn_speed = float(kwargs.get("spawn_speed", 6.5))
         self.spawn_beta_frac = float(kwargs.get("spawn_beta_frac", 1.0))
@@ -108,6 +122,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.speed_weight = float(kwargs.get("speed_weight", 0.0))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
+        if self.asymmetric:
+            self.num_priv = 48
+            self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_priv,))
 
         dummy_obs = torch.zeros((self.n, self.num_states), device=self.device)
         self.recent_obs = [dummy_obs, dummy_obs]  # most recent first
@@ -412,6 +429,29 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         obs_list = [t.unsqueeze(1) for t in scalars]
         obs_list.extend(la_converted)
         obs = torch.cat(obs_list, 1) * self.obs_scale
+        if self.asymmetric:
+            # privileged critic input: everything the simulation knows and the
+            # car cannot measure (sideslip, absolute speed, tyre forces/slips)
+            slip = self.extras["slip"] if self.extras is not None else torch.zeros_like(wheel_speed)
+            fz = self.extras["fz"] if self.extras is not None else torch.zeros_like(wheel_speed)
+            fy = self.extras["fy_body"] if self.extras is not None else torch.zeros_like(wheel_speed)
+            priv = [
+                beta, v, r, self.s[:, 3], self.s[:, 4],
+                (r / (v + 1e-6)), kappa_ref, self._now["r_ref"], beta_ref,
+                signed_pos_diff / self.length_scale, angle_diff,
+                ax_acc, ay_acc, az_acc,
+            ]
+            priv_list = [t.unsqueeze(1) for t in priv]
+            priv_list.append(wheel_speed)
+            priv_list.append(slip)
+            priv_list.append(fz / 1000.0)
+            priv_list.append(fy / 1000.0)
+            priv_list.append(torch.stack(ctrl, dim=1))
+            # the preview is what makes the value estimate informative about the
+            # future; without it the privileged critic is blind to the path
+            priv_list.extend(la_converted)
+            states = torch.cat(priv_list, 1) * self.priv_scale
+            return {"obs": obs, "states": states}
         return obs
 
     def reward(self):

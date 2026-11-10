@@ -84,6 +84,8 @@ parser.add_argument("--yaw-weight", type=float, default=0.0,
 parser.add_argument("--yaw-scale", type=float, default=0.5, help="normalisation of the yaw error [rad/s]")
 parser.add_argument("--alive-bonus", type=float, default=0.0,
                     help="constant reward per surviving control step")
+parser.add_argument("--asymmetric", action="store_true",
+                    help="privileged critic on a separate network (no shared backbone)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -116,6 +118,7 @@ default_env_config = {
     "dir_weight": args.dir_weight,
     "yaw_weight": args.yaw_weight,
     "alive_bonus": args.alive_bonus,
+    "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
     "spawn_speed": args.spawn_speed,
@@ -202,6 +205,30 @@ runner_config["params"]["config"]["full_experiment_name"] = full_experiment_name
 runner_config["params"]["network"]["mlp"]["units"] = [args.mlp_size_last * i for i in (4, 2, 1)]
 runner_config["params"]["config"]["save_frequency"] = args.save_freq
 runner_config["params"]["config"]["entropy_coef"] = args.entropy_coef
+if args.asymmetric:
+    # Privileged critic: its own MLP over the drift related + absolute state
+    # channels, no shared backbone with the GRU actor.
+    runner_config["params"]["config"]["central_value_config"] = {
+        "minibatch_size": runner_config["params"]["config"]["minibatch_size"],
+        "mini_epochs": args.mini_epochs,
+        "learning_rate": 3.e-4,
+        "lr_schedule": None,
+        "clip_value": True,
+        "normalize_input": True,
+        "normalize_value": True,
+        "model": {"name": "central_value"},
+        "network": {
+            "name": "actor_critic",
+            "central_value": True,
+            "mlp": {
+                "units": [256, 128, 64],
+                "activation": "elu",
+                "initializer": {"name": "default"},
+                "regularizer": {"name": "None"},
+            },
+            "space": runner_config["params"]["network"]["space"],
+        },
+    }
 runner_config["params"]["network"]["space"]["continuous"]["sigma_init"]["val"] = args.sigma_init
 # rl_games uses `device` for the training algorithm. `device_name` is used by
 # the player, so keep both values aligned with the environment device.
