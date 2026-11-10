@@ -291,7 +291,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # "stalled" means the car is actually stopped (or crawling).  Tying it to
         # the reference progress instead let a 0.7 m/s crawl survive forever,
         # while killing drifting cars that legitimately lose ground for a moment.
-        stalled = on_path & (self._v_hint < self.stall_speed)
+        # A car that is slow but accelerating (recovering from a slide) is not
+        # stalled, so the longitudinal acceleration gates the counter.
+        ax_now = self.extras["ax"] if self.extras is not None else torch.zeros_like(self._v_hint)
+        stalled = on_path & (self._v_hint < self.stall_speed) & (ax_now < 0.5)
         self.no_progress_count[~stalled] = 0
         self.no_progress_count[stalled] += 1
 
