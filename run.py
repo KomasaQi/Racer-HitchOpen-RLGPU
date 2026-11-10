@@ -96,6 +96,10 @@ parser.add_argument("--course-fail", type=float, default=1.0,
                     help="course error failure threshold [rad]")
 parser.add_argument("--pos-cap", type=float, default=1.0,
                     help="saturation of the squared lateral error penalty")
+parser.add_argument("--yaw-cap", type=float, default=4.0,
+                    help="saturation of the squared yaw rate error")
+parser.add_argument("--kappa-cap", type=float, default=4.0,
+                    help="saturation of the squared curvature error")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -132,6 +136,8 @@ default_env_config = {
     "offpath_scale": args.offpath_scale,
     "course_fail": args.course_fail,
     "pos_cap": args.pos_cap,
+    "yaw_cap": args.yaw_cap,
+    "kappa_cap": args.kappa_cap,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,

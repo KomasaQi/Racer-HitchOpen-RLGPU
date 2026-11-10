@@ -135,6 +135,8 @@ def main():
     print(f"  failure reasons: no_progress {reason[0]}  course {reason[1]}  off_path {reason[2]}")
     print(f"  mean |beta - beta_ref| {sum(beta_err) / len(beta_err):.3f} rad "
           f"(last 100 steps {sum(beta_err[-100:]) / min(100, len(beta_err)):.3f})")
+    if getattr(env, "rew_stats", None):
+        print("  reward components", {k: round(v, 2) for k, v in env.rew_stats.items()})
     print(f"  mean speed {sum(v_hist) / len(v_hist):.2f} m/s  "
           f"alive fraction {sum(alive_hist) / len(alive_hist):.2f}")
 

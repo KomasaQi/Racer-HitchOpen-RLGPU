@@ -82,6 +82,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # configurable and can be tightened later (curriculum).
         self.offpath_limit = float(kwargs.get("offpath_scale", 1.0)) * self.length_scale
         self.pos_cap = float(kwargs.get("pos_cap", 1.0))
+        self.yaw_cap = float(kwargs.get("yaw_cap", 4.0))
+        self.kappa_cap = float(kwargs.get("kappa_cap", 4.0))
         self.course_limit = float(kwargs.get("course_fail", 1.0))
 
         n_ctrl = 3 if self.pedals else 4
@@ -494,12 +496,33 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         rew_lowspeed = torch.clamp(v, 0., 0.5 * self.speed_scale) - 0.5 * self.speed_scale
         rew_sf = - ((vfrx - wheel[:, 1]) / self.speed_scale) ** 2 \
                  - ((vflx - wheel[:, 0]) / self.speed_scale) ** 2
-        rew_kappa = - ((now["kappa"] - kappa_ref) * s) ** 2
-        rew_yaw = - ((now["r"] - now["r_ref"]) / self.yaw_scale) ** 2
+        # clamp both curvature and yaw terms: during a spin the instantaneous
+        # curvature / yaw error diverges and an unbounded square reached -100 per
+        # step, swamping the alive bonus and every other term
+        rew_kappa = - torch.clamp(((now["kappa"] - kappa_ref) * s) ** 2, max=self.kappa_cap)
+        rew_yaw = - torch.clamp(((now["r"] - now["r_ref"]) / self.yaw_scale) ** 2, max=self.yaw_cap)
         rew_speed = - ((v - self.speed_target) / self.speed_target) ** 2
         rew_final = -is_failed
 
-        rew = self.pos_weight * rew_pos + self.dir_weight * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa + self.speed_weight * rew_speed + self.yaw_weight * rew_yaw + self.alive_bonus
+        terms = {
+            "pos": self.pos_weight * rew_pos,
+            "dir": self.dir_weight * rew_dir,
+            "prog": 0.2 * rew_prog,
+            "smooth": 0.015 * rew_smooth,
+            "beta": self.beta_weight * rew_beta,
+            "lowspeed": 0.1 * rew_lowspeed,
+            "sf": 0.005 * rew_sf,
+            "kappa": 0.15 * rew_kappa,
+            "speed": self.speed_weight * rew_speed,
+            "yaw": self.yaw_weight * rew_yaw,
+            "alive": torch.full_like(rew_pos, self.alive_bonus),
+        }
+        rew = torch.zeros_like(rew_pos)
+        for term in terms.values():
+            rew = rew + term
+        # diagnostics: running mean of every reward component (read by eval.py)
+        with torch.no_grad():
+            self.rew_stats = {k: float(t.detach().mean()) for k, t in terms.items()}
         return rew
 
     def done(self):
