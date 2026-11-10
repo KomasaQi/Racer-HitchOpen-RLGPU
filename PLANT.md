@@ -307,3 +307,15 @@ the specified horizon is not the limiter); low-friction and tight-radius biased
 domain randomisation (the weak cell is a physical limit, not a coverage gap); a
 speed target below 3.5 m/s or above 4.5 m/s; and forcing a larger sideslip
 (demanding 0.40 rad leaves the actual sideslip at 0.09 rad).
+**Critic capacity.** The critic is not part of the fixed specification, so its
+width is a free parameter (`--critic-units`).  A 512-256-128 critic reaches a
+reward of 150 after 100 epochs where the 256-128-64 critic needs 500 to reach 64,
+i.e. value capacity is a real lever, but the resulting policy trades differently:
+
+| critic | R 14-18 m | R 11-14 m | R 8-11 m |
+|---|---|---|---|
+| 256-128-64 (archived policy) | 10.8 s, 0.097 | 10.1 s, 0.096 | **9.3 s, 0.101** |
+| 512-256-128 (140 epochs) | **11.3 s, 0.161** | 9.5 s, 0.165 | 7.1 s, 0.167 |
+
+The wider critic is better on the large circles but pays on the tight ones and on
+the sideslip error, so the archived policy keeps the narrower critic.
