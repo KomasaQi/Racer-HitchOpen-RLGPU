@@ -106,6 +106,10 @@ parser.add_argument("--beta-gate-scale", type=float, default=0.8,
                     help="lateral error (vehicle lengths) at which the demanded drift fades out")
 parser.add_argument("--recover-weight", type=float, default=0.0,
                     help="weight of the lateral error reduction (potential) term")
+parser.add_argument("--kappa-weight", type=float, default=0.15,
+                    help="weight of the curvature (yaw rate / speed) tracking term")
+parser.add_argument("--pp-weight", type=float, default=0.0,
+                    help="weight of the pure pursuit steering reference")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -147,6 +151,8 @@ default_env_config = {
     "curv_scale": args.curv_scale,
     "beta_gate_scale": args.beta_gate_scale,
     "recover_weight": args.recover_weight,
+    "kappa_weight": args.kappa_weight,
+    "pp_weight": args.pp_weight,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,

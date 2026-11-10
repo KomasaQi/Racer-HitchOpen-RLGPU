@@ -51,6 +51,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # units and multiplied by ``length_scale`` on the way in, everything
         # with the unit of time by ``speed_scale = sqrt(length_scale)``.
         wheelbase = float(self.preset["lF"] + self.preset["lR"])
+        self.wheelbase = wheelbase
         self.length_scale = wheelbase / 0.35
         self.speed_scale = math.sqrt(self.length_scale)
         self.speed_ref = 10.0 * self.speed_scale
@@ -87,6 +88,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.course_limit = float(kwargs.get("course_fail", 1.0))
         self.beta_gate_scale = float(kwargs.get("beta_gate_scale", 0.8))
         self.recover_weight = float(kwargs.get("recover_weight", 0.0))
+        self.kappa_weight = float(kwargs.get("kappa_weight", 0.15))
+        self.pp_weight = float(kwargs.get("pp_weight", 0.0))
 
         n_ctrl = 3 if self.pedals else 4
         self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 15
@@ -400,6 +403,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         la_converted = [convert(waypoints) for waypoints in la]
 
+        # Pure pursuit steering for the middle preview point: delta_pp is the
+        # steering angle that would put the car on a circular arc through that
+        # point.  It is computable on the car from the preview alone, and serves
+        # as the "steer towards the line" reference for the reward.
+        # Sign: positive steering turns right, so the lateral offset is negated.
+        pp = la_converted[1]
+        ld2 = (pp[:, 0] ** 2 + pp[:, 1] ** 2).clamp(min=1e-3)
+        self.delta_pp = -torch.atan2(2.0 * self.wheelbase * pp[:, 1], ld2)
+
         # grace period instead of the original "progress >= 5" guard: the progress
         # based guard never fires for a car that stops on the first waypoints
         failed = (self.step_count > 10) & ((self.no_progress_count >= self.no_progress_limit)
@@ -506,6 +518,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # demanded sideslip fades out as the lateral error grows, i.e. drift on
         # the line, straighten to come back.
         beta_gate = torch.clamp(1.0 - (signed_pos_diff / (self.beta_gate_scale * s)) ** 2, 0.0, 1.0)
+        # pure pursuit tracking: the steering that would follow the preview point
+        rew_pp = - torch.clamp(((delta - self.delta_pp) / 0.3) ** 2, max=4.0)
         rew_beta = - (beta - self.beta_ref * beta_gate) ** 2
         # Potential based recovery term: reward REDUCING the lateral error, not
         # just having a small one.  The static quadratic gives no direction at the
@@ -528,13 +542,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         terms = {
             "pos": self.pos_weight * rew_pos,
             "recover": self.recover_weight * rew_recover,
+            "pure_pursuit": self.pp_weight * rew_pp,
             "dir": self.dir_weight * rew_dir,
             "prog": 0.2 * rew_prog,
             "smooth": 0.015 * rew_smooth,
             "beta": self.beta_weight * rew_beta,
             "lowspeed": 0.1 * rew_lowspeed,
             "sf": 0.005 * rew_sf,
-            "kappa": 0.15 * rew_kappa,
+            "kappa": self.kappa_weight * rew_kappa,
             "speed": self.speed_weight * rew_speed,
             "yaw": self.yaw_weight * rew_yaw,
             "alive": torch.full_like(rew_pos, self.alive_bonus),
