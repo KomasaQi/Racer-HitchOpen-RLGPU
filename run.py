@@ -86,6 +86,8 @@ parser.add_argument("--alive-bonus", type=float, default=0.0,
                     help="constant reward per surviving control step")
 parser.add_argument("--asymmetric", action="store_true",
                     help="privileged critic on a separate network (no shared backbone)")
+parser.add_argument("--resume", type=str, default=None,
+                    help="checkpoint to warm start training from (curriculum continuation)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -245,9 +247,10 @@ else:
 
 if __name__ == "__main__":
     if args.train_or_test == "train":
-        runner.run({
-            'train': True,
-        })
+        run_args = {'train': True}
+        if args.resume is not None:
+            run_args['checkpoint'] = args.resume
+        runner.run(run_args)
     elif args.train_or_test == "test":
         checkpoint_dir = f"runs/{full_experiment_name}/nn"
         if args.epoch_index == -1:
