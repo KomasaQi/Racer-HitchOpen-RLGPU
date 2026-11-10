@@ -63,6 +63,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.beta_scale = float(kwargs.get("beta_scale", 1.0))
         self.beta_weight = float(kwargs.get("beta_weight", 1.6))
         self.pos_weight = float(kwargs.get("pos_weight", 2.4))
+        self.dir_weight = float(kwargs.get("dir_weight", 0.5))
         self.progress_gate = 0.5 * self.length_scale
         self.stall_speed = float(kwargs.get("stall_speed", 2.0))
         # "equilibrium" spawns start near the drift equilibrium of the local
@@ -236,11 +237,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.where(on_path, self.step_progress,
                                          torch.zeros_like(self.step_progress))
         self.progress = (self.progress + self.step_progress)
-        # "stalled" means the car is actually stopped, not merely that the
-        # nearest reference point did not advance within a control step: a
-        # drifting car legitimately holds or loses ground for tens of steps while
-        # it slides, and XCAR's pure progress counter killed those episodes.
-        stalled = (self.step_progress == 0) & on_path & (self._v_hint < self.stall_speed)
+        # "stalled" means the car is actually stopped (or crawling).  Tying it to
+        # the reference progress instead let a 0.7 m/s crawl survive forever,
+        # while killing drifting cars that legitimately lose ground for a moment.
+        stalled = on_path & (self._v_hint < self.stall_speed)
         self.no_progress_count[~stalled] = 0
         self.no_progress_count[stalled] += 1
 
@@ -411,7 +411,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         rew_speed = - ((v - self.speed_target) / self.speed_target) ** 2
         rew_final = -is_failed
 
-        rew = self.pos_weight * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa + self.speed_weight * rew_speed
+        rew = self.pos_weight * rew_pos + self.dir_weight * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa + self.speed_weight * rew_speed
         return rew
 
     def done(self):

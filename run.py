@@ -74,6 +74,11 @@ parser.add_argument("--speed-weight", type=float, default=0.0,
                     help="weight of the speed regulation term around --speed-target")
 parser.add_argument("--speed-target", type=float, default=None,
                     help="speed target of the regulation term (default: spawn speed)")
+parser.add_argument("--sigma-init", type=float, default=0.0,
+                    help="initial log std of the action distribution (0 -> std 1.0)")
+parser.add_argument("--entropy-coef", type=float, default=0.0)
+parser.add_argument("--dir-weight", type=float, default=0.5,
+                    help="reward weight of the course (heading) error")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -103,6 +108,7 @@ default_env_config = {
     "beta_scale": args.beta_scale,
     "beta_weight": args.beta_weight,
     "pos_weight": args.pos_weight,
+    "dir_weight": args.dir_weight,
     "spawn_mode": args.spawn_mode,
     "spawn_speed": args.spawn_speed,
     "spawn_beta_frac": args.spawn_beta_frac,
@@ -187,6 +193,8 @@ runner_config["params"]["config"]["name"] = args.env
 runner_config["params"]["config"]["full_experiment_name"] = full_experiment_name
 runner_config["params"]["network"]["mlp"]["units"] = [args.mlp_size_last * i for i in (4, 2, 1)]
 runner_config["params"]["config"]["save_frequency"] = args.save_freq
+runner_config["params"]["config"]["entropy_coef"] = args.entropy_coef
+runner_config["params"]["network"]["space"]["continuous"]["sigma_init"]["val"] = args.sigma_init
 # rl_games uses `device` for the training algorithm. `device_name` is used by
 # the player, so keep both values aligned with the environment device.
 runner_config["params"]["config"]["device"] = args.device
