@@ -302,7 +302,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         vfrx = self.es[:, 9]
         wheel_speed = self.s[:, 6:10] * self.wheel_radius       # encoder measurement
         # curvature estimate from measurable signals (yaw rate / wheel speed)
-        v_est = wheel_speed.mean(dim=1).clamp(min=0.5)
+        # Use the FRONT wheels for the speed estimate: during a drift the rear
+        # wheels spin far above the ground speed, so averaging all four
+        # over-estimates the speed by ~50 % and makes r_ref = v_est*kappa_ref
+        # drive the policy into over-rotation (the observed course failures).
+        v_est = wheel_speed[:, :2].mean(dim=1).clamp(min=0.5)
         kappa_est = r / v_est
 
         xd = self.s[:, 3]
