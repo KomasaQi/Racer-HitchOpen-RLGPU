@@ -118,6 +118,8 @@ parser.add_argument("--obs-privileged", action="store_true",
                     help="append beta/V/vx/vy to the actor observation (upper bound)")
 parser.add_argument("--speed-hinge", action="store_true",
                     help="one sided linear speed penalty instead of the quadratic")
+parser.add_argument("--critic-units", type=str, default="256,128,64",
+                    help="hidden units of the privileged critic MLP")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -287,7 +289,7 @@ if args.asymmetric:
             "name": "actor_critic",
             "central_value": True,
             "mlp": {
-                "units": [256, 128, 64],
+                "units": [int(u) for u in args.critic_units.split(",")],
                 "activation": "elu",
                 "initializer": {"name": "default"},
                 "regularizer": {"name": "None"},
