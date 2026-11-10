@@ -56,6 +56,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.speed_ref = 10.0 * self.speed_scale
         # "no progress" (0.2 s for the XCAR) stretched with the vehicle time scale
         self.no_progress_limit = max(int(round(0.2 * self.speed_scale / self.dt)), 2)
+        # Reference sideslip magnitude.  XCAR asks for +-1 rad (57 deg); with a
+        # 26 deg steering limit a 57 deg sustained drift needs ~46 deg of
+        # countersteer, which this car does not have, so the target is scaled to
+        # what the vehicle can hold (--beta-scale 1.0 restores the XCAR value).
+        self.beta_scale = float(kwargs.get("beta_scale", 1.0))
+        self.beta_weight = float(kwargs.get("beta_weight", 1.6))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
 
@@ -170,12 +176,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
     def _scale_waypoints(self, wp):
         """Scale an XCAR-sized reference geometry to this vehicle's size."""
-        if abs(self.length_scale - 1.0) < 1e-9:
-            return wp
         out = wp.clone()
-        out[..., 0] *= self.length_scale
-        out[..., 1] *= self.length_scale
-        out[..., 4] /= self.length_scale
+        if abs(self.length_scale - 1.0) > 1e-9:
+            out[..., 0] *= self.length_scale
+            out[..., 1] *= self.length_scale
+            out[..., 4] /= self.length_scale
+        if abs(self.beta_scale - 1.0) > 1e-9:
+            out[..., 3] *= self.beta_scale
         return out
 
     def update_recent_obs(self, obs):
@@ -371,7 +378,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         rew_kappa = - ((now["kappa"] - kappa_ref) * s) ** 2
         rew_final = -is_failed
 
-        rew = 2.4 * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + 1.6 * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa
+        rew = 2.4 * rew_pos + 0.5 * rew_dir + 0.2 * rew_prog + 0.015 * rew_smooth + self.beta_weight * rew_beta + 0.1 * rew_lowspeed + 0.005 * rew_sf + 0.15 * rew_kappa
         return rew
 
     def done(self):
@@ -427,7 +434,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             y += 0.1 * self.length_scale * torch.randn_like(y)
 
             random_V = torch.rand(prog.shape, device=self.device) * 3 * self.speed_scale
-            random_beta = torch.sign(beta) * torch.rand(prog.shape, device=self.device)
+            random_beta = torch.sign(beta) * torch.rand(prog.shape, device=self.device) * self.beta_scale
 
             psi = veldir - random_beta
             psi += 0.1 * torch.randn_like(psi)

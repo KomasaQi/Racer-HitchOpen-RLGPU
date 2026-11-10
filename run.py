@@ -58,6 +58,10 @@ parser.add_argument("--aux-reward-decay-steps", type=int, default=0)
 parser.add_argument("--aux-reward-coef", type=float, default=1.)
 parser.add_argument("--env-variant", type=str, default="")
 parser.add_argument("--ref-mode", type=str, default="hybrid")
+parser.add_argument("--beta-scale", type=float, default=1.0,
+                    help="scale of the reference sideslip target (1.0 = XCAR, +-1 rad)")
+parser.add_argument("--beta-weight", type=float, default=1.6,
+                    help="reward weight of the sideslip tracking term")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -84,6 +88,8 @@ default_env_config = {
     "plant": args.plant,
     "control_mode": args.control_mode,
     "physics_dt": args.physics_dt,
+    "beta_scale": args.beta_scale,
+    "beta_weight": args.beta_weight,
     "disturbance_param": (0.97, 0.03) if args.disturbed else None,
     "randomize_param": {
         None: {},
