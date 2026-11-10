@@ -20,10 +20,13 @@ class TrajGen:
         
         curvature = (torch.rand_like(threshold, device=self.device) * 0.36 + 0.7) * torch.sign(torch.randn_like(threshold))
         
-        # We need to loop through the trajectories since torch.bucketize expects 1D boundaries per sample
-        kappa = torch.zeros((num_scenes, self.num_waypoints), device=self.device)
-        for i in range(num_scenes):
-            kappa[i] = curvature[i][torch.bucketize(s, threshold[i])]
+        # Vectorised segment lookup. ``torch.searchsorted`` accepts a batched
+        # sorted sequence, which replaces the per-scene python loop.  That loop
+        # launched one kernel per scene and dominated the cost of every episode
+        # reset once thousands of environments finished episodes in parallel.
+        query = s.unsqueeze(0).expand(num_scenes, -1)
+        seg = torch.searchsorted(threshold.contiguous(), query).clamp(max=threshold.shape[1] - 1)
+        kappa = torch.gather(curvature, 1, seg)                        # (n, W)
         
         # Integrate curvature to get heading angle theta
         theta = torch.cumsum(kappa * ds, dim=1)  # Numeric integration of kappa to get angle

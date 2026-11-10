@@ -41,6 +41,8 @@ parser.add_argument("--seed", type=int, default=2025)
 parser.add_argument("--exp-name", type=str, default="default")
 parser.add_argument("--epochs", type=int, default=1000)
 parser.add_argument("--num-parallel", type=int, default=16384)
+parser.add_argument("--minibatch", type=int, default=65536,
+                    help="PPO minibatch size; capped at num_parallel*horizon")
 parser.add_argument("--lr-schedule", type=str, default="adaptive")
 parser.add_argument("--mini-epochs", type=int, default=5)
 parser.add_argument("--mlp-size-last", type=int, default=64)
@@ -95,6 +97,13 @@ default_env_config = {
             "C": [2, 2.5],
             "D": [0.3, 0.4],
         },
+        # full-size EV preset: +/-20 % on the Magic Formula shape and +/-10 % peak
+        # friction, loosely following the XCAR paper's tire randomization
+        "ev": {
+            "B": [8., 12.],
+            "C": [1.7, 2.1],
+            "D": [0.9, 1.1],
+        },
     }[args.randomize_tyre],
     "random_seed": args.seed,
     "quiet": args.quiet,
@@ -140,7 +149,9 @@ full_experiment_name = args.env + "_" + args.exp_name
 runner_config["params"]["seed"] = args.seed
 runner_config["params"]["config"]["num_actors"] = args.num_parallel
 runner_config["params"]["config"]["max_epochs"] = args.epochs
-runner_config["params"]["config"]["minibatch_size"] = args.num_parallel
+batch = args.num_parallel * args.horizon
+runner_config["params"]["config"]["minibatch_size"] = max(
+    min(args.minibatch, batch), min(batch, 1024))
 runner_config["params"]["config"]["games_to_track"] = args.num_parallel
 runner_config["params"]["config"]["mini_epochs"] = args.mini_epochs
 runner_config["params"]["config"]["lr_schedule"] = args.lr_schedule
