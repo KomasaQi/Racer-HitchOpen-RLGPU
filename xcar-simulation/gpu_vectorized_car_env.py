@@ -130,6 +130,10 @@ class GPUVectorizedCarEnv:
                     dtype=np.float32)
                 self.cast_action = lambda u: u
             self.plant = FastRacerPlant(self.preset, self.n, device=self.device)
+            grip = kwargs.get("grip_scale", None)
+            if grip is not None:
+                # uniform tyre friction multiplier (road/tyre grip level)
+                self.plant.tyre_scale = torch.full((self.n, 1), float(grip), device=self.device)
             self.num_states = 10
 
         # -------------------------------------------------------------- state

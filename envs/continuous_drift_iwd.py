@@ -70,6 +70,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.spawn_mode = str(kwargs.get("spawn_mode", "equilibrium"))
         self.spawn_speed = float(kwargs.get("spawn_speed", 6.5))
         self.spawn_beta_frac = float(kwargs.get("spawn_beta_frac", 1.0))
+        self.spawn_beta_noise = float(kwargs.get("spawn_beta_noise", 0.10))
+        self.spawn_speed_noise = float(kwargs.get("spawn_speed_noise", 0.10))
         # Speed regulation around the drift operating speed.  XCAR's rspeed only
         # punishes V < 0.5 m/s, which at our scale (drift speed ~6.5 m/s) leaves
         # "slow down until the drift collapses" as a reward improving local
@@ -469,8 +471,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # a 7.6x larger car means dropping it into arbitrary spins; the
                 # policy then never sees the equilibrium it has to hold, so the
                 # task becomes recovering from a spin rather than drifting.
-                beta0 = beta * self.spawn_beta_frac * torch.clamp(1.0 + 0.25 * torch.randn_like(beta), 0.3, 1.4)
-                v0 = self.spawn_speed * torch.clamp(1.0 + 0.20 * torch.randn_like(beta), 0.5, 1.6)
+                beta0 = beta * self.spawn_beta_frac * torch.clamp(
+                    1.0 + self.spawn_beta_noise * torch.randn_like(beta), 0.4, 1.4)
+                v0 = self.spawn_speed * torch.clamp(
+                    1.0 + self.spawn_speed_noise * torch.randn_like(beta), 0.6, 1.3)
                 psi = veldir - beta0 + 0.1 * torch.randn_like(veldir)
                 xd = v0 * torch.cos(beta0 + psi)
                 yd = v0 * torch.sin(beta0 + psi)
@@ -508,6 +512,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             if self.disturbance_param is not None:
                 self.tyre_scale[is_done] = 1.0
         self.is_done[:] = 0
+        if self.plant_name == "fast":
+            # Refresh the extended (diagnostic / reward) state for the respawned
+            # envs.  Without this the first reward after a reset is computed from
+            # the previous episode's state, and any controller that reads ``es``
+            # sees stale values on the spawn step.
+            self.es = self.plant.extended_state(self.s, self.u_cmd)
 
     def step(self, action, **kwargs):
         if self.train:
