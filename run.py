@@ -102,6 +102,8 @@ parser.add_argument("--kappa-cap", type=float, default=4.0,
                     help="saturation of the squared curvature error")
 parser.add_argument("--curv-scale", type=float, default=1.0,
                     help="multiplier on the hybrid reference curvature (1/radius)")
+parser.add_argument("--curv-scale-range", type=str, default=None,
+                    help="per path curvature scale range, e.g. 0.55,1.1 (randomised radius)")
 parser.add_argument("--beta-gate-scale", type=float, default=0.8,
                     help="lateral error (vehicle lengths) at which the demanded drift fades out")
 parser.add_argument("--recover-weight", type=float, default=0.0,
@@ -150,7 +152,8 @@ default_env_config = {
     "pos_cap": args.pos_cap,
     "yaw_cap": args.yaw_cap,
     "kappa_cap": args.kappa_cap,
-    "curv_scale": args.curv_scale,
+    "curv_scale": (tuple(float(x) for x in args.curv_scale_range.split(","))
+                   if args.curv_scale_range else args.curv_scale),
     "beta_gate_scale": args.beta_gate_scale,
     "recover_weight": args.recover_weight,
     "kappa_weight": args.kappa_weight,

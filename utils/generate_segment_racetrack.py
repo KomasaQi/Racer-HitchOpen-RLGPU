@@ -26,7 +26,13 @@ class TrajGen:
         # multiplies the curvature, i.e. divides the radii, so the reference can
         # be moved towards the larger drift circles used in real vehicle
         # experiments without touching the vehicle scaling.
+        # curv_scale can be a scalar or a (lo, hi) pair; in the paired case every
+        # scene draws its own radius so one bank spans the whole radius range
+        # (domain randomisation over the trajectory size).
         curv_scale = getattr(self, "curv_scale", 1.0)
+        if isinstance(curv_scale, (tuple, list)):
+            lo, hi = curv_scale
+            curv_scale = (torch.rand((num_scenes, 1), device=self.device) * (hi - lo) + lo)
         curvature = (torch.rand_like(threshold, device=self.device) * 0.36 + 0.7) * curv_scale * torch.sign(torch.randn_like(threshold))
         
         # Vectorised segment lookup. ``torch.searchsorted`` accepts a batched
