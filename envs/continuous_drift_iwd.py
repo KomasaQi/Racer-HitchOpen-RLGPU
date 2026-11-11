@@ -98,7 +98,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.yaw_cap = float(kwargs.get("yaw_cap", 4.0))
         self.kappa_cap = float(kwargs.get("kappa_cap", 4.0))
         self.course_limit = float(kwargs.get("course_fail", 1.0))
-        self.beta_gate_scale = float(kwargs.get("beta_gate_scale", 0.8))
+        # 0 disables the gate: the reward then targets beta_ref exactly
+        self.beta_gate_scale = float(kwargs.get("beta_gate_scale", 0.0))
         self.recover_weight = float(kwargs.get("recover_weight", 0.0))
         self.kappa_weight = float(kwargs.get("kappa_weight", 0.15))
         self.pp_weight = float(kwargs.get("pp_weight", 0.0))
@@ -149,6 +150,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # Speed-deficit curriculum: a fraction of the spawns start below the
         # reference speed so the policy has to LEARN TO REGAIN it.  The dominant
         # failure at the moment is "4 m/s -> 1 m/s in a second and never back".
+        self.spawn_beta_mag = float(kwargs.get("spawn_beta_mag", 0.15))
         self.spawn_speed_min = float(kwargs.get("spawn_speed_min", self.spawn_speed))
         self.spawn_deficit_frac = float(kwargs.get("spawn_deficit_frac", 0.0))
         # Speed regulation around the drift operating speed.  XCAR's rspeed only
@@ -491,7 +493,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # preview is 2.3 s at 4 m/s but only 0.85 s at 10 m/s).
         if self.preview_time is not None:
             ds_wp = self.waypoint_ds
-            offs = (v.unsqueeze(1) * self.preview_time.unsqueeze(0) / ds_wp).round().long()
+            # use the ENCODER-derived speed, not the true speed: the preview
+            # positions are actor-visible, so the true speed must not leak into
+            # them through the time headway.
+            offs = (v_est.unsqueeze(1) * self.preview_time.unsqueeze(0) / ds_wp).round().long()
             offs = offs.clamp(min=1, max=self.num_waypoints // 4)
             if self.train:
                 la_inds = [(self.progress.unsqueeze(1) + offs[:, k:k + 1]).clamp(0, self.num_waypoints - 1)
@@ -691,7 +696,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         beta_gate = torch.clamp(1.0 - (signed_pos_diff / (self.beta_gate_scale * s)) ** 2, 0.0, 1.0)
         # pure pursuit tracking: the steering that would follow the preview point
         rew_pp = - torch.clamp(((delta - self.delta_pp) / 0.3) ** 2, max=4.0)
-        rew_beta = - (beta - self.beta_ref * beta_gate) ** 2
+        # the gate is optional: with the geometry-derived reference the reward
+        # should target exactly beta_ref, so the gate is disabled when its scale is 0
+        beta_target = self.beta_ref * beta_gate if self.beta_gate_scale > 0 else self.beta_ref
+        rew_beta = - (beta - beta_target) ** 2
         # Potential based recovery term: reward REDUCING the lateral error, not
         # just having a small one.  The static quadratic gives no direction at the
         # operating point and the car never learns to come back to the line.
@@ -842,7 +850,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # a 7.6x larger car means dropping it into arbitrary spins; the
                 # policy then never sees the equilibrium it has to hold, so the
                 # task becomes recovering from a spin rather than drifting.
-                beta0 = beta * self.spawn_beta_frac * torch.clamp(
+                # the spawn sideslip is its own distribution, NOT the path beta
+                # column (which is now only a legacy slot)
+                beta0 = -torch.sign(kappa) * self.spawn_beta_mag * torch.clamp(
                     1.0 + self.spawn_beta_noise * torch.randn_like(beta), 0.4, 1.4)
                 deficit = (torch.rand_like(beta) < self.spawn_deficit_frac)
                 v_low = self.spawn_speed_min + (self.spawn_speed - self.spawn_speed_min) * torch.rand_like(beta)
