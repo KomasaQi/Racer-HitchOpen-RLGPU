@@ -145,6 +145,8 @@ parser.add_argument("--speed-target-mode", type=str, default="signal",
                     help="limit derives the target from sqrt(mu g / |kappa|)")
 parser.add_argument("--speed-margin", type=float, default=0.9,
                     help="fraction of the friction-limit speed used as the target")
+parser.add_argument("--speed-cap", type=float, default=None,
+                    help="upper clamp on the friction-limit speed target")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -209,6 +211,7 @@ default_env_config = {
     "spawn_deficit_frac": args.spawn_deficit_frac,
     "speed_target_mode": args.speed_target_mode,
     "speed_margin": args.speed_margin,
+    "speed_cap": (args.speed_cap if args.speed_cap is not None else float("inf")),
     "speed_weight": args.speed_weight,
     "speed_target": (args.speed_target if args.speed_target is not None
                      else args.spawn_speed),

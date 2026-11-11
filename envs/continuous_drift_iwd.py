@@ -151,6 +151,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # drive AT the limit of adhesion instead of at an arbitrary speed.
         self.speed_target_mode = str(kwargs.get("speed_target_mode", "signal"))
         self.speed_margin = float(kwargs.get("speed_margin", 0.9))
+        # The limit target assumes the full mu can be used laterally, but the car
+        # sustains only a light sideslip, so at high grip it becomes too
+        # optimistic (measured: 9.3 m/s at mu 1.25 with 30 % full length).  The cap
+        # keeps the target inside what the drift envelope allows.
+        self.speed_cap = float(kwargs.get("speed_cap", float("inf")))
         self.speed_weight = float(kwargs.get("speed_weight", 0.0))
         self.speed_hinge = bool(kwargs.get("speed_hinge", False))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
@@ -602,7 +607,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # which is exactly the adaptive behaviour we want.
             mu = self.plant.tyre_scale.squeeze(1).clamp(0.3, 1.8)
             kap = self.kappa_ref.abs().clamp(min=1e-2)
-            v_tgt = (self.speed_margin * torch.sqrt(mu * 9.81 / kap)).clamp(2.0, 30.0)
+            v_tgt = (self.speed_margin * torch.sqrt(mu * 9.81 / kap)).clamp(2.0, self.speed_cap)
         else:
             v_tgt = self.speed_target
         if self.speed_hinge:
