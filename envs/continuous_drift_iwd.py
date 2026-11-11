@@ -158,6 +158,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             cs = kwargs.get("curv_scale", 1.0)
             self.trajectory_generator.curv_scale = cs if isinstance(cs, (tuple, list)) else float(cs)
             self.trajectory_generator.seg_scale = float(kwargs.get("seg_scale", 1.0))
+            self.trajectory_generator.curv_smooth = int(kwargs.get("curv_smooth", 0))
             self.num_paths = int(kwargs.get("num_paths", 256))
             self.path_bank = self._scale_waypoints(
                 self.trajectory_generator.generate_random_waypoints(self.num_paths))
@@ -257,6 +258,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
         self.stall_move_min = 1.0
         self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
+        self.preview_scale = float(kwargs.get("preview_scale", 1.0))
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)   # 0 = not done, 1 = failed, 2 = succeeded
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
@@ -396,11 +398,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         # look ahead 3m (scaled with the reference geometry)
         if self.train:
-            la_inds = [(self.progress + i).unsqueeze(-1) for i in (200, 400, 600)]
+            la_inds = [(self.progress + i).unsqueeze(-1)
+                       for i in (int(200 * self.preview_scale), int(400 * self.preview_scale),
+                                 int(600 * self.preview_scale))]
             for la_ind in la_inds:
                 la_ind[la_ind >= self.num_waypoints] = self.num_waypoints - 1
         else:
-            la_inds = [(self.progress + i).unsqueeze(-1) % self.num_waypoints for i in (200, 400, 600)]
+            la_inds = [(self.progress + i).unsqueeze(-1) % self.num_waypoints
+                       for i in (int(200 * self.preview_scale), int(400 * self.preview_scale),
+                                 int(600 * self.preview_scale))]
         la = [self.waypoints_at(la_ind).squeeze(1) for la_ind in la_inds]
 
         def convert(waypoints):
@@ -616,6 +622,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
         self.stall_move_min = 1.0
         self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
+        self.preview_scale = float(kwargs.get("preview_scale", 1.0))
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None

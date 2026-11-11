@@ -42,6 +42,18 @@ class TrajGen:
         query = s.unsqueeze(0).expand(num_scenes, -1)
         seg = torch.searchsorted(threshold.contiguous(), query.contiguous()).clamp(max=threshold.shape[1] - 1)
         kappa = torch.gather(curvature, 1, seg)                        # (n, W)
+
+        # Curvature smoothing: the generator draws a piecewise CONSTANT curvature
+        # with an independent random sign per segment, so kappa jumps
+        # discontinuously at every boundary (a sign flip asks for a yaw rate jump
+        # of about 2*V*kappa = 0.6-1.0 rad/s).  A moving average of width W turns
+        # each jump into a linear ramp, i.e. a clothoid-like transition, which is
+        # what a real reference would have.
+        smooth_w = int(getattr(self, "curv_smooth", 0))
+        if smooth_w > 1:
+            import torch.nn.functional as Fn
+            kern = torch.ones(1, 1, smooth_w, device=self.device) / smooth_w
+            kappa = Fn.conv1d(kappa.unsqueeze(1), kern, padding=smooth_w // 2).squeeze(1)
         
         # Integrate curvature to get heading angle theta
         theta = torch.cumsum(kappa * ds, dim=1)  # Numeric integration of kappa to get angle

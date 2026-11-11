@@ -124,6 +124,10 @@ parser.add_argument("--seq-length", type=int, default=8,
                     help="recurrent chunk length for BPTT; must divide --horizon")
 parser.add_argument("--num-paths", type=int, default=256,
                     help="how many reference geometries the bank holds")
+parser.add_argument("--curv-smooth", type=int, default=0,
+                    help="moving average width (waypoints) applied to the reference curvature")
+parser.add_argument("--preview-scale", type=float, default=1.0,
+                    help="multiplier on the preview distances (1 = 200/400/600 waypoints)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -172,6 +176,8 @@ default_env_config = {
     "obs_privileged": args.obs_privileged,
     "seq_length": args.seq_length,
     "num_paths": args.num_paths,
+    "curv_smooth": args.curv_smooth,
+    "preview_scale": args.preview_scale,
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
