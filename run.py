@@ -233,6 +233,13 @@ default_env_config = {
             "D": [0.9, 1.1],
         },
         # "different road surfaces": peak friction 0.75 - 1.25
+        # high friction biased: the evaluated weak spot is the grippy surface,
+        # where the policy prefers grip driving over the reference sideslip
+        "ev_high": {
+            "B": [7., 13.],
+            "C": [1.6, 2.2],
+            "D": [1.05, 1.40],
+        },
         "ev_wide": {
             "B": [7., 13.],
             "C": [1.6, 2.2],
