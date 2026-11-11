@@ -122,6 +122,8 @@ parser.add_argument("--critic-units", type=str, default="256,128,64",
                     help="hidden units of the privileged critic MLP")
 parser.add_argument("--seq-length", type=int, default=8,
                     help="recurrent chunk length for BPTT; must divide --horizon")
+parser.add_argument("--num-paths", type=int, default=256,
+                    help="how many reference geometries the bank holds")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -169,6 +171,7 @@ default_env_config = {
     "seg_scale": args.seg_scale,
     "obs_privileged": args.obs_privileged,
     "seq_length": args.seq_length,
+    "num_paths": args.num_paths,
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
