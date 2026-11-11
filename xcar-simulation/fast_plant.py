@@ -547,11 +547,17 @@ class FastRacerPlant:
 
         psi = s[:, 2]
         c, sn = torch.cos(psi), torch.sin(psi)
+        # ax, ay are BODY accelerations -> rotate once to the world frame.
         dvx = c * ax - sn * ay
         dvy = sn * ax + c * ay
+        # s[:, 3:5] is already the WORLD velocity (the spawn sets
+        # (v cos(beta+psi), v sin(beta+psi))), so the position derivative must NOT
+        # rotate it again.  Rotating twice made the car travel along a direction
+        # rotated by its own heading, i.e. its path was roughly twice as curved as
+        # the dynamics implied.
         vxw, vyw = s[:, 3], s[:, 4]
-        dx = c * vxw - sn * vyw
-        dy = sn * vxw + c * vyw
+        dx = vxw
+        dy = vyw
 
         # --- wheel torques ---
         drive_torque = torch.zeros_like(omega)
