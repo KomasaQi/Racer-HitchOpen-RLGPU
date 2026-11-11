@@ -75,6 +75,7 @@ def main(args):
     headings = [[] for _ in range(n)]
     progress = [[] for _ in range(n)]
     epos = [[] for _ in range(n)]
+    pid0 = [None] * n   # path id AT EPISODE START (it is re-randomised on respawn)
     deltas = [[] for _ in range(n)]
     throttles = [[] for _ in range(n)]
     alive = [0] * n
@@ -92,8 +93,14 @@ def main(args):
         d = env.u_cmd[:, 0].detach().cpu().numpy()
         q = env.u_cmd[:, 1].detach().cpu().numpy()
         dn = done.detach().cpu().numpy()
+        # on the terminal step the environment has ALREADY respawned, so the state
+        # below belongs to the next episode: record the previous sample instead
+        alive_now = dn == 0
         for k in range(n):
-            if end_step[k] >= 0:
+            if end_step[k] >= 0 or not alive_now[k]:
+                if end_step[k] < 0:
+                    end_step[k] = step + 1
+                continue
                 continue
             traj[k].append(pos[k].copy())
             speeds[k].append(float(v[k]))
@@ -102,6 +109,8 @@ def main(args):
             headings[k].append(float(psi[k]))
             progress[k].append(int(env.progress.detach().cpu().numpy()[k]))
             epos[k].append(float(env.signed_pos_diff.detach().cpu().numpy()[k]))
+            if pid0[k] is None:
+                pid0[k] = int(env.path_id.detach().cpu().numpy()[k])
             deltas[k].append(float(d[k]))
             throttles[k].append(float(q[k]))
             alive[k] += 1
