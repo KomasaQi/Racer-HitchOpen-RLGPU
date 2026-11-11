@@ -93,6 +93,8 @@ def main():
     ap.add_argument("--curv-scale", type=float, default=1.0)
     ap.add_argument("--seg-scale", type=float, default=1.0)
     ap.add_argument("--obs-privileged", action="store_true")
+    ap.add_argument("--one-episode", action="store_true",
+                    help="each env contributes exactly one episode (unbiased)")
     ap.add_argument("--yaw-weight", type=float, default=0.0)
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
@@ -114,6 +116,11 @@ def main():
                                 yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()
+    # the environment only spawns on respawn, so force the first episode here
+    if getattr(env, "train", False):
+        env.is_done[:] = 1
+        env.reset_done_envs()
+        obs = env.obs()
     ckpt = args.checkpoint
     if os.path.isdir(ckpt) or ckpt.endswith("nn"):
         # pick the newest per-epoch snapshot instead of the best-reward one
@@ -130,24 +137,75 @@ def main():
     succ = torch.zeros(args.n, device=dev)
     reason = [0, 0, 0]        # no_progress, large course error, off path
     beta_err, v_hist, alive_hist = [], [], []
-    for _ in range(args.steps):
+    # one-episode mode: every environment contributes exactly one episode and is
+    # frozen at its first terminal state, so the statistics are not a renewal
+    # process nor biased by censored re-spawns.
+    ended = torch.zeros(args.n, dtype=torch.bool, device=dev)
+    end_step = torch.full((args.n,), -1, device=dev)
+    end_succ = torch.zeros(args.n, dtype=torch.bool, device=dev)
+    end_reason = torch.zeros((args.n, 3), dtype=torch.bool, device=dev)
+    for step in range(args.steps):
         a = policy.act(obs)
         done_prev = env.is_done.clone()
         obs, reward, done, info = env.step(a)
-        newly = (done_prev == 0) & (env.is_done != 0)
+        # the environment respawns inside step(), so ``env.is_done`` is already
+        # cleared; the terminal flags of this step are the returned ``done``
+        newly = (done_prev == 0) & (done != 0)
+        term = done.clone()
         policy.reset_hidden(newly)
-        beta_err.append((env.es[:, 7] - env.beta_ref).abs().mean().item())
-        v_hist.append(env.es[:, 6].mean().item())
-        alive_hist.append(float((env.is_done == 0).float().mean()))
-        fails[newly & (env.is_done == 1)] += 1
-        succ[newly & (env.is_done == 2)] += 1
-        if newly.any():
-            npc = env.no_progress_count >= env.no_progress_limit
-            ang = env.angle_diff.abs() > env.course_limit
-            pos = env.signed_pos_diff.abs() > env.offpath_limit
-            reason[0] += int((newly & npc).sum())
-            reason[1] += int((newly & ang).sum())
-            reason[2] += int((newly & pos).sum())
+        if args.one_episode:
+            first = newly & ~ended
+            if first.any():
+                end_step[first] = step + 1
+                end_succ[first] = (term[first] == 2)
+                end_reason[first] = torch.stack([env._term_reason[first] == k for k in range(3)], dim=1)
+                ended |= first
+            # data from already finished environments is ignored
+            live = ~ended
+        else:
+            live = torch.ones(args.n, dtype=torch.bool, device=dev)
+        if live.any():
+            beta_err.append(float((env.es[live, 7] - env.beta_ref[live]).abs().mean()))
+            v_hist.append(float(env.es[live, 6].mean()))
+            alive_hist.append(float((done[live] == 0).float().mean()))
+        fails[newly & (term == 1)] += 1
+        succ[newly & (term == 2)] += 1
+        if newly.any() and not args.one_episode:
+            reason[0] += int((newly & env._term_masks[:, 0]).sum())
+            reason[1] += int((newly & env._term_masks[:, 1]).sum())
+            reason[2] += int((newly & env._term_masks[:, 2]).sum())
+        if args.one_episode and bool(ended.all()):
+            break
+
+    if args.one_episode:
+        done_mask = end_step > 0
+        lengths = end_step[done_mask].float() * env.dt
+        n_ep = int(done_mask.sum())
+        print(f"checkpoint {os.path.basename(args.checkpoint)}  preset={args.car_preset} "
+              f"ref={args.ref_mode} mode={args.control_mode}")
+        print(f"  one-episode mode, {args.n} envs, {n_ep} terminated")
+        if n_ep == 0:
+            print("  no episode terminated")
+            return
+        q = torch.quantile(lengths, torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9], device=dev))
+        succ_rate = float(end_succ[done_mask].float().mean())
+        # Wilson 95 % interval
+        z = 1.96
+        denom = 1 + z * z / n_ep
+        centre = (succ_rate + z * z / (2 * n_ep)) / denom
+        half = z * ((succ_rate * (1 - succ_rate) / n_ep + z * z / (4 * n_ep * n_ep)) ** 0.5) / denom
+        print(f"  mean {lengths.mean():.2f} s  median {q[2]:.2f} s  "
+              f"p10/p25/p75/p90 {q[0]:.2f}/{q[1]:.2f}/{q[3]:.2f}/{q[4]:.2f}")
+        print(f"  full length rate {succ_rate * 100:.1f} % (95 % CI "
+              f"{max(0.0, centre - half) * 100:.1f}-{min(1.0, centre + half) * 100:.1f})")
+        exc = end_reason[done_mask]
+        first_reason = torch.where(exc[:, 0], 0, torch.where(exc[:, 1], 1, torch.where(exc[:, 2], 2, 3)))
+        names = ["no_progress", "course", "off_path", "other"]
+        print("  exclusive first failure reasons "
+              + "  ".join(f"{names[i]} {int((first_reason == i).sum())}" for i in range(4)))
+        print(f"  mean |beta - beta_ref| {sum(beta_err) / max(len(beta_err), 1):.3f} rad  "
+              f"mean speed {sum(v_hist) / max(len(v_hist), 1):.2f} m/s")
+        return
 
     n_done = int((fails + succ).sum().item())
     print(f"checkpoint {os.path.basename(args.checkpoint)}  preset={args.car_preset} "

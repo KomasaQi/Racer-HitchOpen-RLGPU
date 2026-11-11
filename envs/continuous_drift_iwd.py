@@ -426,15 +426,26 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         # grace period instead of the original "progress >= 5" guard: the progress
         # based guard never fires for a car that stops on the first waypoints
-        failed = (self.step_count > 10) & ((self.no_progress_count >= self.no_progress_limit)
-                                        | (torch.abs(angle_diff) > self.course_limit)
-                                        | (torch.abs(signed_pos_diff) > self.offpath_limit))
+        fail_npc = self.no_progress_count >= self.no_progress_limit
+        fail_course = torch.abs(angle_diff) > self.course_limit
+        fail_off = torch.abs(signed_pos_diff) > self.offpath_limit
+        failed = (self.step_count > 10) & (fail_npc | fail_course | fail_off)
+        # snapshot of the terminal conditions, so a caller can attribute the
+        # failure after the environment has already respawned
+        self._term_masks = torch.stack((fail_npc, fail_course, fail_off), dim=1)
         if self.train:
             succeeded = (self.step_count >= self.max_steps) | (self.progress >= self.num_waypoints - 100)
         else:
             succeeded = (self.step_count >= self.max_steps)
         self.is_done[failed] = 1
         self.is_done[succeeded] = 2
+        # exclusive first-failure attribution, read by eval.py after the respawn
+        self._term_reason = torch.where(
+            succeeded, torch.full_like(self.step_count, 3),
+            torch.where(fail_npc, torch.full_like(self.step_count, 0),
+                        torch.where(fail_course, torch.full_like(self.step_count, 1),
+                                    torch.where(fail_off, torch.full_like(self.step_count, 2),
+                                                torch.full_like(self.step_count, 4)))))
 
         if self.pedals:
             ctrl = [self.u_cmd[:, 0], self.u_cmd[:, 1], self.u_cmd[:, 2]]
@@ -704,11 +715,19 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # spawned car, which injected an arbitrary command into the start of
         # every episode and made the reward history cross episode boundaries.
         obs, reward, done, info = super().step(action, **kwargs)
+        # ``done`` aliases ``self.is_done``; the respawn below clears it, so keep
+        # a copy of the terminal flags before resetting
+        done = done.clone()
         if self.train:
-            newly = (self.is_done != 0)
+            newly = (done != 0)
             if bool(newly.any()):
+                # the observation refresh below recomputes the failure masks for
+                # the new spawn, so keep the terminal attribution
+                keep_reason = getattr(self, "_term_reason", None)
                 self.reset_done_envs()
                 fresh = self.obs()
+                if keep_reason is not None:
+                    self._term_reason = keep_reason
                 if isinstance(obs, dict):
                     obs = {k: torch.where(newly.unsqueeze(-1), fresh[k], obs[k])
                            for k in obs}
