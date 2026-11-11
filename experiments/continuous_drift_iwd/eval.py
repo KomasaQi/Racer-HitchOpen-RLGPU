@@ -233,6 +233,12 @@ def main():
     # per-environment accumulators: the reported means are averages over
     # EPISODES, not over timesteps, so one long episode cannot dominate
     beta_sum = torch.zeros(args.n, device=dev)
+    # the same quantity after a first-order low pass: the OU disturbance injects
+    # sideslip at its own bandwidth, so the raw error mostly measures how much
+    # of the disturbance leaks through, while the filtered error measures whether
+    # the car holds the reference drift angle
+    beta_f_sum = torch.zeros(args.n, device=dev)
+    beta_filt = torch.zeros(args.n, device=dev)
     v_sum = torch.zeros(args.n, device=dev)
     n_sum = torch.zeros(args.n, device=dev)
     alive_hist = []
@@ -265,6 +271,9 @@ def main():
             live = torch.ones(args.n, dtype=torch.bool, device=dev)
         if live.any():
             beta_sum[live] += (env.es[live, 7] - env.beta_ref[live]).abs()
+            _a = float(np.exp(-env.dt / 0.5))
+            beta_filt[live] = _a * beta_filt[live] + (1.0 - _a) * env.es[live, 7]
+            beta_f_sum[live] += (beta_filt[live] - env.beta_ref[live]).abs()
             v_sum[live] += env.es[live, 6]
             n_sum[live] += 1.0
             alive_hist.append(float((done[live] == 0).float().mean()))
@@ -310,7 +319,9 @@ def main():
               + "  ".join(f"{names[i]} {int((first_reason == i).sum())}" for i in range(4)))
         _n = n_sum.clamp(min=1.0)
         print(f"  per-episode |beta - beta_ref| {(beta_sum / _n).mean():.3f} rad  "
+              f"filtered (tau 0.5 s) {(beta_f_sum / _n).mean():.3f} rad  "
               f"per-episode speed {(v_sum / _n).mean():.2f} m/s")
+
         return
 
     n_done = int((fails + succ).sum().item())
