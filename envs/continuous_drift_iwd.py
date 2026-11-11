@@ -67,9 +67,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # reference sideslip: "constant" keeps the old |beta_ref| = beta_scale,
         # "physics" derives it from the friction utilisation at each point
         self.beta_ref_mode = str(kwargs.get("beta_ref_mode", "physics"))
-        self.beta_max = float(kwargs.get("beta_max", 0.25))
-        self.beta_v_char = float(kwargs.get("beta_v_char", 12.0))
-        self.beta_v_lo = float(kwargs.get("beta_v_lo", 0.35))
+        self.beta_max = float(kwargs.get("beta_max", 0.32))
+        self.alpha_peak = float(kwargs.get("alpha_peak", 0.12))
         # reference-sideslip map: beta_ref = beta_max * clamp(v_limit / v_char, lo, 1)
         # Ackermann blend range (0 = parallel steering, 1 = exact geometry)
         self.ackermann_lo = float(kwargs.get("ackermann_lo", 0.8))
@@ -395,28 +394,28 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.kappa_ref = waypoints_filtered[:, :, 4].gather(1, bidx).squeeze(1)
 
     def _reference_beta(self, kappa):
-        """Reference sideslip at a path point, from the friction-limited speed.
+        """Reference sideslip from the rear-axle slip angle at the drift limit.
 
-        The corner has a theoretical maximum speed v_max = sqrt(mu_eff g / |kappa|)
-        set by the available grip; that speed, NOT the speed the car happens to be
-        doing, decides how much the car has to be rotated.  A corner whose limit
-        speed is low (tight or slippery) needs the full drift target, a fast open
-        corner needs less.  The map is
+        In a steady drift the rear axle sits at its peak slip angle and the body
+        is rotated by beta relative to the velocity, so
 
-            beta_ref = -sign(kappa) * beta_max * clamp(v_max / v_char, lo, 1)
+            alpha_rear = beta - lR * |kappa|   =>   beta = alpha_peak + lR * |kappa|
 
-        and it depends only on the geometry and the grip, so it is a property of
-        the reference and the road, not of the current state.  mu_eff is the true
-        effective grip, so this is privileged information: reward and critic only.
+        i.e. a TIGHTER corner needs MORE rotation, a wide open one less.  The
+        result depends only on the geometry and the tyre peak, never on how fast
+        the car happens to be going.  mu enters only through ``alpha_peak`` (the
+        slip angle at which the tyre peaks), which is a weak dependence for this
+        isotropic model, so the map is effectively road geometry.
+
+        The value is privileged (it is the reward target and critic input) and
+        must never reach the actor.
         """
-        mu = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp_min(0.05)
-        gg = self.plant.col("g")
-        extra = (1,) * max(kappa.dim() - 1, 0)
-        mu = mu.reshape(-1, *extra)
-        gg = gg.reshape(-1, *extra)
-        v_max = torch.sqrt(mu * gg / kappa.abs().clamp_min(1e-2))
-        frac = (v_max / self.beta_v_char).clamp(self.beta_v_lo, 1.0)
-        return -torch.sign(kappa) * self.beta_max * frac
+        kap = kappa.abs()
+        lr = self.plant.col("lR").reshape(-1, *((1,) * max(kappa.dim() - 1, 0)))
+        alpha = self.alpha_peak
+        beta = alpha + lr * kap
+        beta = torch.clamp(beta, max=self.beta_max)
+        return -torch.sign(kappa) * beta
 
     def obs(self):
         """Real-vehicle observable state, after the XCAR observation design.

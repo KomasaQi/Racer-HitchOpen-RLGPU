@@ -156,8 +156,9 @@ parser.add_argument("--ackermann-lo", type=float, default=0.8)
 parser.add_argument("--ackermann-hi", type=float, default=1.2)
 parser.add_argument("--beta-ref-mode", type=str, default="physics")
 parser.add_argument("--beta-max", type=float, default=0.25)
-parser.add_argument("--beta-util-floor", type=float, default=0.6)
-parser.add_argument("--path-regen-every", type=int, default=0)
+parser.add_argument("--alpha-peak", type=float, default=0.12,
+                    help="rear slip angle at the tyre peak, sets the reference sideslip")
+parser.add_argument("--beta-max", type=float, default=0.32)
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -227,7 +228,7 @@ default_env_config = {
     "ackermann_hi": args.ackermann_hi,
     "beta_ref_mode": args.beta_ref_mode,
     "beta_max": args.beta_max,
-    "beta_util_floor": args.beta_util_floor,
+    "alpha_peak": args.alpha_peak,
     "path_regen_every": args.path_regen_every,
     "speed_cap": (args.speed_cap if args.speed_cap is not None else float("inf")),
     "speed_weight": args.speed_weight,
