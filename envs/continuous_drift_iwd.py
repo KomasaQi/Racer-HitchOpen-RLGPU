@@ -726,7 +726,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # negative (reward -2000 per episode at a relaxed corridor)
         rew_pos = - torch.clamp((signed_pos_diff / s) ** 2, max=self.pos_cap)
         rew_dir = - angle_diff ** 2
-        rew_prog = torch.clamp(prog, 0.0, 5.0 * s)
+        # progress is capped at the rate the reference speed implies, exactly like
+        # the original XCAR formulation caps it: a car that goes faster than the
+        # reference must not earn extra reward for it (that was the over-speed
+        # incentive).  ``v_tgt`` is filled below.
+        _prog_raw = prog
         rew_smooth = self.smooth_scale * (
             - ((delta - prev["delta"]) ** 2
                + 1e-2 * (((wheel - prev["wheel"]) / self.speed_ref) ** 2).sum(dim=1)))
@@ -778,11 +782,20 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # wrong as under-driving.  With a floor-only term the policy kept
             # 9.7 m/s on high grip against an 8.5 m/s target and failed 87 % of
             # the episodes by running out of the corridor.
+            # TWO-SIDED: exceeding the limit target is as wrong as falling short,
+            # otherwise the policy over-drives at high grip and leaves the corridor
             rew_speed = - ((v - v_tgt) / v_tgt) ** 2
-        elif self.speed_hinge:
-            rew_speed = - torch.clamp((v_tgt - v) / v_tgt, min=0.0)
         else:
             rew_speed = - ((v - v_tgt) / v_tgt) ** 2
+
+        # progress is capped at the waypoints the reference speed covers in one
+        # step, exactly as the original XCAR reward caps it: going faster than the
+        # reference must not earn extra progress reward (that was the over-speed
+        # incentive that pushed the car out of the corridor at high grip).
+        _rate = v_tgt * self.dt / self.waypoint_ds
+        if not torch.is_tensor(_rate):
+            _rate = torch.full_like(v, float(_rate))
+        rew_prog = torch.minimum(_prog_raw.clamp(min=0.0), _rate)
         rew_final = -is_failed
 
         terms = {

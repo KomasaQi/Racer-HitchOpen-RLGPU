@@ -82,6 +82,15 @@ def main():
     ap.add_argument("--car-preset", default="fullsize_racecar_ev")
     ap.add_argument("--control-mode", default="pedals")
     ap.add_argument("--ref-mode", default="hybrid")
+    ap.add_argument("--speed-target-mode", type=str, default="signal")
+    ap.add_argument("--speed-margin", type=float, default=0.9)
+    ap.add_argument("--speed-cap", type=float, default=None)
+    ap.add_argument("--speed-weight", type=float, default=0.0)
+    ap.add_argument("--prog-weight", type=float, default=0.2)
+    ap.add_argument("--alpha-peak", type=float, default=0.12)
+    ap.add_argument("--beta-max", type=float, default=0.32)
+    ap.add_argument("--ackermann-lo", type=float, default=0.8)
+    ap.add_argument("--ackermann-hi", type=float, default=1.2)
     ap.add_argument("--n", type=int, default=256)
     ap.add_argument("--steps", type=int, default=600)
     ap.add_argument("--device", default="cuda:0")
@@ -113,7 +122,6 @@ def main():
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
     ap.add_argument("--pos-weight", type=float, default=2.4)
-    ap.add_argument("--speed-weight", type=float, default=0.0)
     ap.add_argument("--speed-target", type=float, default=None)
     ap.add_argument("--speed-hinge", action="store_true")
     ap.add_argument("--spawn-mode", default="equilibrium")
@@ -165,7 +173,15 @@ def main():
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight,
                                 speed_weight=args.speed_weight,
                                 speed_target=(args.speed_target if args.speed_target is not None else args.spawn_speed),
-                                speed_hinge=args.speed_hinge, train=True)
+                                speed_hinge=args.speed_hinge,
+                                speed_target_mode=args.speed_target_mode,
+                                speed_margin=args.speed_margin,
+                                speed_cap=(args.speed_cap if args.speed_cap is not None else float("inf")),
+                                prog_weight=args.prog_weight,
+                                alpha_peak=args.alpha_peak,
+                                beta_max=args.beta_max,
+                                ackermann_lo=args.ackermann_lo,
+                                ackermann_hi=args.ackermann_hi, train=True)
     # optional immutable held-out road bank: never regenerated, never used in
     # training, so checkpoint comparisons are paired across runs
     if args.load_path_bank:
