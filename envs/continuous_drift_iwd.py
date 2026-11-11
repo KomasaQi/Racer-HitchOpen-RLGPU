@@ -56,7 +56,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.speed_scale = math.sqrt(self.length_scale)
         self.speed_ref = 10.0 * self.speed_scale
         # "no progress" (0.2 s for the XCAR) stretched with the vehicle time scale
-        self.no_progress_limit = max(int(round(0.2 * self.speed_scale / self.dt)), 2)
+        self.no_progress_limit = int(kwargs.get(
+            "stall_window", max(int(round(0.2 * self.speed_scale / self.dt)), 2)))
+        self.stall_window = self.no_progress_limit
         # Reference sideslip magnitude.  XCAR asks for +-1 rad (57 deg); with a
         # 26 deg steering limit a 57 deg sustained drift needs ~46 deg of
         # countersteer, which this car does not have, so the target is scaled to
@@ -258,7 +260,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.zeros(self.n, dtype=torch.int16, device=self.device)
         self.win_back = 20
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
-        self.stall_move_min = 1.0
+        self.stall_move_min = float(kwargs.get("stall_move", 1.0))
         self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
         self.preview_scale = float(kwargs.get("preview_scale", 1.0))
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)   # 0 = not done, 1 = failed, 2 = succeeded
@@ -626,7 +628,6 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.zeros(self.n, dtype=torch.int16, device=self.device)
         self.win_back = 20
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
-        self.stall_move_min = 1.0
         self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)

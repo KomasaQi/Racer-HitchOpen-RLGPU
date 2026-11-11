@@ -132,6 +132,10 @@ parser.add_argument("--flip-prob", type=float, default=None,
                     help="curvature sign flip probability per segment (None = 0.5, independent)")
 parser.add_argument("--terminal-cost", type=float, default=100.0,
                     help="reward penalty applied on the terminal step")
+parser.add_argument("--stall-window", type=int, default=None,
+                    help="steps over which the displacement is measured for the stall rule")
+parser.add_argument("--stall-move", type=float, default=1.0,
+                    help="metres the car must travel per stall window to count as moving")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -184,6 +188,8 @@ default_env_config = {
     "preview_scale": args.preview_scale,
     "flip_prob": args.flip_prob,
     "terminal_cost": args.terminal_cost,
+    "stall_window": (args.stall_window if args.stall_window is not None else max(int(round(0.2 * (2.65 / 0.35) ** 0.5 / 0.05)), 2)),
+    "stall_move": args.stall_move,
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,

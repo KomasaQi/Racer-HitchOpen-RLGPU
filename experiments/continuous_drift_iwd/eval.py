@@ -98,6 +98,8 @@ def main():
     ap.add_argument("--curv-smooth", type=int, default=0)
     ap.add_argument("--preview-scale", type=float, default=1.0)
     ap.add_argument("--flip-prob", type=float, default=None)
+    ap.add_argument("--stall-window", type=int, default=None)
+    ap.add_argument("--stall-move", type=float, default=1.0)
     ap.add_argument("--yaw-weight", type=float, default=0.0)
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
@@ -118,6 +120,7 @@ def main():
                                 obs_privileged=args.obs_privileged,
                                 curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
                                 flip_prob=args.flip_prob,
+                                stall_window=args.stall_window, stall_move=args.stall_move,
                                 yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()
@@ -229,3 +232,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
