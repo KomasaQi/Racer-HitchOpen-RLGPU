@@ -438,3 +438,23 @@ nine cells survive more than 29.2 s on average.  The two remaining gaps against
 the objective are the 96.5-99.2 % cells (they are not exactly 100 %) and the
 high-grip sideslip error, where the policy prefers grip driving because nothing
 physically forces a drift.
+## High speed at the friction limit (in progress)
+
+`--speed-target-mode limit` sets the speed target from the available grip,
+`v_target = speed_margin * sqrt(mu g / |kappa_ref|)`, so the reward asks for the
+speed at which the corner demand reaches the friction limit instead of an
+arbitrary constant.  Measured targets at R 11-14 m: 8.4 m/s at mu 0.75, 10.1 at
+mu 1.0, 10.9 at mu 1.25.
+
+The policy does not reach them yet.  It saturates at 5.6-6.7 m/s, and training
+with limit mode actually reduced the full-length rate to 91-92 % at the two
+extreme grips without the speed rising.  Two candidate explanations:
+
+1. 8-11 m/s at these radii is 5.6-9.9 m/s2 of lateral demand against 7.4-12.3
+   m/s2 of grip, i.e. genuine limit handling that the current policy lacks;
+2. resuming a `preview_scale 0.5` policy with `preview_scale 1.0` shifts the
+   first three observation channels and caused catastrophic forgetting (3.5-7.7 s,
+   all off_path), so a long-preview variant must be trained from scratch.
+
+`drift_ev_v4` therefore remains the reference policy: 100 % full-length at
+mu <= 1.0, |beta-beta_ref| 0.095-0.115, 5.5-6.1 m/s.
