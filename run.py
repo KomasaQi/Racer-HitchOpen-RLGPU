@@ -157,7 +157,8 @@ parser.add_argument("--ackermann-hi", type=float, default=1.2)
 parser.add_argument("--beta-max", type=float, default=0.32)
 parser.add_argument("--alpha-peak", type=float, default=0.12,
                     help="rear slip angle at the tyre peak, sets the reference sideslip")
-parser.add_argument("--path-regen-every", type=int, default=0)
+parser.add_argument("--path-refresh-every", type=int, default=8,
+                    help="request a fresh path generation every N PPO epochs (0 disables)")
 parser.add_argument("--beta-ref-mode", type=str, default="physics")
 args = parser.parse_args()
 
@@ -229,7 +230,7 @@ default_env_config = {
     "beta_ref_mode": args.beta_ref_mode,
     "beta_max": args.beta_max,
     "alpha_peak": args.alpha_peak,
-    "path_regen_every": args.path_regen_every,
+
     "speed_cap": (args.speed_cap if args.speed_cap is not None else float("inf")),
     "speed_weight": args.speed_weight,
     "speed_target": (args.speed_target if args.speed_target is not None
@@ -340,8 +341,8 @@ if args.sigma_per_dim:
         runner restores the checkpoint afterwards, which overwrites them on resume.
         """
 
-        def __init__(self, std):
-            super().__init__()
+        def __init__(self, std, path_refresh_every=8):
+            super().__init__(path_refresh_every=path_refresh_every)
             self.std = std
 
         def after_init(self, algo):
@@ -360,7 +361,10 @@ if args.sigma_per_dim:
 else:
     PerDimSigmaObserver = None
 
-runner = Runner(PerDimSigmaObserver(_std) if args.sigma_per_dim else RLGPUAlgoObserver())
+observer = (PerDimSigmaObserver(_std, path_refresh_every=args.path_refresh_every)
+            if args.sigma_per_dim
+            else RLGPUAlgoObserver(path_refresh_every=args.path_refresh_every))
+runner = Runner(observer)
 file_path = os.path.dirname(__file__)
 with open(os.path.join(file_path, "runner_config.yaml")) as f:
     runner_config = yaml.safe_load(f)

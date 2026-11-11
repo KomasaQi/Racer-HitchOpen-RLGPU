@@ -276,10 +276,19 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # regenerating a path at every reset launched thousands of tiny kernels.
         # A bank of ``num_paths`` paths is a few tens of MB and a reset becomes
         # a single ``randint``.
+        if self.path_bank.ndim != 3 or self.path_bank.shape[-1] != 4:
+            raise ValueError("path generator must return [num_paths, W, 4], got %s"
+                             % (tuple(self.path_bank.shape),))
         self.num_paths = int(self.path_bank.shape[0])
+        # three-generation ring: an environment keeps its generation for the whole
+        # episode, and a refresh only overwrites a slot that no episode is using
+        self.path_bank = self.path_bank.unsqueeze(0).repeat(3, 1, 1, 1)
+        self.current_generation = 0
+        self.path_generation = torch.zeros(self.n, dtype=torch.long, device=self.device)
+        self._path_refresh_pending = False
         self.path_id = torch.zeros(self.n, dtype=torch.long, device=self.device)
         if self.num_paths > 1:
-            self.path_id = torch.randint(0, self.num_paths, (self.n,), device=self.device)
+            self.path_id.random_(0, self.num_paths)
 
         if not self.train:
             basename = time.strftime("%Y%m%d-%H%M%S")
@@ -326,8 +335,41 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.recent_obs[0] = obs
 
     def waypoints_at(self, ind):
-        """Reference waypoints for each env, ``ind`` is (n, k) long indices."""
-        return self.path_bank[self.path_id.unsqueeze(1), ind]
+        """Reference waypoints: (n, k, 4) from each environment's own generation."""
+        return self.path_bank[
+            self.path_generation.unsqueeze(1), self.path_id.unsqueeze(1), ind
+        ]
+
+    def _try_path_refresh(self, releasing=None):
+        """Install a pending generation when its target slot is unused.
+
+        ``releasing`` marks environments whose episode ends in this reset call;
+        they no longer count as users of their old generation.
+        """
+        if not self._is_hybrid or not self._path_refresh_pending:
+            return False
+        target = (self.current_generation + 1) % 3
+        in_use = self.path_generation == target
+        if releasing is not None:
+            in_use = in_use & ~releasing
+        if bool(in_use.any()):
+            return False
+        fresh = self._scale_waypoints(
+            self.trajectory_generator.generate_random_waypoints(self.num_paths))
+        if fresh.shape != self.path_bank[target].shape:
+            raise RuntimeError("refreshed bank shape %s != %s"
+                               % (tuple(fresh.shape), tuple(self.path_bank[target].shape)))
+        self.path_bank[target].copy_(fresh)
+        self.current_generation = target
+        self._path_refresh_pending = False
+        return True
+
+    def request_path_refresh(self):
+        """Ask for one fresh road generation (the observer calls this per N epochs)."""
+        if not self._is_hybrid:
+            return False
+        self._path_refresh_pending = True
+        return self._try_path_refresh()
 
     def find_nearest_waypoint(self, x, y, veldir, beta, kappa):
         # Local projection around the last known progress.  The window is
@@ -769,17 +811,23 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         return self.is_done
 
     def reset(self):
+        if getattr(self, "_is_hybrid", False):
+            self.path_generation.fill_(self.current_generation)
+        self._track_pending = True
+        self._physics_advanced = False
         super().reset()
         self.progress = torch.zeros(self.n, dtype=torch.long, device=self.device)
         self.step_progress = torch.zeros(self.n, dtype=torch.int16, device=self.device)
         self.travel = torch.zeros(self.n, device=self.device)
         self.win_back = 20
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
-        self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
-        self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
+        self._stall_anchor.copy_(self.s[:, :2])
+        self.no_progress_count = torch.zeros(self.n, dtype=torch.int32, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
         self._prev = None
+        # super().reset() already called obs() with stale task counters
+        self._track_pending = True
         return self.obs()
 
     def info(self):
@@ -796,11 +844,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         one CUDA sync per control step) is not needed.
         """
         is_done = self.is_done.bool()
-
         size = torch.sum(is_done)
+
+        # a deferred refresh may become installable now that these episodes end
+        if getattr(self, "_is_hybrid", False):
+            self._try_path_refresh(releasing=is_done)
+            self.path_generation[is_done] = self.current_generation
+
         self.step_count[is_done] = 0
         if self.num_paths > 1:
-            # hybrid mode: every episode draws a reference from the shared bank
             self.path_id[is_done] = torch.randint(0, self.num_paths, (size,), device=self.device)
         self.progress[is_done] = torch.randint(self.num_waypoints // 2, (size,), device=self.device)
         self.step_progress[is_done] = 0
@@ -827,7 +879,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # which consumed a fifth of every batch; the equilibrium spawn below
             # is used for all episodes instead.
             prog = self.progress[indices]
-            waypoints = self.path_bank[self.path_id[indices], prog, :]
+            waypoints = self.path_bank[
+                self.path_generation[indices], self.path_id[indices], prog, :]
 
             x = waypoints[:, 0]
             y = waypoints[:, 1]
@@ -881,9 +934,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # sideslip spawn is inconsistent -- without this the policy has no
             # information at all at the first step (its recurrent state is
             # empty) and learns to lift off, which collapses the drift.
-            beta_wp = self.path_bank[self.path_id[is_done], self.progress[is_done], 3]
-            self.u_cmd[is_done, 0] = (0.55 * beta_wp).clamp(-self.max_steer, self.max_steer)
-            self.u_cmd[is_done, 1] = 0.55
+            # per-env curvature from the ring, then the map-B target (the helper
+            # works on whole batches, so evaluate it for all envs and index)
+            _di = is_done.nonzero(as_tuple=False).squeeze(1)
+            kappa_all = self.path_bank[self.path_generation, self.path_id, self.progress, 3]
+            beta_all = self._reference_beta(kappa_all.unsqueeze(1)).squeeze(1)
+            self.u_cmd[_di, 0] = (0.55 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
+            self.u_cmd[_di, 1] = 0.55
         self.randomize(is_done)
         if self.plant_name == "fast":
             self.plant.init_wheels_mask(self.s, is_done)
@@ -901,7 +958,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
     # ---------------------------------------------------------------- scenarios
     def capture_scenario(self):
         """Freeze the current spawn (road, position, wheel state) for replay."""
-        return {"path_id": self.path_id.detach().cpu().numpy().copy(),
+        return {"path_generation": self.path_generation.detach().cpu().numpy().copy(),
+                "path_id": self.path_id.detach().cpu().numpy().copy(),
                 "progress": self.progress.detach().cpu().numpy().copy(),
                 "s": self.s.detach().cpu().numpy().copy(),
                 "u_cmd": self.u_cmd.detach().cpu().numpy().copy()}
@@ -914,6 +972,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         st = torch.as_tensor(_np.asarray(sc["s"]), device=self.device, dtype=self.s.dtype)
         n = min(pid.numel(), self.n)
         self.path_id[:n] = pid[:n]
+        if "path_generation" in sc:
+            pgen = torch.as_tensor(_np.asarray(sc["path_generation"]), device=self.device,
+                                   dtype=self.path_generation.dtype)
+            self.path_generation[:n] = pgen[:n].clamp(0, 2)
+        else:
+            self.path_generation[:n] = self.current_generation
         self.progress[:n] = prog[:n]
         self.s[:n] = st[:n]
         self.u[:n] = 0
@@ -951,10 +1015,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # the observation refresh below recomputes the failure masks for
                 # the new spawn, so keep the terminal attribution
                 keep_reason = getattr(self, "_term_reason", None)
+                keep_masks = getattr(self, "_term_masks", None)
                 self.reset_done_envs()
                 fresh = self.obs()
                 if keep_reason is not None:
                     self._term_reason = keep_reason
+                if keep_masks is not None:
+                    self._term_masks = keep_masks
                 if isinstance(obs, dict):
                     obs = {k: torch.where(newly.unsqueeze(-1), fresh[k], obs[k])
                            for k in obs}

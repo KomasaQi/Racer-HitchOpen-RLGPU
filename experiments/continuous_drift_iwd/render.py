@@ -75,7 +75,8 @@ def main(args):
     headings = [[] for _ in range(n)]
     progress = [[] for _ in range(n)]
     epos = [[] for _ in range(n)]
-    pid0 = [None] * n   # path id AT EPISODE START (it is re-randomised on respawn)
+    pid0 = [None] * n   # path id AT EPISODE START (re-randomised on respawn)
+    gen0 = [0] * n      # ring generation at episode start
     deltas = [[] for _ in range(n)]
     throttles = [[] for _ in range(n)]
     alive = [0] * n
@@ -111,6 +112,7 @@ def main(args):
             epos[k].append(float(env.signed_pos_diff.detach().cpu().numpy()[k]))
             if pid0[k] is None:
                 pid0[k] = int(env.path_id.detach().cpu().numpy()[k])
+                gen0[k] = int(env.path_generation.detach().cpu().numpy()[k])
             deltas[k].append(float(d[k]))
             throttles[k].append(float(q[k]))
             alive[k] += 1
@@ -131,8 +133,8 @@ def main(args):
     refs = {}
     for k in range(n_show):
         pid = pid0[k]   # the id at episode start; env.path_id is re-randomised on respawn
-        if pid not in refs:
-            refs[pid] = env.path_bank[pid, :, :2].detach().cpu().numpy()
+        if (gen0[k], pid) not in refs:
+            refs[(gen0[k], pid)] = env.path_bank[gen0[k], pid, :, :2].detach().cpu().numpy()
     corridor = env.offpath_limit
 
     # ---- static summary -------------------------------------------------
@@ -148,7 +150,7 @@ def main(args):
     refxy = []
     for k in range(n_show):
         pr = np.array(progress[k])
-        refxy.append(env.path_bank[pid0[k], pr, :2].detach().cpu().numpy())
+        refxy.append(env.path_bank[gen0[k], pid0[k], pr, :2].detach().cpu().numpy())
 
     fig, axes = plt.subplots(3, n_show, figsize=(6.0 * n_show, 12.6), squeeze=False,
                              gridspec_kw={"height_ratios": [1.5, 1.0, 0.85]})

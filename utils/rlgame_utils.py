@@ -71,8 +71,8 @@ class RLGPUEnv(vecenv.IVecEnv):
 class RLGPUAlgoObserver(AlgoObserver):
     """Allows us to log stats from the env along with the algorithm running stats. """
 
-    def __init__(self):
-        pass
+    def __init__(self, path_refresh_every=8):
+        self.path_refresh_every = int(path_refresh_every)
 
     def after_init(self, algo):
         self.algo = algo
@@ -97,7 +97,26 @@ class RLGPUAlgoObserver(AlgoObserver):
     def after_clear_stats(self):
         self.mean_scores.clear()
 
+    def _request_path_refresh(self):
+        """Walk the wrapper chain and ask the env for a fresh road generation."""
+        target = getattr(self.algo, "vec_env", None)
+        seen = set()
+        while target is not None and id(target) not in seen:
+            seen.add(id(target))
+            fn = getattr(target, "request_path_refresh", None)
+            if callable(fn):
+                return bool(fn())
+            target = getattr(target, "env", None) or getattr(target, "venv", None)
+        return False
+
     def after_print_stats(self, frame, epoch_num, total_time):
+        # every N PPO epochs ask for a new path generation; the env installs it
+        # only when the target ring slot has no active episode
+        if (self.path_refresh_every > 0 and epoch_num > 0
+                and epoch_num % self.path_refresh_every == 0):
+            installed = self._request_path_refresh()
+            if getattr(self, "writer", None) is not None:
+                self.writer.add_scalar("paths/refresh_installed", float(installed), epoch_num)
         if self.ep_infos:
             for key in self.ep_infos[0]:
                 infotensor = torch.tensor([], device=self.algo.device)
