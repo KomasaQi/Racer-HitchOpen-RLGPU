@@ -140,6 +140,11 @@ parser.add_argument("--spawn-speed-min", type=float, default=None,
                     help="lower bound of the speed-deficit spawn range")
 parser.add_argument("--spawn-deficit-frac", type=float, default=0.0,
                     help="fraction of spawns drawn from the speed-deficit range")
+parser.add_argument("--speed-target-mode", type=str, default="signal",
+                    choices=["signal", "limit"],
+                    help="limit derives the target from sqrt(mu g / |kappa|)")
+parser.add_argument("--speed-margin", type=float, default=0.9,
+                    help="fraction of the friction-limit speed used as the target")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -202,6 +207,8 @@ default_env_config = {
     "spawn_beta_frac": args.spawn_beta_frac,
     "spawn_speed_min": (args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
     "spawn_deficit_frac": args.spawn_deficit_frac,
+    "speed_target_mode": args.speed_target_mode,
+    "speed_margin": args.speed_margin,
     "speed_weight": args.speed_weight,
     "speed_target": (args.speed_target if args.speed_target is not None
                      else args.spawn_speed),

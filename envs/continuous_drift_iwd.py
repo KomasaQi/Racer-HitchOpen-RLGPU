@@ -146,6 +146,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # "slow down until the drift collapses" as a reward improving local
         # optimum; this term closes that hole.
         self.speed_target = float(kwargs.get("speed_target", self.spawn_speed))
+        # "signal" = fixed target; "limit" = target derived from the local friction
+        # limit, v_lim = sqrt(mu * g / |kappa_ref|), which is what makes the car
+        # drive AT the limit of adhesion instead of at an arbitrary speed.
+        self.speed_target_mode = str(kwargs.get("speed_target_mode", "signal"))
+        self.speed_margin = float(kwargs.get("speed_margin", 0.9))
         self.speed_weight = float(kwargs.get("speed_weight", 0.0))
         self.speed_hinge = bool(kwargs.get("speed_hinge", False))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
@@ -590,10 +595,20 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # at low speed, so the policy settles at 1.5 m/s where the alive bonus
         # dominates and then dies of its own slow pace.  Only being BELOW the
         # target is penalised, linearly, so the incentive is constant.
-        if self.speed_hinge:
-            rew_speed = - torch.clamp((self.speed_target - v) / self.speed_target, min=0.0)
+        if self.speed_target_mode == "limit":
+            # Speed target at the limit of adhesion: v_lim = sqrt(mu g / |kappa|).
+            # The grip multiplier is available to the reward but not to the actor,
+            # so the policy must infer how fast it may go from the vehicle response,
+            # which is exactly the adaptive behaviour we want.
+            mu = self.plant.tyre_scale.squeeze(1).clamp(0.3, 1.8)
+            kap = self.kappa_ref.abs().clamp(min=1e-2)
+            v_tgt = (self.speed_margin * torch.sqrt(mu * 9.81 / kap)).clamp(2.0, 30.0)
         else:
-            rew_speed = - ((v - self.speed_target) / self.speed_target) ** 2
+            v_tgt = self.speed_target
+        if self.speed_hinge:
+            rew_speed = - torch.clamp((v_tgt - v) / v_tgt, min=0.0)
+        else:
+            rew_speed = - ((v - v_tgt) / v_tgt) ** 2
         rew_final = -is_failed
 
         terms = {
