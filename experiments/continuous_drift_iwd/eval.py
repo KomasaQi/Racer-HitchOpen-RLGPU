@@ -116,6 +116,8 @@ def main():
                                 stall_speed=args.stall_speed, alive_bonus=args.alive_bonus,
                                 curv_scale=args.curv_scale, seg_scale=args.seg_scale, grip_scale=args.grip_scale,
                                 obs_privileged=args.obs_privileged,
+                                curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
+                                flip_prob=args.flip_prob,
                                 yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()
