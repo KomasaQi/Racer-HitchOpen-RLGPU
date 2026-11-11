@@ -269,16 +269,21 @@ def main():
 
     if not args.renewal_eval:
         done_mask = end_step > 0
-        lengths = end_step[done_mask].float() * env.dt
-        n_ep = int(done_mask.sum())
+        # an environment censored by the evaluation cap is NOT a success, so the
+        # denominator is every environment, not only the terminated ones
+        censored = ~done_mask
+        lengths = torch.where(
+            done_mask, end_step, torch.full_like(end_step, args.steps)).float() * env.dt
+        n_ep = args.n
         print(f"checkpoint {os.path.basename(args.checkpoint)}  preset={args.car_preset} "
               f"ref={args.ref_mode} mode={args.control_mode}")
-        print(f"  one-episode mode, {args.n} envs, {n_ep} terminated")
+        print(f"  one-episode mode, {args.n} envs,"
+              f" {n_ep - int(censored.sum())} terminated, {int(censored.sum())} censored")
         if n_ep == 0:
             print("  no episode terminated")
             return
         q = torch.quantile(lengths, torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9], device=dev))
-        succ_rate = float(end_succ[done_mask].float().mean())
+        succ_rate = float(end_succ.float().mean())
         # Wilson 95 % interval
         z = 1.96
         denom = 1 + z * z / n_ep
