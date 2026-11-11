@@ -106,6 +106,9 @@ def main():
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
     ap.add_argument("--pos-weight", type=float, default=2.4)
+    ap.add_argument("--speed-weight", type=float, default=0.0)
+    ap.add_argument("--speed-target", type=float, default=None)
+    ap.add_argument("--speed-hinge", action="store_true")
     ap.add_argument("--spawn-mode", default="equilibrium")
     ap.add_argument("--spawn-speed", type=float, default=6.5)
     ap.add_argument("--grip-scale", type=float, default=1.0,
@@ -125,8 +128,10 @@ def main():
                                 stall_window=args.stall_window, stall_move=args.stall_move,
                                 spawn_speed_min=(args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
                                 spawn_deficit_frac=args.spawn_deficit_frac,
-                                yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
-                                dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
+                                dir_weight=args.dir_weight, pos_weight=args.pos_weight,
+                                speed_weight=args.speed_weight,
+                                speed_target=(args.speed_target if args.speed_target is not None else args.spawn_speed),
+                                speed_hinge=args.speed_hinge, train=True)
     obs = env.reset()
     # the environment only spawns on respawn, so force the first episode here
     if getattr(env, "train", False):
