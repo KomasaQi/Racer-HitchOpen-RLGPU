@@ -51,6 +51,9 @@ def rollout(a, grip, seed, policy):
               offpath_scale=a.offpath_scale, course_fail=a.course_fail,
               stall_speed=a.stall_speed, stall_window=a.stall_window,
               stall_move=a.stall_move, grip_scale=grip,
+              disturbance_param=((0.97, 0.03) if a.disturbed else None),
+              randomize_param=(({"B": [8.0, 12.0], "C": [1.7, 2.1], "D": [grip, grip]})
+                               if a.disturbed else None),
               alive_bonus=a.alive_bonus, yaw_weight=a.yaw_weight,
               beta_weight=a.beta_weight, dir_weight=a.dir_weight,
               pos_weight=a.pos_weight)
@@ -223,6 +226,7 @@ if __name__ == "__main__":
     ap.add_argument("--stall-speed", type=float, default=2.5)
     ap.add_argument("--stall-window", type=int, default=20)
     ap.add_argument("--stall-move", type=float, default=1.5)
+    ap.add_argument("--disturbed", action="store_true")
     ap.add_argument("--spawn-speed", type=float, default=4.5)
     ap.add_argument("--spawn-speed-min", type=float, default=3.15)
     ap.add_argument("--spawn-deficit-frac", type=float, default=0.3)
