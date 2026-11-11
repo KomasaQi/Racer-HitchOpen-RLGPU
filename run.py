@@ -162,6 +162,8 @@ parser.add_argument("--path-refresh-every", type=int, default=8,
 parser.add_argument("--beta-ref-mode", type=str, default="physics")
 parser.add_argument("--prog-weight", type=float, default=0.2,
                     help="weight on raw path progress; 0 removes the incentive to over-speed")
+parser.add_argument("--grip-range", type=str, default=None,
+                    help="override the D range of the tyre preset, e.g. 0.6,0.9")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -300,6 +302,18 @@ default_env_config = {
     "gamma": args.gamma,
     "train": (args.train_or_test == "train"),
 }
+
+# --grip-range narrows or widens the friction spread of the selected tyre preset
+# so a curriculum can ramp D without editing the table above
+if args.grip_range is not None:
+    _g = [float(x) for x in args.grip_range.split(",")]
+    if len(_g) != 2 or not (0.0 < _g[0] <= _g[1]):
+        parser.error("--grip-range must be LO,HI with 0 < LO <= HI")
+    if args.randomize_tyre:
+        default_env_config["randomize_param"] = dict(default_env_config["randomize_param"])
+        default_env_config["randomize_param"][args.randomize_tyre] = dict(
+            default_env_config["randomize_param"][args.randomize_tyre])
+        default_env_config["randomize_param"][args.randomize_tyre]["D"] = _g
 
 # Environment-specific config
 if args.env == "state_tracker_iwd":
