@@ -369,6 +369,17 @@ file_path = os.path.dirname(__file__)
 with open(os.path.join(file_path, "runner_config.yaml")) as f:
     runner_config = yaml.safe_load(f)
 full_experiment_name = args.env + "_" + args.exp_name
+# persist the resolved environment configuration next to the run so that
+# evaluation can reconstruct the exact MDP instead of guessing defaults
+if args.train_or_test == "train":
+    import json
+    _cfg_dir = os.path.join("runs", full_experiment_name)
+    os.makedirs(_cfg_dir, exist_ok=True)
+    with open(os.path.join(_cfg_dir, "env_config.json"), "w") as _f:
+        json.dump(default_env_config, _f, indent=2, default=str)
+    with open(os.path.join(_cfg_dir, "train_args.json"), "w") as _f:
+        json.dump(vars(args), _f, indent=2, default=str)
+
 runner_config["params"]["seed"] = args.seed
 runner_config["params"]["config"]["num_actors"] = args.num_parallel
 runner_config["params"]["config"]["max_epochs"] = args.epochs

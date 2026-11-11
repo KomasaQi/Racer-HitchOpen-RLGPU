@@ -105,14 +105,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.pp_weight = float(kwargs.get("pp_weight", 0.0))
 
         n_ctrl = 3 if self.pedals else 4
-        # --obs-privileged appends the plant quantities the real car cannot
-        # measure (beta, V, vx, vy) to the actor observation, which turns the
-        # task back into the original XCAR formulation and gives the upper bound
-        # the restricted observation is compared against.
-        self.obs_privileged = bool(kwargs.get("obs_privileged", False))
-        # 4 IMU + ctrl + 4 wheel speeds + (e_pos, e_dir, e_kappa, travel) + 3 preview points x 4
-        self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 12 + (4 if self.obs_privileged else 0)
-        # Fixed per channel scaling so every channel is O(1) at the start of
+        # the 27-channel actor contract is fixed: privileged plant quantities
+        # (beta, V, vx, vy) are only ever exposed through the asymmetric critic
+        self.obs_privileged = False
+        self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 12
         # training; rl_games adds its own running normalisation on top.
         wheel_scale = 3.0 / self.speed_ref
         ctrl_scale = ([1.0 / self.max_steer, 1.0, 1.0] if self.pedals
@@ -957,27 +953,29 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
     # ---------------------------------------------------------------- scenarios
     def capture_scenario(self):
-        """Freeze the current spawn (road, position, wheel state) for replay."""
-        return {"path_generation": self.path_generation.detach().cpu().numpy().copy(),
-                "path_id": self.path_id.detach().cpu().numpy().copy(),
+        """Freeze everything needed to replay the episode: the ROADS themselves,
+
+        not just their indices.  The ring may legally overwrite a slot later, so
+        an index-only scenario would replay the state on a different road.
+        """
+        sel = self.path_bank[self.path_generation, self.path_id]
+        return {"path": sel.detach().cpu().numpy().copy(),
                 "progress": self.progress.detach().cpu().numpy().copy(),
                 "s": self.s.detach().cpu().numpy().copy(),
                 "u_cmd": self.u_cmd.detach().cpu().numpy().copy()}
 
     def apply_scenario(self, sc):
-        """Replay a frozen scenario: same roads and start states at any grip."""
+        """Replay a frozen scenario: install its roads, then its start states."""
         import numpy as _np
-        pid = torch.as_tensor(_np.asarray(sc["path_id"]), device=self.device, dtype=self.path_id.dtype)
+        if "path" in sc:
+            roads = torch.as_tensor(_np.asarray(sc["path"]), device=self.device, dtype=self.path_bank.dtype)
+            n = min(roads.shape[0], self.n, self.num_paths)
+            self.path_bank[self.current_generation, :n].copy_(roads[:n])
+            self.path_id[:n] = torch.arange(n, device=self.device)
+            self.path_generation[:n] = self.current_generation
         prog = torch.as_tensor(_np.asarray(sc["progress"]), device=self.device, dtype=self.progress.dtype)
         st = torch.as_tensor(_np.asarray(sc["s"]), device=self.device, dtype=self.s.dtype)
-        n = min(pid.numel(), self.n)
-        self.path_id[:n] = pid[:n]
-        if "path_generation" in sc:
-            pgen = torch.as_tensor(_np.asarray(sc["path_generation"]), device=self.device,
-                                   dtype=self.path_generation.dtype)
-            self.path_generation[:n] = pgen[:n].clamp(0, 2)
-        else:
-            self.path_generation[:n] = self.current_generation
+        n = min(prog.numel(), self.n)
         self.progress[:n] = prog[:n]
         self.s[:n] = st[:n]
         self.u[:n] = 0
@@ -990,11 +988,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress[:n] = 0
         self.is_done[:n] = 0
         self.no_progress_count[:n] = 0
-        self._stall_anchor[:n] = 0
+        self.travel[:n] = 0
+        self._stall_anchor[:n] = self.s[:n, :2]
         if self.plant_name == "fast":
             self.plant.reset_guess(torch.ones(self.n, dtype=torch.bool, device=self.device))
             self.es = self.plant.extended_state(self.s, self.u_cmd)
         self._track_pending = True
+        self._physics_advanced = False
         return self.obs()
 
     def step(self, action, **kwargs):

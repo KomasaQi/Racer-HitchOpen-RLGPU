@@ -95,9 +95,10 @@ def main():
     ap.add_argument("--alive-bonus", type=float, default=0.0)
     ap.add_argument("--curv-scale", type=float, default=1.0)
     ap.add_argument("--seg-scale", type=float, default=1.0)
-    ap.add_argument("--obs-privileged", action="store_true")
-    ap.add_argument("--one-episode", action="store_true",
-                    help="each env contributes exactly one episode (unbiased)")
+    ap.add_argument("--config-from", type=str, default=None,
+                    help="run directory whose env_config.json defines the MDP")
+    ap.add_argument("--renewal-eval", action="store_true",
+                    help="allow repeated respawns (biased); one episode per env is the default")
     ap.add_argument("--curv-smooth", type=int, default=0)
     ap.add_argument("--preview-scale", type=float, default=1.0)
     ap.add_argument("--preview-time", type=str, default=None)
@@ -119,6 +120,27 @@ def main():
                     help="global friction multiplier (evaluate on different surfaces)")
     args = ap.parse_args()
 
+    # reconstruct the training environment from the run directory when asked:
+    # every parameter left at its default takes the value used in training, so an
+    # evaluation cannot silently disagree with the MDP the policy saw.
+    if args.config_from:
+        import json
+        _cfg_dir = args.config_from
+        _cfg_path = os.path.join(_cfg_dir, "env_config.json")
+        if not os.path.exists(_cfg_path):
+            _cfg_path = os.path.join(os.path.dirname(os.path.abspath(_cfg_dir)), "env_config.json")
+        if os.path.exists(_cfg_path):
+            with open(_cfg_path) as _f:
+                _cfg = json.load(_f)
+            _applied = {}
+            for _k, _v in _cfg.items():
+                if hasattr(args, _k) and getattr(args, _k) == ap.get_default(_k):
+                    setattr(args, _k, _v)
+                    _applied[_k] = _v
+            print("env_config loaded:", len(_applied), "parameters")
+        else:
+            print("WARNING: no env_config.json in", _cfg_dir)
+
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     env = ContinuousDriftIWDEnv(args.car_preset, args.n, args.device, ref_mode=args.ref_mode,
@@ -127,7 +149,6 @@ def main():
                                 offpath_scale=args.offpath_scale, course_fail=args.course_fail,
                                 stall_speed=args.stall_speed, alive_bonus=args.alive_bonus,
                                 curv_scale=args.curv_scale, seg_scale=args.seg_scale, grip_scale=args.grip_scale,
-                                obs_privileged=args.obs_privileged,
                                 curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
                                 preview_time=args.preview_time,
                                 flip_prob=args.flip_prob,
@@ -184,7 +205,7 @@ def main():
         newly = (done_prev == 0) & (done != 0)
         term = done.clone()
         policy.reset_hidden(newly)
-        if args.one_episode:
+        if not args.renewal_eval:
             first = newly & ~ended
             if first.any():
                 end_step[first] = step + 1
@@ -201,14 +222,14 @@ def main():
             alive_hist.append(float((done[live] == 0).float().mean()))
         fails[newly & (term == 1)] += 1
         succ[newly & (term == 2)] += 1
-        if newly.any() and not args.one_episode:
+        if newly.any() and args.renewal_eval:
             reason[0] += int((newly & env._term_masks[:, 0]).sum())
             reason[1] += int((newly & env._term_masks[:, 1]).sum())
             reason[2] += int((newly & env._term_masks[:, 2]).sum())
-        if args.one_episode and bool(ended.all()):
+        if (not args.renewal_eval) and bool(ended.all()):
             break
 
-    if args.one_episode:
+    if not args.renewal_eval:
         done_mask = end_step > 0
         lengths = end_step[done_mask].float() * env.dt
         n_ep = int(done_mask.sum())
