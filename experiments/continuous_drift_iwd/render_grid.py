@@ -65,13 +65,14 @@ def rollout(a, grip, seed, policy):
         all_ids = [int(x) for x in str(a.scenario_ids).split(",")] if getattr(a, "scenario_ids", None) else list(range(len(sc["s"])))
         sid = all_ids[getattr(a, "current_scenario_id", 0) % len(all_ids)]
         idx = [sid]
-        sub = {"path_id": sc["path_id"][idx], "progress": sc["progress"][idx],
+        sub = {"path": sc["path"][idx], "progress": sc["progress"][idx],
                "s": sc["s"][idx], "u_cmd": sc["u_cmd"][idx]}
         obs = env.apply_scenario(sub)
     policy.reset_hidden(torch.ones(a.n, dtype=torch.bool, device=a.device))
 
     rec = [dict(xy=[], psi=[], v=[], beta=[], bref=[], prog=[], d=[], q=[]) for _ in range(a.n)]
     pid0 = [None] * a.n
+    gen0 = [0] * a.n
     end = [-1] * a.n
     for step in range(a.steps):
         act = policy.act(obs)
@@ -93,6 +94,7 @@ def rollout(a, grip, seed, policy):
                 continue
             if pid0[k] is None:
                 pid0[k] = int(env.path_id.detach().cpu().numpy()[k])
+                gen0[k] = int(env.path_generation.detach().cpu().numpy()[k])
             rec[k]["xy"].append(xy[k].copy())
             rec[k]["psi"].append(float(psi[k]))
             rec[k]["v"].append(float(v[k]))
@@ -105,6 +107,7 @@ def rollout(a, grip, seed, policy):
             break
     for k in range(a.n):
         rec[k]["pid"] = pid0[k]
+        rec[k]["gen"] = gen0[k]
     return env, rec
 
 
@@ -150,7 +153,7 @@ def main(args):
             lc.set_array(sp[:-1])
             lc.set_clim(0, 10.0)
             ax.add_collection(lc)
-            bank = env.path_bank[r["pid"], :, :2].detach().cpu().numpy()
+            bank = env.path_bank[r["gen"], r["pid"], :, :2].detach().cpu().numpy()
             pr = np.array(r["prog"])
             lo, hi = max(pr.min() - 60, 0), min(pr.max() + 60, len(bank))
             ax.plot(bank[lo:hi, 0], bank[lo:hi, 1], color="0.2", lw=1.0, alpha=0.8)
