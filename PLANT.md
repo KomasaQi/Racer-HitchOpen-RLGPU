@@ -381,3 +381,39 @@ i.e. the distillation did **not** help; it exploited the hole.  The numbers in
 the table above this correction were measured under the buggy rule and are kept
 only as a record of that mistake.  Everything elsewhere in this document that
 predates the fix has been re-measured where it matters.
+## Milestone: the drift task now converges (500-step / 30 s episodes, 100 %)
+
+After fixing the position kinematics (the world velocity was rotated a second
+time by psi, so the car's path was roughly twice as curved as the tyre model
+implied -- every earlier number in this document was measured under that bug),
+the task converges.  Policy in `runs/drift_ev_v2`, trained with the corrected
+plant, the clothoid reference (6 m ramp, 25 % reversal probability), the terminal
+cost, the displacement-based stall rule and a 5.3 m tracking corridor in the
+training loop.
+
+One-episode evaluation, 192-256 episodes per cell, 20 steps / 1.5 m stall rule:
+
+| reference (mu = 1.0) | mean | full length | |beta-beta_ref| | speed |
+|---|---|---|---|---|
+| R 14-18 m | 29.98 s | 100 % | 0.152 | 5.76 m/s |
+| R 11-14 m | 29.90 s | 100 % | 0.148 | 6.07 m/s |
+| R 8-11 m | 29.94 s | 100 % | 0.177 | 5.72 m/s |
+
+| friction (R 11-14 m) | mean | full length | |beta-beta_ref| | speed |
+|---|---|---|---|---|
+| mu = 0.75 | 30.00 s | 100 % | **0.065** | 5.69 m/s |
+| mu = 1.00 | 29.90 s | 100 % | 0.148 | 6.07 m/s |
+| mu = 1.25 | 29.92 s | 100 % | 0.190 | 5.87 m/s |
+
+| tracking corridor | mean | full length |
+|---|---|---|
+| 5.3 m | 29.90 s | 100 % |
+| 3.0 m | 29.92 s | 100 % |
+| 1.9 m | 29.19 s | 97.4 % |
+| 1.1 m | 20.42 s | 53.1 % |
+
+So the reference is followed to within about 1.1-1.9 m for the whole 30 s, the
+speed is 5.7-6.1 m/s, and the sideslip error scales with the available friction
+in the intended direction (0.065 at mu = 0.75 against 0.190 at mu = 1.25).
+Remaining gap against the goal: |beta - beta_ref| is 0.15-0.19 at mu >= 1.0,
+i.e. above the 0.12 target.
