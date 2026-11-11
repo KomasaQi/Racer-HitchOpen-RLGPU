@@ -372,6 +372,8 @@ full_experiment_name = args.env + "_" + args.exp_name
 # persist the resolved environment configuration next to the run so that
 # evaluation can reconstruct the exact MDP instead of guessing defaults
 if args.train_or_test == "train":
+    default_env_config["ref_mode"] = args.ref_mode
+    default_env_config["control_mode"] = args.control_mode
     import json
     _cfg_dir = os.path.join("runs", full_experiment_name)
     os.makedirs(_cfg_dir, exist_ok=True)

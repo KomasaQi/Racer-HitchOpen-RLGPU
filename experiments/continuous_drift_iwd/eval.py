@@ -81,7 +81,7 @@ def main():
     ap.add_argument("checkpoint")
     ap.add_argument("--car-preset", default="fullsize_racecar_ev")
     ap.add_argument("--control-mode", default="pedals")
-    ap.add_argument("--ref-mode", default="circle")
+    ap.add_argument("--ref-mode", default="hybrid")
     ap.add_argument("--n", type=int, default=256)
     ap.add_argument("--steps", type=int, default=600)
     ap.add_argument("--device", default="cuda:0")
