@@ -610,7 +610,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             v_tgt = (self.speed_margin * torch.sqrt(mu * 9.81 / kap)).clamp(2.0, self.speed_cap)
         else:
             v_tgt = self.speed_target
-        if self.speed_hinge:
+        if self.speed_target_mode == "limit":
+            # Two-sided: the limit target is a GOAL, so over-driving it is as
+            # wrong as under-driving.  With a floor-only term the policy kept
+            # 9.7 m/s on high grip against an 8.5 m/s target and failed 87 % of
+            # the episodes by running out of the corridor.
+            rew_speed = - ((v - v_tgt) / v_tgt) ** 2
+        elif self.speed_hinge:
             rew_speed = - torch.clamp((v_tgt - v) / v_tgt, min=0.0)
         else:
             rew_speed = - ((v - v_tgt) / v_tgt) ** 2
