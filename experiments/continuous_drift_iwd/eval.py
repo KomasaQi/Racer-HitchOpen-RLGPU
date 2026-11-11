@@ -97,6 +97,7 @@ def main():
                     help="each env contributes exactly one episode (unbiased)")
     ap.add_argument("--curv-smooth", type=int, default=0)
     ap.add_argument("--preview-scale", type=float, default=1.0)
+    ap.add_argument("--preview-time", type=str, default=None)
     ap.add_argument("--flip-prob", type=float, default=None)
     ap.add_argument("--stall-window", type=int, default=None)
     ap.add_argument("--stall-move", type=float, default=1.0)
@@ -124,6 +125,7 @@ def main():
                                 curv_scale=args.curv_scale, seg_scale=args.seg_scale, grip_scale=args.grip_scale,
                                 obs_privileged=args.obs_privileged,
                                 curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
+                                preview_time=args.preview_time,
                                 flip_prob=args.flip_prob,
                                 stall_window=args.stall_window, stall_move=args.stall_move,
                                 spawn_speed_min=(args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),

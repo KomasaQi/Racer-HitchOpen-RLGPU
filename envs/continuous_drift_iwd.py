@@ -172,6 +172,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         if ref_mode == "hybrid":
             self.num_waypoints = 10000
             path_length = 50
+            self._path_length_xcar = path_length
             self.trajectory_generator = TrajGen(self.num_waypoints, path_length, device=device)
             cs = kwargs.get("curv_scale", 1.0)
             self.trajectory_generator.curv_scale = cs if isinstance(cs, (tuple, list)) else float(cs)
@@ -278,6 +279,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.stall_move_min = float(kwargs.get("stall_move", 1.0))
         self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
         self.preview_scale = float(kwargs.get("preview_scale", 1.0))
+        # time-based preview headways (seconds); None keeps the metric previews
+        pt = kwargs.get("preview_time", None)
+        # arc length of one waypoint, needed to turn a time headway into an index
+        self.waypoint_ds = float(self._path_length_xcar * self.length_scale / max(self.num_waypoints - 1, 1))
+        self.preview_time = None if pt is None else torch.as_tensor(
+            [float(x) for x in (pt if not isinstance(pt, str) else pt.split(","))],
+            device=self.device, dtype=torch.float32)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)   # 0 = not done, 1 = failed, 2 = succeeded
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
@@ -415,7 +423,21 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         kappa_ref = self.kappa_ref
 
         # look ahead 3m (scaled with the reference geometry)
-        if self.train:
+        # Preview points.  With --preview-time they are specified as TIME
+        # headways and converted to an arc length with the current speed, so the
+        # look-ahead in seconds stays constant from 4 to 10 m/s (a fixed metric
+        # preview is 2.3 s at 4 m/s but only 0.85 s at 10 m/s).
+        if self.preview_time is not None:
+            ds_wp = self.waypoint_ds
+            offs = (v.unsqueeze(1) * self.preview_time.unsqueeze(0) / ds_wp).round().long()
+            offs = offs.clamp(min=1, max=self.num_waypoints // 4)
+            if self.train:
+                la_inds = [(self.progress.unsqueeze(1) + offs[:, k:k + 1]).clamp(0, self.num_waypoints - 1)
+                           for k in range(3)]
+            else:
+                la_inds = [((self.progress.unsqueeze(1) + offs[:, k:k + 1]) % self.num_waypoints)
+                           for k in range(3)]
+        elif self.train:
             la_inds = [(self.progress + i).unsqueeze(-1)
                        for i in (int(200 * self.preview_scale), int(400 * self.preview_scale),
                                  int(600 * self.preview_scale))]
@@ -425,6 +447,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             la_inds = [(self.progress + i).unsqueeze(-1) % self.num_waypoints
                        for i in (int(200 * self.preview_scale), int(400 * self.preview_scale),
                                  int(600 * self.preview_scale))]
+
         la = [self.waypoints_at(la_ind).squeeze(1) for la_ind in la_inds]
 
         def convert(waypoints):

@@ -147,6 +147,8 @@ parser.add_argument("--speed-margin", type=float, default=0.9,
                     help="fraction of the friction-limit speed used as the target")
 parser.add_argument("--speed-cap", type=float, default=None,
                     help="upper clamp on the friction-limit speed target")
+parser.add_argument("--preview-time", type=str, default=None,
+                    help="comma separated preview headways in seconds, e.g. 0.5,1.0,1.6")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -197,6 +199,7 @@ default_env_config = {
     "num_paths": args.num_paths,
     "curv_smooth": args.curv_smooth,
     "preview_scale": args.preview_scale,
+    "preview_time": args.preview_time,
     "flip_prob": args.flip_prob,
     "terminal_cost": args.terminal_cost,
     "stall_window": (args.stall_window if args.stall_window is not None else max(int(round(0.2 * (2.65 / 0.35) ** 0.5 / 0.05)), 2)),
