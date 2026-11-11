@@ -309,11 +309,9 @@ if args.grip_range is not None:
     _g = [float(x) for x in args.grip_range.split(",")]
     if len(_g) != 2 or not (0.0 < _g[0] <= _g[1]):
         parser.error("--grip-range must be LO,HI with 0 < LO <= HI")
-    if args.randomize_tyre:
-        default_env_config["randomize_param"] = dict(default_env_config["randomize_param"])
-        default_env_config["randomize_param"][args.randomize_tyre] = dict(
-            default_env_config["randomize_param"][args.randomize_tyre])
-        default_env_config["randomize_param"][args.randomize_tyre]["D"] = _g
+    # randomize_param is already the SELECTED preset dict, not the whole table
+    default_env_config["randomize_param"] = dict(default_env_config["randomize_param"])
+    default_env_config["randomize_param"]["D"] = _g
 
 # Environment-specific config
 if args.env == "state_tracker_iwd":
