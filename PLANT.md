@@ -514,3 +514,20 @@ Training note: the reward's speed weight is a knife edge.  At `speed_weight 20`
 with margin 0.8 the policy peaked at epoch 220 (96/93/87 %) and then degraded
 (49 % at high grip by epoch 367), so the deliverable is the epoch-220 checkpoint
 fine-tuned with `speed_weight 8`, `speed_margin 0.65`, `speed_cap 7.2`.
+## Task-integrity bug found while starting the long run (fixed)
+
+The success mask fired on two conditions: the 30 s cap AND `progress >= num_waypoints - 100`.  With a nearest-point window that can advance up to 19 waypoints (0.72 m) per control step, the second condition triggered after 10-15 s, so **early terminations were labelled SUCCESS**: the episode ended without the terminal cost and the policy learned to sprint to the end of the reference bank.  Measured on the v7 checkpoint: **0 of 64 episodes actually reached 600 steps, but 64 of 64 were flagged successful** while the mean length was 15 s and every episode ended `off_path`.
+
+The time cap is now the only success criterion and a failure always takes precedence.  The run started before this fix (v7) is discarded; the long run restarted as v8.
+
+State of v8 at epoch 58 (one-episode protocol, config reconstructed from the run's `env_config.json`):
+
+| metric | value |
+|---|---|
+| mean / median | 6.86 s / 6.73 s |
+| full 30 s | 0 % |
+| exclusive failure | off_path 128/128 |
+| speed | 6.47 m/s |
+| \|beta - beta_ref\| | 0.152 rad |
+
+So the policy already drives fast and drifts, but cannot hold the 3 m corridor at that speed.  Either the 900-epoch budget fixes it or the speed target has to come down.
