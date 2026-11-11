@@ -417,3 +417,24 @@ speed is 5.7-6.1 m/s, and the sideslip error scales with the available friction
 in the intended direction (0.065 at mu = 0.75 against 0.190 at mu = 1.25).
 Remaining gap against the goal: |beta - beta_ref| is 0.15-0.19 at mu >= 1.0,
 i.e. above the 0.12 target.
+## drift_ev_v4: the full 3x3 grid (256 episodes per cell, 30 s cap)
+
+Trained from drift_ev_v3 with `beta_weight 100` (the drift is a style requirement,
+not a physical necessity: at R 11-14 m and 6 m/s the lateral demand is 3-4.5 m/s2
+against mu*g = 7.4-12, so grip driving always suffices and the sideslip has to be
+paid for explicitly).
+
+| reference | mu = 0.75 | mu = 1.00 | mu = 1.25 |
+|---|---|---|---|
+| R 14-18 m | 99.6 % / 0.047 | **100 % / 0.106** | 100 % / 0.155 |
+| R 11-14 m | 99.2 % / 0.053 | **100 % / 0.095** | 99.2 % / 0.150 |
+| R 8-11 m  | 100 % / 0.065 | 100 % / 0.115 | 96.5 % / 0.157 |
+
+(each cell: full-length rate / mean |beta - beta_ref|; speed 5.5-6.25 m/s)
+
+The sideslip error tracks the available friction in the intended direction:
+0.047-0.065 on low grip, 0.095-0.115 nominal, 0.150-0.157 on high grip.  Nine of
+nine cells survive more than 29.2 s on average.  The two remaining gaps against
+the objective are the 96.5-99.2 % cells (they are not exactly 100 %) and the
+high-grip sideslip error, where the policy prefers grip driving because nothing
+physically forces a drift.
