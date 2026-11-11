@@ -195,7 +195,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             cs = kwargs.get("curv_scale", 1.0)
             self.trajectory_generator.curv_scale = cs if isinstance(cs, (tuple, list)) else float(cs)
             self.trajectory_generator.seg_scale = float(kwargs.get("seg_scale", 1.0))
-            self.trajectory_generator.curv_smooth = int(kwargs.get("curv_smooth", 0))
+            # an unsmoothed generator contains instantaneous curvature sign
+            # jumps, which is not a trackable road at 6-8 m/s
+            self.trajectory_generator.curv_smooth = int(kwargs.get("curv_smooth", 200))
             self.trajectory_generator.flip_prob = kwargs.get("flip_prob", None)
             self.num_paths = int(kwargs.get("num_paths", 256))
             self.path_bank = self._scale_waypoints(
@@ -316,6 +318,29 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         pt = kwargs.get("preview_time", None)
         # arc length of one waypoint, needed to turn a time headway into an index
         self.waypoint_ds = float(getattr(self, "_path_length_xcar", 50.0) * self.length_scale / max(self.num_waypoints - 1, 1))
+
+        # The hybrid reference is an OPEN path.  Starting anywhere in the first
+        # half left as little as 189 m of reference, while a 30 s episode at
+        # 6-8 m/s covers 180-240 m: the car would run off the end, the progress
+        # and previews clamp and it was then scored off_path.  That penalised
+        # exactly the fast, high-grip episodes.
+        self._max_spawn_progress = max(self.num_waypoints // 2 - 1, 0)
+        if getattr(self, "_is_hybrid", False):
+            try:
+                _cap = float(self.speed_cap)
+            except (TypeError, ValueError):
+                _cap = float("inf")
+            guard_speed = _cap if _cap == _cap and _cap != float("inf") else max(
+                float(self.spawn_speed), float(self.speed_target))
+            if getattr(self, "preview_time", None) is not None:
+                preview_guard = guard_speed * float(self.preview_time.max().item())
+            else:
+                preview_guard = 600.0 * self.preview_scale * self.waypoint_ds
+            reserve = (1.15 * guard_speed * self.max_steps * self.dt
+                       + preview_guard + 2.0 * self.offpath_limit)
+            usable = max((self.num_waypoints - 1) * self.waypoint_ds - reserve, 0.0)
+            self._max_spawn_progress = min(
+                int(usable / self.waypoint_ds), self.num_waypoints - 1)
         self.preview_time = None if pt is None else torch.as_tensor(
             [float(x) for x in (pt if not isinstance(pt, str) else pt.split(","))],
             device=self.device, dtype=torch.float32)
@@ -468,7 +493,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             speed = torch.full_like(kappa, float(speed))
         if speed.dim() < kappa.dim():
             speed = speed.reshape(-1, *((1,) * (kappa.dim() - speed.dim())))
-        beta_geo = torch.clamp(self.alpha_peak + lr * kap, max=self.beta_max)
+        beta_geo = torch.clamp(
+            self.beta_scale * (self.alpha_peak + lr * kap), max=self.beta_max)
         util = (speed.square() * kap / (mu * gg)).clamp(0.0, 1.0)
         factor = (util / self.beta_util_ref).clamp(self.beta_util_lo, 1.0)
         return -torch.sign(kappa) * beta_geo * factor
@@ -752,7 +778,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # and runs off the path, which is by far the dominant failure).  The
         # demanded sideslip fades out as the lateral error grows, i.e. drift on
         # the line, straighten to come back.
-        beta_gate = torch.clamp(1.0 - (signed_pos_diff / (self.beta_gate_scale * s)) ** 2, 0.0, 1.0)
+        if self.beta_gate_scale > 0:
+            beta_gate = torch.clamp(
+                1.0 - (signed_pos_diff / (self.beta_gate_scale * s)) ** 2, 0.0, 1.0)
+        else:
+            beta_gate = torch.ones_like(signed_pos_diff)
         # pure pursuit tracking: the steering that would follow the preview point
         rew_pp = - torch.clamp(((delta - self.delta_pp) / 0.3) ** 2, max=4.0)
         # the gate is optional: with the geometry-derived reference the reward
@@ -887,17 +917,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_count[is_done] = 0
         if self.num_paths > 1:
             self.path_id[is_done] = torch.randint(0, self.num_paths, (size,), device=self.device)
-        self.progress[is_done] = torch.randint(self.num_waypoints // 2, (size,), device=self.device)
+        self.progress[is_done] = torch.randint(
+            self._max_spawn_progress + 1, (size,), device=self.device)
         self.step_progress[is_done] = 0
         self.no_progress_count[is_done] = 0
         self.travel[is_done] = 0
         # periodically draw a fresh set of roads so the policy cannot memorise
         # a fixed bank (256 roads x 131072 envs would be heavily overfitted)
-        if getattr(self, "_is_hybrid", False) and self.path_regen_every > 0:
+        if getattr(self, "_is_hybrid", False) and getattr(self, "path_regen_every", 0) > 0:
             self._resets_since_regen += int(size.item())
             if self._resets_since_regen >= self.path_regen_every:
-                self.path_bank = self._scale_waypoints(
-                    self.trajectory_generator.generate_random_waypoints(self.num_paths))
+                # never replace the [generation, path, w, ch] ring by a 3-D bank
+                self.request_path_refresh()
                 self._resets_since_regen = 0
         # Ackermann blend randomised per episode: 0.8 - 1.2 of the exact geometry
         if self.plant_name == "fast":
@@ -1006,7 +1037,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         import numpy as _np
         if "path" in sc:
             roads = torch.as_tensor(_np.asarray(sc["path"]), device=self.device, dtype=self.path_bank.dtype)
-            n = min(roads.shape[0], self.n, self.num_paths)
+            if roads.shape[0] != self.n:
+                raise ValueError(
+                    "scenario has %d environments but eval requested %d"
+                    % (roads.shape[0], self.n))
+            if self.n > self.num_paths:
+                raise ValueError(
+                    "exact replay needs n <= num_paths; got %d > %d"
+                    % (self.n, self.num_paths))
+            n = self.n
             self.path_bank[self.current_generation, :n].copy_(roads[:n])
             self.path_id[:n] = torch.arange(n, device=self.device)
             self.path_generation[:n] = self.current_generation

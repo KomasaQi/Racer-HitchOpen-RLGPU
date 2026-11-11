@@ -610,7 +610,11 @@ class FastRacerPlant:
                 torch.stack([omega[:, 2], omega[:, 3]], dim=1), throttle, brake)
             t_l, t_r, coupling = self._lsd(axle, torch.stack([omega[:, 2], omega[:, 3]], dim=1))
             if self.drivetrain in ("rwd", "awd", "iwd"):
-                share = 1.0 if self.drivetrain == "rwd" else 0.5
+                # "iwd" is the compatibility name used by the continuous-drift
+                # task.  This plant has a single rear motor/LSD, so it is RWD
+                # here: it used to send only half the axle torque rearward and
+                # silently discard the other half (awd is what splits it).
+                share = 0.5 if self.drivetrain == "awd" else 1.0
                 drive_torque = torch.stack([
                     torch.zeros_like(t_l), torch.zeros_like(t_l), t_l * share, t_r * share], dim=1)
             if self.drivetrain == "fwd":
