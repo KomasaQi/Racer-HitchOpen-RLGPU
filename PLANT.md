@@ -484,3 +484,33 @@ Trade-off summary at R 11-14 m:
 The remaining problem is therefore state estimation of the tyre utilisation, not
 the reward: the target is capped at 8.5 m/s yet the policy holds 9.5 m/s on high
 grip without noticing.
+## drift_ev_v6: time-based previews (the decisive change for high speed)
+
+`--preview-time 0.5,1.0,1.6` replaces the fixed arc lengths with `v * t`, so the
+look-ahead in seconds is constant at every speed.  Effect at R 11-14 m:
+
+| policy | mu 0.75 | mu 1.00 | mu 1.25 | speed |
+|---|---|---|---|---|
+| v5 (metric previews 1.0) | 100 % | 95.6 % | **28.7 %** | 7.2-9.5 |
+| v6 (time previews + moderated target) | 100 % | 99.4 % | **84.9 %** | 6.0-7.4 |
+
+Full grid of v6 (160 episodes per cell, 3 m corridor, 30 s cap):
+
+| reference | mu = 0.75 | mu = 1.00 | mu = 1.25 |
+|---|---|---|---|
+| R 14-18 m | 100 % / 0.043 / 6.59 | 95.0 % / 0.043 / 7.31 | 73.0 % / 0.082 / 8.13 |
+| R 11-14 m | 100 % / 0.035 / 5.99 | 99.4 % / 0.032 / 6.64 | 84.9 % / 0.092 / 7.39 |
+| R 8-11 m  | 100 % / 0.026 / 5.32 | 99.4 % / 0.043 / 5.94 | 82.5 % / 0.115 / 6.60 |
+
+(full-length rate / |beta - beta_ref| / mean speed)
+
+This is the first policy that satisfies every sideslip requirement at once
+(|beta - beta_ref| <= 0.115 everywhere, i.e. inside the 0.12 target) while
+running 5.3-8.1 m/s and adapting the speed to the grip (5.3-6.6 on low and
+nominal grip, 7.4-8.1 on high grip).  Six of nine cells are at 95-100 %; the
+three high-grip cells are at 73-85 %.
+
+Training note: the reward's speed weight is a knife edge.  At `speed_weight 20`
+with margin 0.8 the policy peaked at epoch 220 (96/93/87 %) and then degraded
+(49 % at high grip by epoch 367), so the deliverable is the epoch-220 checkpoint
+fine-tuned with `speed_weight 8`, `speed_margin 0.65`, `speed_cap 7.2`.
