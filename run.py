@@ -136,6 +136,10 @@ parser.add_argument("--stall-window", type=int, default=None,
                     help="steps over which the displacement is measured for the stall rule")
 parser.add_argument("--stall-move", type=float, default=1.0,
                     help="metres the car must travel per stall window to count as moving")
+parser.add_argument("--spawn-speed-min", type=float, default=None,
+                    help="lower bound of the speed-deficit spawn range")
+parser.add_argument("--spawn-deficit-frac", type=float, default=0.0,
+                    help="fraction of spawns drawn from the speed-deficit range")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -196,6 +200,8 @@ default_env_config = {
     "spawn_mode": args.spawn_mode,
     "spawn_speed": args.spawn_speed,
     "spawn_beta_frac": args.spawn_beta_frac,
+    "spawn_speed_min": (args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
+    "spawn_deficit_frac": args.spawn_deficit_frac,
     "speed_weight": args.speed_weight,
     "speed_target": (args.speed_target if args.speed_target is not None
                      else args.spawn_speed),

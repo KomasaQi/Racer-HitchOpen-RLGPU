@@ -136,6 +136,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.spawn_beta_frac = float(kwargs.get("spawn_beta_frac", 1.0))
         self.spawn_beta_noise = float(kwargs.get("spawn_beta_noise", 0.10))
         self.spawn_speed_noise = float(kwargs.get("spawn_speed_noise", 0.10))
+        # Speed-deficit curriculum: a fraction of the spawns start below the
+        # reference speed so the policy has to LEARN TO REGAIN it.  The dominant
+        # failure at the moment is "4 m/s -> 1 m/s in a second and never back".
+        self.spawn_speed_min = float(kwargs.get("spawn_speed_min", self.spawn_speed))
+        self.spawn_deficit_frac = float(kwargs.get("spawn_deficit_frac", 0.0))
         # Speed regulation around the drift operating speed.  XCAR's rspeed only
         # punishes V < 0.5 m/s, which at our scale (drift speed ~6.5 m/s) leaves
         # "slow down until the drift collapses" as a reward improving local
@@ -686,8 +691,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # task becomes recovering from a spin rather than drifting.
                 beta0 = beta * self.spawn_beta_frac * torch.clamp(
                     1.0 + self.spawn_beta_noise * torch.randn_like(beta), 0.4, 1.4)
-                v0 = self.spawn_speed * torch.clamp(
-                    1.0 + self.spawn_speed_noise * torch.randn_like(beta), 0.6, 1.3)
+                deficit = (torch.rand_like(beta) < self.spawn_deficit_frac)
+                v_low = self.spawn_speed_min + (self.spawn_speed - self.spawn_speed_min) * torch.rand_like(beta)
+                v0 = torch.where(deficit, v_low, self.spawn_speed * torch.clamp(
+                    1.0 + self.spawn_speed_noise * torch.randn_like(beta), 0.6, 1.3))
                 psi = veldir - beta0 + 0.1 * torch.randn_like(veldir)
                 xd = v0 * torch.cos(beta0 + psi)
                 yd = v0 * torch.sin(beta0 + psi)
