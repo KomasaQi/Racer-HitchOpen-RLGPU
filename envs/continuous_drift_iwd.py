@@ -69,6 +69,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.beta_ref_mode = str(kwargs.get("beta_ref_mode", "physics"))
         self.beta_max = float(kwargs.get("beta_max", 0.32))
         self.alpha_peak = float(kwargs.get("alpha_peak", 0.12))
+        # the geometric sideslip target is only demanded when the corner actually
+        # uses this fraction of the available grip
+        self.beta_util_ref = float(kwargs.get("beta_util_ref", 0.45))
+        self.beta_util_lo = float(kwargs.get("beta_util_lo", 0.30))
         # reference-sideslip map: beta_ref = beta_max * clamp(v_limit / v_char, lo, 1)
         # Ackermann blend range (0 = parallel steering, 1 = exact geometry)
         self.ackermann_lo = float(kwargs.get("ackermann_lo", 0.8))
@@ -437,29 +441,37 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
         self.kappa_ref = waypoints_filtered[:, :, 3].gather(1, bidx).squeeze(1)
 
-    def _reference_beta(self, kappa):
-        """Reference sideslip from the rear-axle slip angle at the drift limit.
+    def _reference_beta(self, kappa, speed):
+        """Reference sideslip: the tight-corner target, faded by feasibility.
 
-        In a steady drift the rear axle sits at its peak slip angle and the body
-        is rotated by beta relative to the velocity, so
+        The geometric target is the rear-slip-at-peak relation
 
-            alpha_rear = beta - lR * |kappa|   =>   beta = alpha_peak + lR * |kappa|
+            beta_geo = alpha_peak + lR * |kappa|
 
-        i.e. a TIGHTER corner needs MORE rotation, a wide open one less.  The
-        result depends only on the geometry and the tyre peak, never on how fast
-        the car happens to be going.  mu enters only through ``alpha_peak`` (the
-        slip angle at which the tyre peaks), which is a weak dependence for this
-        isotropic model, so the map is effectively road geometry.
+        which a tighter corner makes larger.  It is only reachable when the car
+        is actually using a large fraction of the available grip: measured at
+        mu 1.0, R 16 m, 6.1 m/s the car achieves 0.056 rad against a 0.193 rad
+        request with random sign, i.e. it simply drives with grip.  The target is
+        therefore scaled by the friction utilisation
 
-        The value is privileged (it is the reward target and critic input) and
-        must never reach the actor.
+            util = v^2 |kappa| / (mu g),  factor = clamp(util / util_ref, lo, 1)
+
+        so the reference never asks for a sideslip the car cannot produce.  Both
+        the speed and the grip are privileged, so this stays reward/critic only.
         """
         kap = kappa.abs()
-        lr = self.plant.col("lR").reshape(-1, *((1,) * max(kappa.dim() - 1, 0)))
-        alpha = self.alpha_peak
-        beta = alpha + lr * kap
-        beta = torch.clamp(beta, max=self.beta_max)
-        return -torch.sign(kappa) * beta
+        extra = (1,) * max(kappa.dim() - 1, 0)
+        lr = self.plant.col("lR").reshape(-1, *extra)
+        mu = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp_min(0.05).reshape(-1, *extra)
+        gg = self.plant.col("g").reshape(-1, *extra)
+        if not torch.is_tensor(speed):
+            speed = torch.full_like(kappa, float(speed))
+        if speed.dim() < kappa.dim():
+            speed = speed.reshape(-1, *((1,) * (kappa.dim() - speed.dim())))
+        beta_geo = torch.clamp(self.alpha_peak + lr * kap, max=self.beta_max)
+        util = (speed.square() * kap / (mu * gg)).clamp(0.0, 1.0)
+        factor = (util / self.beta_util_ref).clamp(self.beta_util_lo, 1.0)
+        return -torch.sign(kappa) * beta_geo * factor
 
     def obs(self):
         """Real-vehicle observable state, after the XCAR observation design.
@@ -518,7 +530,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # friction limit asks for beta_max.  It uses the TRUE speed and the TRUE
         # grip, so it is privileged information and never reaches the actor.
         if self.beta_ref_mode == "physics":
-            self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1)).squeeze(1)
+            self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1), v).squeeze(1)
             self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),
                                          torch.cos(beta - self.beta_ref))
         angle_diff = self.angle_diff
@@ -693,7 +705,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # future; without it the privileged critic is blind to the path
             # critic previews keep the reference sideslip (5 channels); the actor
             # version above does not have it
-            beta_preview = self._reference_beta(self.kappa_preview)
+            beta_preview = self._reference_beta(self.kappa_preview, v[:, None])
             for j in range(3):
                 priv_list.append(torch.cat([la_converted[j], beta_preview[:, j:j + 1]], dim=1))
             states = torch.cat(priv_list, 1) * self.priv_scale
@@ -959,7 +971,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # works on whole batches, so evaluate it for all envs and index)
             _di = is_done.nonzero(as_tuple=False).squeeze(1)
             kappa_all = self.path_bank[self.path_generation, self.path_id, self.progress, 3]
-            beta_all = self._reference_beta(kappa_all.unsqueeze(1)).squeeze(1)
+            beta_all = self._reference_beta(kappa_all.unsqueeze(1), self.spawn_speed).squeeze(1)
             self.u_cmd[_di, 0] = (0.55 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
             self.u_cmd[_di, 1] = 0.55
         self.randomize(is_done)
