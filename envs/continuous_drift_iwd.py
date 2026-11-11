@@ -255,6 +255,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.zeros(self.n, dtype=torch.int16, device=self.device)
         self.win_back = 20
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
+        self.stall_move_min = 1.0
+        self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)   # 0 = not done, 1 = failed, 2 = succeeded
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
@@ -312,7 +314,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # distilled policy was below stall speed 82 % of the time and off path
         # 70 % of the time, which is what its long episodes actually were).
         ax_now = self.extras["ax"] if self.extras is not None else torch.zeros_like(self._v_hint)
-        stalled = (self._v_hint < self.stall_speed) & (ax_now < 0.5)
+        slow = (self._v_hint < self.stall_speed) & (ax_now < 0.5)
+        # "stalled" must mean NOT MOVING, not "slow": a drift legitimately dips
+        # below the stall speed mid corner.  The counter only keeps running while
+        # the car has also travelled less than ``stall_move_min`` metres since the
+        # window opened.
+        pos_now = self.s[:, :2]
+        self._stall_anchor = torch.where(slow.unsqueeze(1), self._stall_anchor, pos_now)
+        moved = torch.norm(pos_now - self._stall_anchor, dim=1)
+        stalled = slow & (moved < self.stall_move_min)
         self.no_progress_count[~stalled] = 0
         self.no_progress_count[stalled] += 1
 
@@ -604,6 +614,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.step_progress = torch.zeros(self.n, dtype=torch.int16, device=self.device)
         self.win_back = 20
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
+        self.stall_move_min = 1.0
+        self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
