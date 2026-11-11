@@ -154,11 +154,11 @@ parser.add_argument("--sigma-per-dim", type=str, default=None,
                     help="initial action std per dimension, e.g. 0.6,0.25,0.25")
 parser.add_argument("--ackermann-lo", type=float, default=0.8)
 parser.add_argument("--ackermann-hi", type=float, default=1.2)
-parser.add_argument("--beta-ref-mode", type=str, default="physics")
-parser.add_argument("--beta-max", type=float, default=0.25)
+parser.add_argument("--beta-max", type=float, default=0.32)
 parser.add_argument("--alpha-peak", type=float, default=0.12,
                     help="rear slip angle at the tyre peak, sets the reference sideslip")
-parser.add_argument("--beta-max", type=float, default=0.32)
+parser.add_argument("--path-regen-every", type=int, default=0)
+parser.add_argument("--beta-ref-mode", type=str, default="physics")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
