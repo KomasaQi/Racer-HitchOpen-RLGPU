@@ -308,8 +308,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # while killing drifting cars that legitimately lose ground for a moment.
         # A car that is slow but accelerating (recovering from a slide) is not
         # stalled, so the longitudinal acceleration gates the counter.
+        #
+        # The rule must NOT be gated on ``on_path``: doing so made "be slow while
+        # sitting outside the progress corridor" a safe harbour (measured: the
+        # distilled policy was below stall speed 82 % of the time and off path
+        # 70 % of the time, which is what its long episodes actually were).
         ax_now = self.extras["ax"] if self.extras is not None else torch.zeros_like(self._v_hint)
-        stalled = on_path & (self._v_hint < self.stall_speed) & (ax_now < 0.5)
+        stalled = (self._v_hint < self.stall_speed) & (ax_now < 0.5)
         self.no_progress_count[~stalled] = 0
         self.no_progress_count[stalled] += 1
 
