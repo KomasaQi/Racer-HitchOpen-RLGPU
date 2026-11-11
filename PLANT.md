@@ -172,6 +172,43 @@ python run.py train continuous_drift_iwd --car-preset fullsize_racecar_ev \
 python run.py train continuous_drift_iwd --car-preset xcar --plant iwd --exp-name xcar_legacy
 ```
 
+## Validity fixes (read this before trusting any number above)
+
+An independent review of this repository found three defects that invalidated
+part of the earlier measurements.  All three are fixed; the numbers earlier in
+this document were measured before the fixes and are **not** comparable with new
+runs.
+
+1. **Respawn ordering.** `reset_done_envs()` ran at the *start* of `step()`, so
+   the action chosen from a terminal observation was applied to the newly
+   spawned car, injecting an arbitrary command into every episode start and
+   letting the reward history cross episode boundaries.  Physics now runs on the
+   terminal state, then the envs respawn, then the observation and the difference
+   terms are aligned to the new state.
+2. **Frozen reference.** The nearest-waypoint search was forward-only (0.76 m)
+   and progress was frozen once the lateral error exceeded 3.8 m, while the
+   failure corridor is 10.6 m; every recovery manoeuvre therefore chased a stale
+   target.  The window is now symmetric (-20..+19) and progress always advances.
+   Effect on the archived policy: off-path failures 231 -> 0.
+3. **Stall loophole.** `stalled` was gated on `on_path`, so a car sitting outside
+   the 3.8 m progress corridor was exempt from the stall rule.  The distilled
+   policy exploited exactly that (82 % of its steps below stall speed, 70 % off
+   path) and its reported 14.2 s was really "crawl off the path"; with the rule
+   fixed it measures 5.2 s.
+
+**Evaluation protocol.** `eval.py --one-episode` gives every environment exactly
+one episode and freezes it at its first terminal state, so the statistics are
+neither a renewal process nor biased by censored respawns.  It reports the mean,
+the median, p10/p25/p75/p90, the full-length rate with a Wilson 95 % interval and
+the exclusive first-failure reason.
+
+**Honest baseline** (archived policy, corrected environment, 512 episodes at
+R 11-14 m, mu 1.0, corridor 1.4 L, stall 2.5 m/s): mean **8.64 s**, median
+5.40 s, p10/p25/p75/p90 = 0.84 / 2.05 / 13.10 / 22.50, full-length **4.1 %**
+(CI 2.7-6.2), reasons no_progress 227 / course 106 / off_path 155 / other 21,
+|beta - beta_ref| 0.102, speed 4.35 m/s.  The distribution is bimodal: a quarter
+of the episodes die before 2 s and a quarter run past 13 s.
+
 ## Drift task: observation, critic and reference scale
 
 The `continuous_drift_iwd` task keeps XCAR's reward structure and reference
