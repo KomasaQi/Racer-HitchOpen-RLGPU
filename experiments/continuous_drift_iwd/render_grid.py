@@ -59,6 +59,15 @@ def rollout(a, grip, seed, policy):
     env.is_done[:] = 1
     env.reset_done_envs()
     obs = env.obs()
+    if getattr(a, "scenario", None):
+        import numpy as _np
+        sc = _np.load(a.scenario)
+        all_ids = [int(x) for x in str(a.scenario_ids).split(",")] if getattr(a, "scenario_ids", None) else list(range(len(sc["s"])))
+        sid = all_ids[getattr(a, "current_scenario_id", 0) % len(all_ids)]
+        idx = [sid]
+        sub = {"path_id": sc["path_id"][idx], "progress": sc["progress"][idx],
+               "s": sc["s"][idx], "u_cmd": sc["u_cmd"][idx]}
+        obs = env.apply_scenario(sub)
     policy.reset_hidden(torch.ones(a.n, dtype=torch.bool, device=a.device))
 
     rec = [dict(xy=[], psi=[], v=[], beta=[], bref=[], prog=[], d=[], q=[]) for _ in range(a.n)]
@@ -111,6 +120,7 @@ def main(args):
     # one column per seed; inside a column every grip runs on the same roads
     grids = []
     for si, seed in enumerate(seeds[:n]):
+        args.current_scenario_id = si
         per_grip = []
         for grip in grips:
             env, rec = rollout(args, grip, seed, policy)
@@ -196,6 +206,9 @@ if __name__ == "__main__":
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--frames", type=int, default=20)
     ap.add_argument("--out", default="grid.png")
+    ap.add_argument("--scenario", type=str, default=None,
+                    help="frozen scenario npz: same roads and starts for every grip")
+    ap.add_argument("--scenario-ids", type=str, default=None)
     ap.add_argument("--beta-scale", type=float, default=0.15)
     ap.add_argument("--offpath-scale", type=float, default=0.4)
     ap.add_argument("--course-fail", type=float, default=1.6)

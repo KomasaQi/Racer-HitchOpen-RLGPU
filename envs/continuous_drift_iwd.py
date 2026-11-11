@@ -799,6 +799,41 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # sees stale values on the spawn step.
             self.es = self.plant.extended_state(self.s, self.u_cmd)
 
+    # ---------------------------------------------------------------- scenarios
+    def capture_scenario(self):
+        """Freeze the current spawn (road, position, wheel state) for replay."""
+        return {"path_id": self.path_id.detach().cpu().numpy().copy(),
+                "progress": self.progress.detach().cpu().numpy().copy(),
+                "s": self.s.detach().cpu().numpy().copy(),
+                "u_cmd": self.u_cmd.detach().cpu().numpy().copy()}
+
+    def apply_scenario(self, sc):
+        """Replay a frozen scenario: same roads and start states at any grip."""
+        import numpy as _np
+        pid = torch.as_tensor(_np.asarray(sc["path_id"]), device=self.device, dtype=self.path_id.dtype)
+        prog = torch.as_tensor(_np.asarray(sc["progress"]), device=self.device, dtype=self.progress.dtype)
+        st = torch.as_tensor(_np.asarray(sc["s"]), device=self.device, dtype=self.s.dtype)
+        n = min(pid.numel(), self.n)
+        self.path_id[:n] = pid[:n]
+        self.progress[:n] = prog[:n]
+        self.s[:n] = st[:n]
+        self.u[:n] = 0
+        if "u_cmd" in sc:
+            uc = torch.as_tensor(_np.asarray(sc["u_cmd"]), device=self.device, dtype=self.u_cmd.dtype)
+            self.u_cmd[:n] = uc[:n]
+        else:
+            self.u_cmd[:n] = 0
+        self.step_count[:n] = 0
+        self.step_progress[:n] = 0
+        self.is_done[:n] = 0
+        self.no_progress_count[:n] = 0
+        self._stall_anchor[:n] = 0
+        if self.plant_name == "fast":
+            self.plant.reset_guess(torch.ones(self.n, dtype=torch.bool, device=self.device))
+            self.es = self.plant.extended_state(self.s, self.u_cmd)
+        self._track_pending = True
+        return self.obs()
+
     def step(self, action, **kwargs):
         # Physics first, THEN respawn: the action was chosen from the terminal
         # observation, so it has to act on the terminal state.  Resetting before

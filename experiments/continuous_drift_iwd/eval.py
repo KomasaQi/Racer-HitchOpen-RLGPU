@@ -14,6 +14,7 @@ import os
 import glob
 import sys
 
+import numpy as np
 import torch
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
@@ -85,6 +86,8 @@ def main():
     ap.add_argument("--steps", type=int, default=600)
     ap.add_argument("--device", default="cuda:0")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--save-scenario", type=str, default=None)
+    ap.add_argument("--load-scenario", type=str, default=None)
     ap.add_argument("--beta-scale", type=float, default=1.0)
     ap.add_argument("--offpath-scale", type=float, default=1.0)
     ap.add_argument("--course-fail", type=float, default=1.0)
@@ -117,6 +120,7 @@ def main():
     args = ap.parse_args()
 
     torch.manual_seed(args.seed)
+    np.random.seed(args.seed)
     env = ContinuousDriftIWDEnv(args.car_preset, args.n, args.device, ref_mode=args.ref_mode,
                                 control_mode=args.control_mode, beta_scale=args.beta_scale,
                                 spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
@@ -141,6 +145,12 @@ def main():
     if getattr(env, "train", False):
         env.is_done[:] = 1
         env.reset_done_envs()
+    if args.load_scenario:
+        _sc = np.load(args.load_scenario)
+        obs = env.apply_scenario(_sc)
+    elif args.save_scenario:
+        np.savez(args.save_scenario, **env.capture_scenario())
+        print("saved scenario", args.save_scenario)
         obs = env.obs()
     ckpt = args.checkpoint
     if os.path.isdir(ckpt) or ckpt.endswith("nn"):
