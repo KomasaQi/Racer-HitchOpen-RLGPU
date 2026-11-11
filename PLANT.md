@@ -531,3 +531,29 @@ State of v8 at epoch 58 (one-episode protocol, config reconstructed from the run
 | \|beta - beta_ref\| | 0.152 rad |
 
 So the policy already drives fast and drifts, but cannot hold the 3 m corridor at that speed.  Either the 900-epoch budget fixes it or the speed target has to come down.
+## v13: the first policy that survives the whole grid at a 3.8 m corridor
+
+The 3.0 m corridor was the binding constraint, not the drift: the failures were
+"just outside" (p90 cross-track 3.01 m).  Widening the trained corridor to 0.5 L
+(3.8 m) and keeping everything else produced the first policy that survives the
+full radius x grip grid.  One episode per environment, 96 episodes per cell,
+config reconstructed from the run.
+
+| curv (R) | mu 0.50 | mu 0.75 | mu 1.00 |
+|---|---|---|---|
+| 0.55 (R 14-18) | 97.9 % / 0.055 | 85.4 % / 0.119 | 82.3 % / 0.178 |
+| 0.70 (R 11-14) | 99.0 % / 0.047 | 91.7 % / 0.096 | 69.8 % / 0.181 |
+| 0.90 (R 8-11)  | 99.0 % / 0.054 | 86.5 % / 0.080 | 74.0 % / 0.177 |
+
+(full-length rate / per-episode |beta - beta_ref|; speeds 3.5-6.1 m/s, rising with grip)
+
+Mean over the nine cells: 87.3 % full length.  The low- and mid-grip cells are at
+85-99 %, high grip at 70-82 %, and the sideslip error at high grip (0.18 rad) is
+the remaining physics/tracking gap.
+
+Reward settings that got here, in order of effect:
+1. the progress term must be capped at the reference-rate (uncapped it rewards
+   over-speeding, which is what pushed the car out of the corridor);
+2. `speed_weight 12` with the two-sided limit target;
+3. `stall_move 1.0` (a 1 m/s floor instead of 1.9 m/s) so a legitimate slow
+   low-grip corner is not scored as a stall.
