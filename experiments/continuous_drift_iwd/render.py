@@ -130,7 +130,7 @@ def main(args):
     n_show = min(args.show, n)
     refs = {}
     for k in range(n_show):
-        pid = int(env.path_id[k].item())
+        pid = pid0[k]   # the id at episode start; env.path_id is re-randomised on respawn
         if pid not in refs:
             refs[pid] = env.path_bank[pid, :, :2].detach().cpu().numpy()
     corridor = env.offpath_limit
@@ -148,7 +148,7 @@ def main(args):
     refxy = []
     for k in range(n_show):
         pr = np.array(progress[k])
-        refxy.append(env.path_bank[int(env.path_id[k].item()), pr, :2].detach().cpu().numpy())
+        refxy.append(env.path_bank[pid0[k], pr, :2].detach().cpu().numpy())
 
     fig, axes = plt.subplots(3, n_show, figsize=(6.0 * n_show, 12.6), squeeze=False,
                              gridspec_kw={"height_ratios": [1.5, 1.0, 0.85]})
