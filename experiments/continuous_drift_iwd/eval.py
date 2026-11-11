@@ -95,6 +95,9 @@ def main():
     ap.add_argument("--obs-privileged", action="store_true")
     ap.add_argument("--one-episode", action="store_true",
                     help="each env contributes exactly one episode (unbiased)")
+    ap.add_argument("--curv-smooth", type=int, default=0)
+    ap.add_argument("--preview-scale", type=float, default=1.0)
+    ap.add_argument("--flip-prob", type=float, default=None)
     ap.add_argument("--yaw-weight", type=float, default=0.0)
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
