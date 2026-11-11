@@ -666,3 +666,19 @@ corridor changes, which is the signature of the car being genuinely unstable in 
 That makes the remaining gap a controllability question at the tightest low-grip
 geometry: the car holds 3.4 m/s there against a 4.4 m/s target, i.e. it is already
 slower than asked, and it still loses the line in about one episode in twenty.
+## The friction curriculum made it worse (recorded, reverted)
+
+Stage A resumed drift_ev_v17 and narrowed the training distribution to the hard
+corner (D 0.50-0.65, curvature 0.80-0.95) for ~150 PPO epochs.  Evaluated on that
+very cell with the disturbance on, 384 episodes:
+
+| model | full length | |beta - beta_ref| |
+|---|---|---|
+| drift_ev_v17 (full distribution) | 94.3 % | 0.096 |
+| curriculum stage A, epoch 549 | 87.5 % | 0.157 |
+| curriculum stage A, epoch 711 | 58.6 % | 0.372 |
+
+Narrowing the distribution did not sharpen the policy on the hard corner, it
+collapsed it: the sideslip error tripled and the course failures went from 1 to
+100.  The full-distribution run is kept as the deliverable and the curriculum is
+recorded as a dead end (at this budget, with this reward).
