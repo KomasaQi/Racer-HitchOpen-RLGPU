@@ -616,3 +616,30 @@ column, so the adaptive-drift requirement holds.
 Same roads across grip (frozen scenario, seeds 42/43/44, 660 control steps each):
 all nine cells reach the full 30 s, |dbeta| 0.051-0.125, speeds 4.15-5.12 m/s.
 Rendered to `experiments/continuous_drift_iwd/runs/drift_ev_v17/grid_same_roads_across_grip.png`.
+## Evaluation with the OU disturbance (the trained condition)
+
+The evaluator did not enable the disturbance until this point, so every earlier
+grid was disturbance-free.  Two subtleties had to be fixed to measure it:
+
+1. `--disturbed` now builds the same OU process (0.97, 0.03) used in training;
+2. with the disturbance on, the environment forces `tyre_scale = 1.0`, so a fixed
+   `--grip-scale` is silently ignored -- the evaluator therefore pins the tyre `D`
+   through `randomize_param` (same B/C ranges as the training preset).
+
+384 episodes per cell, 3.8 m corridor, stall floor 0.6 m/s, disturbance on:
+
+| cell | full length | |beta - beta_ref| raw / filtered | speed |
+|---|---|---|---|
+| mu 0.50, R 14-18 | 99.5 % (98.1-99.9) | 0.073 / 0.066 | 4.17 m/s |
+| mu 0.50, R 8-11  | **94.3-95.1 %** (91.5-96.8) | 0.096 / 0.089 | 3.42 m/s |
+| mu 0.75, R 11-14 | 100.0 % (99.0-100.0) | 0.065 / 0.062 | 4.12 m/s |
+| mu 1.00, R 8-11  | 99.5 % (98.1-99.9) | 0.085 / 0.079 | 3.85 m/s |
+
+The filtered column is a first-order low pass (tau 0.5 s): it is only marginally
+smaller than the raw one, so the sideslip error is genuine tracking error rather
+than disturbance leaking through.  Every cell is inside the 0.12 rad target.
+
+The single cell below 99 % is the tightest low-grip corner at mu 0.5 / R 8-11, and
+its failures are `off_path` (18 of 22), not stalls: at 3.42 m/s the car cannot keep
+an 8 m arc inside a 3.8 m corridor.  That is 48 % of the corner radius and about
+two car widths, the hardest geometry in the evaluated grid.
