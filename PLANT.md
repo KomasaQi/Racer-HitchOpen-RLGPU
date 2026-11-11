@@ -458,3 +458,29 @@ extreme grips without the speed rising.  Two candidate explanations:
 
 `drift_ev_v4` therefore remains the reference policy: 100 % full-length at
 mu <= 1.0, |beta-beta_ref| 0.095-0.115, 5.5-6.1 m/s.
+## drift_ev_v5: high-speed limit policy (preview 1.0, friction-limit speed target)
+
+Trained from scratch with `preview_scale 1.0` (7.6/15.1/22.7 m, i.e. 0.8-2.4 s of
+look-ahead at 9 m/s) and `--speed-target-mode limit --speed-margin 0.8
+--speed-cap 8.5`, two-sided speed penalty, `beta_weight 100`.
+
+| reference | mu = 0.75 | mu = 1.00 | mu = 1.25 |
+|---|---|---|---|
+| R 11-14 m | **100 % / 0.030 / 7.23 m/s** | 95.6 % / 0.047 / 8.13 | 28.7 % / 0.107 / 9.54 |
+
+The speed more than doubled against drift_ev_v4 (5.5 -> 7.2-9.5 m/s) and the
+sideslip error improved to 0.03-0.05 at mu <= 1.0, but the high-grip cell
+collapses: the policy drives 9.5 m/s there (1 m/s above the capped target) and
+leaves the corridor.  The car accelerates most easily on high grip and has no
+observation that tells it "I am at the limit", so it keeps pushing.
+
+Trade-off summary at R 11-14 m:
+
+| policy | mu 0.75 | mu 1.00 | mu 1.25 | speed |
+|---|---|---|---|---|
+| drift_ev_v4 | 99.2 % / 0.053 | 100 % / 0.095 | 99.2 % / 0.150 | 5.5-6.1 m/s |
+| drift_ev_v5 | 100 % / 0.030 | 95.6 % / 0.047 | 28.7 % / 0.107 | 7.2-9.5 m/s |
+
+The remaining problem is therefore state estimation of the tyre utilisation, not
+the reward: the target is capped at 8.5 m/s yet the policy holds 9.5 m/s on high
+grip without noticing.
