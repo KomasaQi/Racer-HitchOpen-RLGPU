@@ -128,6 +128,8 @@ def main():
     ap.add_argument("--spawn-speed", type=float, default=6.5)
     ap.add_argument("--grip-scale", type=float, default=1.0,
                     help="global friction multiplier (evaluate on different surfaces)")
+    ap.add_argument("--disturbed", action="store_true",
+                    help="apply the OU disturbance the policy was trained with")
     args = ap.parse_args()
 
     # reconstruct the training environment from the run directory when asked:
@@ -161,7 +163,15 @@ def main():
                                 spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
                                 offpath_scale=args.offpath_scale, course_fail=args.course_fail,
                                 stall_speed=args.stall_speed, alive_bonus=args.alive_bonus,
-                                curv_scale=args.curv_scale, seg_scale=args.seg_scale, grip_scale=args.grip_scale,
+                                curv_scale=args.curv_scale, seg_scale=args.seg_scale,
+                                grip_scale=args.grip_scale,
+                                disturbance_param=((0.97, 0.03) if args.disturbed else None),
+                                # matching the training DR; the env forces tyre_scale
+                                # to 1.0 whenever the disturbance is on, so a fixed
+                                # --grip-scale cannot be applied in that mode
+                                randomize_param=(({"B": [8.0, 12.0], "C": [1.7, 2.1],
+                                                   "D": [float(args.grip_scale), float(args.grip_scale)]})
+                                                  if args.disturbed else None),
                                 curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
                                 preview_time=args.preview_time,
                                 flip_prob=args.flip_prob,
