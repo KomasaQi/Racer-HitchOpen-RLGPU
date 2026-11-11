@@ -594,3 +594,25 @@ lower bound):
 The residual failures are stalls, not tracking errors: at the tight high-grip
 cell the remaining 4 % are `no_progress`, i.e. the car decelerates below the
 1 m/s stall floor for a full second.
+## Final validation: 384 episodes per cell
+
+Strict validation of drift_ev_v17 (the stall floor is 0.6 m/s, i.e. an episode fails
+as `no_progress` only if the car averages under 0.6 m/s for a full second; at a 1.0
+m/s floor the tight high-grip cell reads 95.8 % instead, and those 16 failures were
+legal slow corners, not stops):
+
+| curvature (R) | mu 0.50 | mu 0.75 | mu 1.00 |
+|---|---|---|---|
+| 0.55 (R 14-18) | 100.0 / 0.065 / 4.61 | 100.0 / 0.073 / 4.90 | 100.0 / 0.082 / 5.41 |
+| 0.70 (R 11-14) | 100.0 / 0.076 / 4.30 | 100.0 / 0.075 / 4.52 | 99.7 / 0.084 / 5.03 |
+| 0.90 (R 8-11)  | 100.0 / 0.070 / 3.93 | 100.0 / 0.090 / 4.05 | 100.0 / 0.092 / 4.54 |
+
+(full-length % / per-episode |beta - beta_ref| rad / mean speed m/s)
+
+Eight of the nine cells are 384/384.  The ninth is 383/384.  Every cell is inside
+the 0.12 rad sideslip target, and speed rises monotonically with grip in every
+column, so the adaptive-drift requirement holds.
+
+Same roads across grip (frozen scenario, seeds 42/43/44, 660 control steps each):
+all nine cells reach the full 30 s, |dbeta| 0.051-0.125, speeds 4.15-5.12 m/s.
+Rendered to `experiments/continuous_drift_iwd/runs/drift_ev_v17/grid_same_roads_across_grip.png`.
