@@ -319,18 +319,17 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # sitting outside the progress corridor" a safe harbour (measured: the
         # distilled policy was below stall speed 82 % of the time and off path
         # 70 % of the time, which is what its long episodes actually were).
-        ax_now = self.extras["ax"] if self.extras is not None else torch.zeros_like(self._v_hint)
-        slow = (self._v_hint < self.stall_speed) & (ax_now < 0.5)
-        # "stalled" must mean NOT MOVING, not "slow": a drift legitimately dips
-        # below the stall speed mid corner.  The counter only keeps running while
-        # the car has also travelled less than ``stall_move_min`` metres since the
-        # window opened.
+        # The stall rule is purely about displacement: the counter measures how
+        # many control steps have passed since the car last covered
+        # ``stall_move_min`` metres.  A speed gate and a longitudinal-acceleration
+        # gate were both exploitable (a car can creep while still accelerating),
+        # and a drift legitimately dips below any instantaneous speed threshold.
         pos_now = self.s[:, :2]
-        self._stall_anchor = torch.where(slow.unsqueeze(1), self._stall_anchor, pos_now)
         moved = torch.norm(pos_now - self._stall_anchor, dim=1)
-        stalled = slow & (moved < self.stall_move_min)
-        self.no_progress_count[~stalled] = 0
-        self.no_progress_count[stalled] += 1
+        reached = moved >= self.stall_move_min
+        self._stall_anchor = torch.where(reached.unsqueeze(1), pos_now, self._stall_anchor)
+        self.no_progress_count[reached] = 0
+        self.no_progress_count[~reached] += 1
 
         # u = vector from nearest waypoint to current pos; v = velocity direction at nearest waypoint
         # theta = angle from u to v
