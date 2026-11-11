@@ -68,7 +68,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # "physics" derives it from the friction utilisation at each point
         self.beta_ref_mode = str(kwargs.get("beta_ref_mode", "physics"))
         self.beta_max = float(kwargs.get("beta_max", 0.25))
-        self.beta_util_floor = float(kwargs.get("beta_util_floor", 0.6))
+        self.beta_v_char = float(kwargs.get("beta_v_char", 12.0))
+        self.beta_v_lo = float(kwargs.get("beta_v_lo", 0.35))
+        # reference-sideslip map: beta_ref = beta_max * clamp(v_limit / v_char, lo, 1)
         # Ackermann blend range (0 = parallel steering, 1 = exact geometry)
         self.ackermann_lo = float(kwargs.get("ackermann_lo", 0.8))
         self.ackermann_hi = float(kwargs.get("ackermann_hi", 1.2))
@@ -392,24 +394,29 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
         self.kappa_ref = waypoints_filtered[:, :, 4].gather(1, bidx).squeeze(1)
 
-    def _reference_beta(self, kappa, speed):
-        """Steady-drift sideslip target implied by the friction utilisation.
+    def _reference_beta(self, kappa):
+        """Reference sideslip at a path point, from the friction-limited speed.
 
-        util = V^2 |kappa| / (mu g) is the fraction of the available lateral grip
-        the corner asks for; a smoothstep turns it into the fraction of beta_max
-        the reference asks for.  Uses the TRUE speed and the TRUE grip, so this
-        quantity is privileged: it must never reach the actor.
+        The corner has a theoretical maximum speed v_max = sqrt(mu_eff g / |kappa|)
+        set by the available grip; that speed, NOT the speed the car happens to be
+        doing, decides how much the car has to be rotated.  A corner whose limit
+        speed is low (tight or slippery) needs the full drift target, a fast open
+        corner needs less.  The map is
+
+            beta_ref = -sign(kappa) * beta_max * clamp(v_max / v_char, lo, 1)
+
+        and it depends only on the geometry and the grip, so it is a property of
+        the reference and the road, not of the current state.  mu_eff is the true
+        effective grip, so this is privileged information: reward and critic only.
         """
         mu = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp_min(0.05)
         gg = self.plant.col("g")
         extra = (1,) * max(kappa.dim() - 1, 0)
         mu = mu.reshape(-1, *extra)
         gg = gg.reshape(-1, *extra)
-        if speed.dim() < kappa.dim():
-            speed = speed.reshape(-1, *((1,) * (kappa.dim() - speed.dim())))
-        util = (speed.square() * kappa.abs() / (mu * gg)).clamp(0.0, 1.0)
-        blend = util.square() * (3.0 - 2.0 * util)
-        return -torch.sign(kappa) * self.beta_max * blend
+        v_max = torch.sqrt(mu * gg / kappa.abs().clamp_min(1e-2))
+        frac = (v_max / self.beta_v_char).clamp(self.beta_v_lo, 1.0)
+        return -torch.sign(kappa) * self.beta_max * frac
 
     def obs(self):
         """Real-vehicle observable state, after the XCAR observation design.
@@ -468,7 +475,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # friction limit asks for beta_max.  It uses the TRUE speed and the TRUE
         # grip, so it is privileged information and never reaches the actor.
         if self.beta_ref_mode == "physics":
-            self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1), v.unsqueeze(1)).squeeze(1)
+            self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1)).squeeze(1)
             self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),
                                          torch.cos(beta - self.beta_ref))
         angle_diff = self.angle_diff
@@ -639,7 +646,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # future; without it the privileged critic is blind to the path
             # critic previews keep the reference sideslip (5 channels); the actor
             # version above does not have it
-            beta_preview = self._reference_beta(self.kappa_preview, v.unsqueeze(1))
+            beta_preview = self._reference_beta(self.kappa_preview)
             for j in range(3):
                 priv_list.append(torch.cat([la_converted[j], beta_preview[:, j:j + 1]], dim=1))
             states = torch.cat(priv_list, 1) * self.priv_scale
