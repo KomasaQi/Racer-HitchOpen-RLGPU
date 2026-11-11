@@ -363,30 +363,34 @@ class FastRacerPlant:
         return fx, fy, fz, mx, my, mz
 
     def _front_steer(self, delta):
-        """Left/right front wheel angles from the nominal steer.
+        """Left/right front wheel angles from the nominal steer (radians).
 
-        ``ackermann_scale`` is per env: 0 keeps the two front wheels parallel,
-        1 applies the exact Ackermann geometry about the rear axle centre, and
-        values in between blend the two.  ``delta`` is (n, 1).
+        ``ackermann_scale`` is per env: 0 keeps the front wheels parallel, 1
+        applies the exact Ackermann geometry about the rear axle centre, and
+        values in between blend the two (1.2 extrapolates past exact).  The
+        geometry is built from magnitudes and the sign is applied afterwards,
+        because a signed radius would make the inner angle flip sign on the
+        right-hand side.
         """
         if delta.dim() == 1:
             delta = delta.unsqueeze(1)
         L = self.col("lF").unsqueeze(1) + self.col("lR").unsqueeze(1)
         half = 0.5 * self.col("Tf").unsqueeze(1)
         ack = self.ackermann_scale
-        small = delta.abs() < 1e-3
-        safe = torch.where(small, torch.full_like(delta, 1e-3), delta)
+        mag = delta.abs()
+        small = mag < 1e-4
+        safe = torch.where(small, torch.full_like(mag, 1e-4), mag)
         radius = L / torch.tan(safe)
-        r_in = radius - torch.sign(safe) * half
-        r_out = radius + torch.sign(safe) * half
-        # keep the inner radius away from the singularity of a locked steer
-        r_in = torch.where(torch.sign(safe) * r_in > 0.2 * L, r_in, 0.2 * L * torch.sign(safe))
-        d_in = torch.atan(L / r_in)
-        d_out = torch.atan(L / r_out)
+        # keep the inner radius positive and away from zero at large steer
+        r_in = torch.clamp(radius - half, min=0.2 * L)
+        r_out = torch.clamp(radius + half, min=0.2 * L)
+        d_in = torch.atan(L / r_in) * torch.sign(delta)
+        d_out = torch.atan(L / r_out) * torch.sign(delta)
         inner = delta + ack * (d_in - delta)
         outer = delta + ack * (d_out - delta)
-        left = torch.where(safe > 0, inner, outer)
-        right = torch.where(safe > 0, outer, inner)
+        # left is the inner wheel for a left turn (delta > 0)
+        left = torch.where(delta > 0, inner, outer)
+        right = torch.where(delta > 0, outer, inner)
         left = torch.where(small, delta, left)
         right = torch.where(small, delta, right)
         return torch.cat([left, right], dim=1)

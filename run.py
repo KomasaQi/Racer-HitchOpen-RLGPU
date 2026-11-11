@@ -8,6 +8,7 @@ from envs.fixed_circle_iwd import FixedCircleIWDEnv
 from envs.eight_drift_iwd import EightDriftIWDEnv
 from envs.state_tracker_iwd import StateTrackerIWDEnv
 from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+import torch
 import yaml
 import argparse
 import glob
@@ -156,7 +157,7 @@ parser.add_argument("--ackermann-hi", type=float, default=1.2)
 parser.add_argument("--beta-ref-mode", type=str, default="physics")
 parser.add_argument("--beta-max", type=float, default=0.25)
 parser.add_argument("--beta-util-floor", type=float, default=0.6)
-parser.add_argument("--path-regen-every", type=int, default=60000)
+parser.add_argument("--path-regen-every", type=int, default=0)
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -323,7 +324,42 @@ env_configurations.register('rlgpu', {
     ),
 })
 
-runner = Runner(RLGPUAlgoObserver())
+
+if args.sigma_per_dim:
+    _std = [float(x) for x in args.sigma_per_dim.split(",")]
+    if len(_std) != 3:
+        parser.error("--sigma-per-dim requires steer,throttle,brake")
+
+
+    class PerDimSigmaObserver(RLGPUAlgoObserver):
+        """Set the initial action std per dimension.
+
+        rl_games keeps one log-std vector on the actor (a2c_network.sigma), so the
+        per-dimension values must be written there after the actor is built.  The
+        runner restores the checkpoint afterwards, which overwrites them on resume.
+        """
+
+        def __init__(self, std):
+            super().__init__()
+            self.std = std
+
+        def after_init(self, algo):
+            super().after_init(algo)
+            net = algo.model.a2c_network
+            if not hasattr(net, "sigma"):
+                raise RuntimeError("actor has no a2c_network.sigma")
+            std = torch.as_tensor(self.std, dtype=net.sigma.dtype, device=net.sigma.device)
+            if std.shape != net.sigma.shape:
+                raise ValueError("sigma shape %s != %s" % (tuple(std.shape), tuple(net.sigma.shape)))
+            if torch.any(std <= 0):
+                raise ValueError("all action std must be positive")
+            with torch.no_grad():
+                net.sigma.copy_(std.log())
+            print("per-dim action std set to", self.std)
+else:
+    PerDimSigmaObserver = None
+
+runner = Runner(PerDimSigmaObserver(_std) if args.sigma_per_dim else RLGPUAlgoObserver())
 file_path = os.path.dirname(__file__)
 with open(os.path.join(file_path, "runner_config.yaml")) as f:
     runner_config = yaml.safe_load(f)
@@ -338,22 +374,6 @@ runner_config["params"]["config"]["seq_length"] = args.seq_length
     # action dims, but the ranges are +-0.45 rad for steering and [0, 1] for each
     # pedal, so a std of 1.0 is 220 % of the steering range and 100 % of a pedal.
     # Patching the model right after construction gives each dim its own value.
-if args.sigma_per_dim:
-        _sig = [float(x) for x in args.sigma_per_dim.split(",")]
-        try:
-            from rl_games.algos_torch.models import ModelA2CContinuousLogStd
-            _orig_init = ModelA2CContinuousLogStd.__init__
-
-            def _patched_init(self, *a, **k):
-                _orig_init(self, *a, **k)
-                if getattr(self, "sigma", None) is not None and self.sigma.numel() == len(_sig):
-                    with torch.no_grad():
-                        self.sigma.data[:] = torch.log(torch.tensor(_sig, dtype=self.sigma.dtype, device=self.sigma.device))
-                    print("per-dim sigma set to", _sig)
-
-            ModelA2CContinuousLogStd.__init__ = _patched_init
-        except Exception as _e:  # pragma: no cover
-            print("WARNING: per-dim sigma not applied:", _e)
 batch = args.num_parallel * args.horizon
 runner_config["params"]["config"]["minibatch_size"] = max(
     min(args.minibatch, batch), min(batch, 1024))

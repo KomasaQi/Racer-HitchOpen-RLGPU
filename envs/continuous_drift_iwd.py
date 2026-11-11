@@ -130,7 +130,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                   + [wheel_scale] * 4 + [0.5] * 4 + [1.0] * 4 + [1.0] * 4 + [1.0] * 4
                   + list(ctrl_scale))
         for _ in range(3):
-            pscale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0]
+            pscale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0, 1.0]
         self.priv_scale = torch.tensor(pscale, device=self.device, dtype=torch.float32)
         # "equilibrium" spawns start near the drift equilibrium of the local
         # reference (see gen_random_state); "legacy" keeps the XCAR wide
@@ -171,7 +171,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
         if self.asymmetric:
-            self.num_priv = 49
+            self.num_priv = 52
             self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_priv,))
 
         dummy_obs = torch.zeros((self.n, self.num_states), device=self.device)
@@ -196,7 +196,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # 131072 environments would be memorised, so fresh roads are drawn
             # whenever enough episodes have been spawned (see reset_done_envs)
             self._is_hybrid = True
-            self.path_regen_every = int(kwargs.get("path_regen_every", 60000))
+            # NOTE: an in-place regeneration would change the road underneath
+            # environments that are still driving on it, so it is OFF by default
+            # until the multi-generation ring exists.
+            self.path_regen_every = int(kwargs.get("path_regen_every", 0))
             self._resets_since_regen = 0
         # circle trajectory
         elif ref_mode == "circle":
@@ -389,6 +392,25 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
         self.kappa_ref = waypoints_filtered[:, :, 4].gather(1, bidx).squeeze(1)
 
+    def _reference_beta(self, kappa, speed):
+        """Steady-drift sideslip target implied by the friction utilisation.
+
+        util = V^2 |kappa| / (mu g) is the fraction of the available lateral grip
+        the corner asks for; a smoothstep turns it into the fraction of beta_max
+        the reference asks for.  Uses the TRUE speed and the TRUE grip, so this
+        quantity is privileged: it must never reach the actor.
+        """
+        mu = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp_min(0.05)
+        gg = self.plant.col("g")
+        extra = (1,) * max(kappa.dim() - 1, 0)
+        mu = mu.reshape(-1, *extra)
+        gg = gg.reshape(-1, *extra)
+        if speed.dim() < kappa.dim():
+            speed = speed.reshape(-1, *((1,) * (kappa.dim() - speed.dim())))
+        util = (speed.square() * kappa.abs() / (mu * gg)).clamp(0.0, 1.0)
+        blend = util.square() * (3.0 - 2.0 * util)
+        return -torch.sign(kappa) * self.beta_max * blend
+
     def obs(self):
         """Real-vehicle observable state, after the XCAR observation design.
 
@@ -446,13 +468,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # friction limit asks for beta_max.  It uses the TRUE speed and the TRUE
         # grip, so it is privileged information and never reaches the actor.
         if self.beta_ref_mode == "physics":
-            mu_eff = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp(0.2, 1.6)
-            util = (v * v * self.kappa_ref.abs() / (mu_eff * 9.81)).clamp(0.0, 1.0)
-            # floor: the drift is a style requirement, not only a limit effect, so
-            # even a gentle corner keeps part of the target; the rest scales up to
-            # beta_max as the car approaches the friction limit.
-            w = self.beta_util_floor + (1.0 - self.beta_util_floor) * util
-            self.beta_ref = -torch.sign(self.kappa_ref) * self.beta_max * w
+            self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1), v.unsqueeze(1)).squeeze(1)
             self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),
                                          torch.cos(beta - self.beta_ref))
         angle_diff = self.angle_diff
@@ -491,7 +507,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         la = [self.waypoints_at(la_ind).squeeze(1) for la_ind in la_inds]
         # curvature at the preview points, used by the friction-limit speed target
         self.kappa_preview = torch.stack([w[:, 4] for w in la], dim=1)
-        self.beta_preview = torch.stack([w[:, 3] for w in la], dim=1)
+
 
         def convert(waypoints):
             """Cast a waypoint into the current course aligned frame."""
@@ -584,8 +600,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # so the slowest wheel is the conservative progress measurement a real
         # car could integrate from the four encoders.
         v_min = wheel_speed.abs().amin(dim=1)
-        if self._prev is not None:
+        if getattr(self, "_physics_advanced", False):
             self.travel = self.travel + v_min * self.dt
+            self._physics_advanced = False
+        # actor channels: tracking errors + the encoder-derived travel (no reference
+        # sideslip here - that is reward/critic only)
         scalars += [e_pos, angle_diff, e_kappa, self.travel / self.length_scale]
         obs_list = [t.unsqueeze(1) for t in scalars]
         obs_list.extend(la_converted)
@@ -612,13 +631,17 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             priv_list = [t.unsqueeze(1) for t in priv]
             priv_list.append(wheel_speed)
             priv_list.append(slip)
+            priv_list.append(fz / f_ref)
             priv_list.append(fx / f_ref)
             priv_list.append(fy / f_ref)
-            priv_list.append(fz / f_ref)
             priv_list.append(torch.stack(ctrl, dim=1))
             # the preview is what makes the value estimate informative about the
             # future; without it the privileged critic is blind to the path
-            priv_list.extend(la_converted)
+            # critic previews keep the reference sideslip (5 channels); the actor
+            # version above does not have it
+            beta_preview = self._reference_beta(self.kappa_preview, v.unsqueeze(1))
+            for j in range(3):
+                priv_list.append(torch.cat([la_converted[j], beta_preview[:, j:j + 1]], dim=1))
             states = torch.cat(priv_list, 1) * self.priv_scale
             return {"obs": obs, "states": states}
         return obs
@@ -905,6 +928,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # spawned car, which injected an arbitrary command into the start of
         # every episode and made the reward history cross episode boundaries.
         self._track_pending = True   # the tracking update belongs to this step
+        self._physics_advanced = True   # only a real physics step may advance travel
         obs, reward, done, info = super().step(action, **kwargs)
         # ``done`` aliases ``self.is_done``; the respawn below clears it, so keep
         # a copy of the terminal flags before resetting
