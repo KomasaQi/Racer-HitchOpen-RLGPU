@@ -186,6 +186,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.recent_obs = [dummy_obs, dummy_obs]  # most recent first
         self.train = kwargs.get("train", False)
         self.wheel_radius = self.plant.geometry()[2]
+        # >1 biases the friction draw towards the low end while keeping the range
+        self.plant.grip_bias = float(kwargs.get("grip_bias", 1.0))
 
         if ref_mode == "hybrid":
             self.num_waypoints = 10000

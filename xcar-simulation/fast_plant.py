@@ -188,6 +188,7 @@ class FastRacerPlant:
         self.dtype = dtype
         self.n = int(n)
         self.g = float(params.get("g", G))
+        self.grip_bias = float(params.get("grip_bias", 1.0))
         self.drivetrain = str(params.get("drivetrain", "rwd")).lower()
         self.load_iters = max(int(params.get("load_iters", 2)), 1)
         self.slip_max = float(params.get("slip_max", 5.0))
@@ -269,7 +270,13 @@ class FastRacerPlant:
                 self.p[mask, PARAM_INDEX[key]] = float(value)
         for key, (lo, hi) in ranges.items():
             if key in PARAM_INDEX:
-                self.p[mask, PARAM_INDEX[key]] = lo + (hi - lo) * torch.rand(num, device=self.device, dtype=self.dtype)
+                # D is the friction level; grip_bias > 1 biases the sample towards
+                # the LOW end while keeping the full range, so a policy can be
+                # trained with more low-grip experience without narrowing D
+                u = torch.rand(num, device=self.device, dtype=self.dtype)
+                if key == "D" and self.grip_bias != 1.0:
+                    u = u.pow(self.grip_bias)
+                self.p[mask, PARAM_INDEX[key]] = lo + (hi - lo) * u
 
     def reset_randomization(self, mask=None):
         if mask is None:

@@ -164,6 +164,8 @@ parser.add_argument("--prog-weight", type=float, default=0.2,
                     help="weight on raw path progress; 0 removes the incentive to over-speed")
 parser.add_argument("--grip-range", type=str, default=None,
                     help="override the D range of the tyre preset, e.g. 0.6,0.9")
+parser.add_argument("--grip-bias", type=float, default=1.0,
+                    help=">1 oversamples low friction while keeping the full D range")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -297,6 +299,7 @@ default_env_config = {
     }[args.randomize_tyre],
     "random_seed": args.seed,
     "quiet": args.quiet,
+    "grip_bias": args.grip_bias,
     "aux_reward_decay_steps": args.aux_reward_decay_steps,
     "aux_reward_coef": args.aux_reward_coef,
     "gamma": args.gamma,
