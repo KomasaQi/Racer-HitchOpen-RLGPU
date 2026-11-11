@@ -327,14 +327,20 @@ action (MSE 0.06 -> 0.013 over 4000 steps at 4096 envs), then PPO fine-tunes the
 result.  This is the only intervention that moved the survival numbers
 substantially:
 
-| policy | R 14-18 m | R 11-14 m | R 8-11 m | |beta-beta_ref| | mean lateral offset | speed |
-|---|---|---|---|---|---|
-| trained from scratch | 12.76 s, 4 % | 10.52 s, 4 % | 8.50 s, <1 % | 0.09 | 2.8 m | 3.7 m/s |
-| distilled + fine-tuned | **15.00 s, 11 %** | **13.62 s, 15 %** | **14.40 s, 15 %** | 0.18-0.21 | 6.5 m | 1.4 m/s |
+**CORRECTION (supersedes the numbers first reported for this experiment).**  The
+measured distillation gain was an artefact of a bug in the failure rule: the
+stall counter only ran while the car was *on* the reference path, so "crawl at
+1.4 m/s while sitting 6.5 m off the line" was a safe harbour.  Measured directly:
+the distilled policy was below stall speed on 82 % of steps and off path on 70 %
+of them.  With the rule fixed (`stalled = v < stall & ax < 0.5`, wherever the car
+is) the same checkpoints measure:
 
-The distillation buys 20-70 % more survival and four times the full length rate,
-but it does so by trading speed and lateral accuracy: the car sits about 6.5 m
-off the line (inside the 1.4 L corridor) and crawls at 1.4 m/s.  Neither a
-position weight of 25 nor a potential recovery weight of 15 pulls it back, so the
-fine tuning is not being limited by the shaping signal.  Both checkpoints are
-archived (`runs/drift_ev_best` = tracking, `runs/drift_ev_distill` = survival).
+| policy | R 14-18 m | R 11-14 m | R 8-11 m | |beta-beta_ref| |
+|---|---|---|---|---|
+| tracking policy | 10.79 s | 9.76 s | 8.18 s | 0.09 |
+| distilled policy | - | 5.20 s | - | 0.25 |
+
+i.e. the distillation did **not** help; it exploited the hole.  The numbers in
+the table above this correction were measured under the buggy rule and are kept
+only as a record of that mistake.  Everything elsewhere in this document that
+predates the fix has been re-measured where it matters.
