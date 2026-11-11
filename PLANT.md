@@ -682,3 +682,27 @@ Narrowing the distribution did not sharpen the policy on the hard corner, it
 collapsed it: the sideslip error tripled and the course failures went from 1 to
 100.  The full-distribution run is kept as the deliverable and the curriculum is
 recorded as a dead end (at this budget, with this reward).
+## Final 384-episode grid of drift_ev_v17, with the OU disturbance on
+
+This is the deliverable measurement: `experiments/continuous_drift_iwd/runs/drift_ev_v17`,
+one episode per environment, 384 environments per cell, corridor 0.5 L (3.8 m),
+30 s cap, stall floor 0.6 m/s, OU (0.97, 0.03) on, the environment reconstructed
+from the run's `env_config.json`.
+
+| curvature (R) | mu 0.50 | mu 0.75 | mu 1.00 |
+|---|---|---|---|
+| 0.55 (R 14-18) | 99.7 % / 0.053 / 4.10 | 100.0 % / 0.069 / 4.40 | 100.0 % / 0.074 / 4.61 |
+| 0.70 (R 11-14) | 98.7 % / 0.059 / 3.78 | 100.0 % / 0.063 / 4.10 | 100.0 % / 0.073 / 4.29 |
+| 0.90 (R 8-11)  | 97.4 % / 0.064 / 3.40 | 100.0 % / 0.062 / 3.71 | 100.0 % / 0.072 / 3.90 |
+
+(full-length % / per-episode |beta - beta_ref| rad / mean speed m/s)
+
+Mean 99.5 % full length.  Six of nine cells are exactly 384/384; the three that are
+not are all at mu 0.50 (97.4, 98.7, 99.7 %), i.e. the residual failures concentrate
+on the low-friction end.  Every cell is inside the 0.12 rad sideslip target
+(0.053-0.074 raw, 0.045-0.072 filtered), and speed rises monotonically with grip in
+every column (3.40 -> 4.61 m/s), which is the adaptive-drift requirement.
+
+Two attempts to close the last low-grip percentage failed and are recorded above:
+six single-knob evaluation experiments (all inside the +-2.5 % sample noise) and a
+friction curriculum (which collapsed the policy to 58.6 %).
