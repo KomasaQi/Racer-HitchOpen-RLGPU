@@ -140,6 +140,9 @@ def main():
                     setattr(args, _k, _v)
                     _applied[_k] = _v
             print("env_config loaded:", len(_applied), "parameters")
+            if _cfg.get("ref_mode_cli"):
+                args.ref_mode = _cfg["ref_mode_cli"]
+                _applied["ref_mode"] = args.ref_mode
         else:
             print("WARNING: no env_config.json in", _cfg_dir)
 

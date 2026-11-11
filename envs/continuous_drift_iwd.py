@@ -103,6 +103,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.recover_weight = float(kwargs.get("recover_weight", 0.0))
         self.kappa_weight = float(kwargs.get("kappa_weight", 0.15))
         self.pp_weight = float(kwargs.get("pp_weight", 0.0))
+        self.prog_weight = float(kwargs.get("prog_weight", 0.2))
 
         n_ctrl = 3 if self.pedals else 4
         if not self.pedals:
@@ -789,7 +790,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             "recover": self.recover_weight * rew_recover,
             "pure_pursuit": self.pp_weight * rew_pp,
             "dir": self.dir_weight * rew_dir,
-            "prog": 0.2 * rew_prog,
+            # the speed target already defines how fast to go; a raw distance
+            # reward double-counts it and always favours going faster, which is
+            # what pushed the car past the corridor at high grip
+            "prog": self.prog_weight * rew_prog,
             "smooth": 0.015 * rew_smooth,
             "beta": self.beta_weight * rew_beta,
             "lowspeed": 0.1 * rew_lowspeed,

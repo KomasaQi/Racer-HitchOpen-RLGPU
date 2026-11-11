@@ -160,6 +160,8 @@ parser.add_argument("--alpha-peak", type=float, default=0.12,
 parser.add_argument("--path-refresh-every", type=int, default=8,
                     help="request a fresh path generation every N PPO epochs (0 disables)")
 parser.add_argument("--beta-ref-mode", type=str, default="physics")
+parser.add_argument("--prog-weight", type=float, default=0.2,
+                    help="weight on raw path progress; 0 removes the incentive to over-speed")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -230,6 +232,7 @@ default_env_config = {
     "beta_ref_mode": args.beta_ref_mode,
     "beta_max": args.beta_max,
     "alpha_peak": args.alpha_peak,
+    "prog_weight": args.prog_weight,
 
     "speed_cap": (args.speed_cap if args.speed_cap is not None else float("inf")),
     "speed_weight": args.speed_weight,
@@ -372,8 +375,9 @@ full_experiment_name = args.env + "_" + args.exp_name
 # persist the resolved environment configuration next to the run so that
 # evaluation can reconstruct the exact MDP instead of guessing defaults
 if args.train_or_test == "train":
-    default_env_config["ref_mode"] = args.ref_mode
-    default_env_config["control_mode"] = args.control_mode
+    # ref_mode is already passed positionally to the env constructor, so it is
+    # recorded under a separate key that only the evaluator reads
+    default_env_config["ref_mode_cli"] = args.ref_mode
     import json
     _cfg_dir = os.path.join("runs", full_experiment_name)
     os.makedirs(_cfg_dir, exist_ok=True)
