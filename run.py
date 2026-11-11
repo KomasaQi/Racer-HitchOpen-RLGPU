@@ -253,6 +253,14 @@ default_env_config = {
             "C": [1.6, 2.2],
             "D": [1.05, 1.40],
         },
+        # road friction for the drift task: a real drift lives between 0.5 and
+        # 1.0, so 1.25 is dropped.  B and C keep the shape spread but are not
+        # widened further (an uncalibrated tyre does not need more shape spread).
+        "ev_drift": {
+            "B": [8.0, 12.0],
+            "C": [1.7, 2.1],
+            "D": [0.50, 1.00],
+        },
         "ev_wide": {
             "B": [7., 13.],
             "C": [1.6, 2.2],
@@ -309,6 +317,8 @@ full_experiment_name = args.env + "_" + args.exp_name
 runner_config["params"]["seed"] = args.seed
 runner_config["params"]["config"]["num_actors"] = args.num_parallel
 runner_config["params"]["config"]["max_epochs"] = args.epochs
+# the CLI knob must actually reach PPO, otherwise --seq-length is inert
+runner_config["params"]["config"]["seq_length"] = args.seq_length
 batch = args.num_parallel * args.horizon
 runner_config["params"]["config"]["minibatch_size"] = max(
     min(args.minibatch, batch), min(batch, 1024))

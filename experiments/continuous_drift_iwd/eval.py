@@ -127,7 +127,9 @@ def main():
                                 curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
                                 preview_time=args.preview_time,
                                 flip_prob=args.flip_prob,
-                                stall_window=args.stall_window, stall_move=args.stall_move,
+                                stall_window=(args.stall_window if args.stall_window is not None
+                                              else max(int(round(0.2 * (2.65 / 0.35) ** 0.5 / 0.05)), 2)),
+                                stall_move=args.stall_move,
                                 spawn_speed_min=(args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
                                 spawn_deficit_frac=args.spawn_deficit_frac,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight,

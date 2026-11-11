@@ -156,6 +156,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # optimistic (measured: 9.3 m/s at mu 1.25 with 30 % full length).  The cap
         # keeps the target inside what the drift envelope allows.
         self.speed_cap = float(kwargs.get("speed_cap", float("inf")))
+        self.speed_lo = float(kwargs.get("speed_lo", 3.5))
         self.speed_weight = float(kwargs.get("speed_weight", 0.0))
         self.speed_hinge = bool(kwargs.get("speed_hinge", False))
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
@@ -414,7 +415,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         veldir[torch.hypot(xd, yd) < 0.01] = psi[torch.hypot(xd, yd) < 0.01]
 
         self._v_hint = v
-        self.find_nearest_waypoint(x, y, veldir, beta, kappa_est)
+        # obs() runs once per control step in training but is called again by the
+        # evaluator and the renderer.  Advancing the nearest-point search twice
+        # would corrupt progress and the stall counter, so guard it.
+        if getattr(self, "_track_pending", True):
+            self.find_nearest_waypoint(x, y, veldir, beta, kappa_est)
+            self._track_pending = False
         angle_diff = self.angle_diff
         signed_pos_diff = self.signed_pos_diff
         beta_diff = self.beta_diff
@@ -449,6 +455,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                                  int(600 * self.preview_scale))]
 
         la = [self.waypoints_at(la_ind).squeeze(1) for la_ind in la_inds]
+        # curvature at the preview points, used by the friction-limit speed target
+        self.kappa_preview = torch.stack([w[:, 4] for w in la], dim=1)
 
         def convert(waypoints):
             """Cast a waypoint into the current course aligned frame."""
@@ -494,6 +502,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             succeeded = (self.step_count >= self.max_steps) | (self.progress >= self.num_waypoints - 100)
         else:
             succeeded = (self.step_count >= self.max_steps)
+        # a failure on the final step must not be overwritten by the time-out
+        succeeded = succeeded & ~failed
         self.is_done[failed] = 1
         self.is_done[succeeded] = 2
         # exclusive first-failure attribution, read by eval.py after the respawn
@@ -628,8 +638,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # The grip multiplier is available to the reward but not to the actor,
             # so the policy must infer how fast it may go from the vehicle response,
             # which is exactly the adaptive behaviour we want.
-            mu = self.plant.tyre_scale.squeeze(1).clamp(0.3, 1.8)
-            kap = self.kappa_ref.abs().clamp(min=1e-2)
+            mu = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp(0.3, 1.8)
+            kap = torch.maximum(self.kappa_ref.abs(),
+                                  self.kappa_preview.abs().amax(dim=1)).clamp(min=1e-2)
             v_tgt = (self.speed_margin * torch.sqrt(mu * 9.81 / kap)).clamp(2.0, self.speed_cap)
         else:
             v_tgt = self.speed_target
@@ -794,6 +805,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # the step (the previous order) applied that action to the freshly
         # spawned car, which injected an arbitrary command into the start of
         # every episode and made the reward history cross episode boundaries.
+        self._track_pending = True   # the tracking update belongs to this step
         obs, reward, done, info = super().step(action, **kwargs)
         # ``done`` aliases ``self.is_done``; the respawn below clears it, so keep
         # a copy of the terminal flags before resetting
