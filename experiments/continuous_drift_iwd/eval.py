@@ -95,6 +95,8 @@ def main():
     ap.add_argument("--alive-bonus", type=float, default=0.0)
     ap.add_argument("--curv-scale", type=float, default=1.0)
     ap.add_argument("--seg-scale", type=float, default=1.0)
+    ap.add_argument("--save-path-bank", type=str, default=None)
+    ap.add_argument("--load-path-bank", type=str, default=None)
     ap.add_argument("--config-from", type=str, default=None,
                     help="run directory whose env_config.json defines the MDP")
     ap.add_argument("--renewal-eval", action="store_true",
@@ -161,6 +163,17 @@ def main():
                                 speed_weight=args.speed_weight,
                                 speed_target=(args.speed_target if args.speed_target is not None else args.spawn_speed),
                                 speed_hinge=args.speed_hinge, train=True)
+    # optional immutable held-out road bank: never regenerated, never used in
+    # training, so checkpoint comparisons are paired across runs
+    if args.load_path_bank:
+        _pb = torch.load(args.load_path_bank, map_location=args.device)
+        _nb = _pb.shape[1]
+        env.path_bank[env.current_generation, :_nb].copy_(_pb[0].to(env.device))
+        print("held-out bank loaded:", tuple(_pb.shape))
+    if args.save_path_bank:
+        torch.save(env.path_bank[env.current_generation:env.current_generation + 1].detach().cpu(),
+                   args.save_path_bank)
+        print("bank saved:", args.save_path_bank)
     obs = env.reset()
     # the environment only spawns on respawn, so force the first episode here
     if getattr(env, "train", False):
@@ -188,7 +201,12 @@ def main():
     fails = torch.zeros(args.n, device=dev)
     succ = torch.zeros(args.n, device=dev)
     reason = [0, 0, 0]        # no_progress, large course error, off path
-    beta_err, v_hist, alive_hist = [], [], []
+    # per-environment accumulators: the reported means are averages over
+    # EPISODES, not over timesteps, so one long episode cannot dominate
+    beta_sum = torch.zeros(args.n, device=dev)
+    v_sum = torch.zeros(args.n, device=dev)
+    n_sum = torch.zeros(args.n, device=dev)
+    alive_hist = []
     # one-episode mode: every environment contributes exactly one episode and is
     # frozen at its first terminal state, so the statistics are not a renewal
     # process nor biased by censored re-spawns.
@@ -217,8 +235,9 @@ def main():
         else:
             live = torch.ones(args.n, dtype=torch.bool, device=dev)
         if live.any():
-            beta_err.append(float((env.es[live, 7] - env.beta_ref[live]).abs().mean()))
-            v_hist.append(float(env.es[live, 6].mean()))
+            beta_sum[live] += (env.es[live, 7] - env.beta_ref[live]).abs()
+            v_sum[live] += env.es[live, 6]
+            n_sum[live] += 1.0
             alive_hist.append(float((done[live] == 0).float().mean()))
         fails[newly & (term == 1)] += 1
         succ[newly & (term == 2)] += 1
@@ -255,8 +274,9 @@ def main():
         names = ["no_progress", "course", "off_path", "other"]
         print("  exclusive first failure reasons "
               + "  ".join(f"{names[i]} {int((first_reason == i).sum())}" for i in range(4)))
-        print(f"  mean |beta - beta_ref| {sum(beta_err) / max(len(beta_err), 1):.3f} rad  "
-              f"mean speed {sum(v_hist) / max(len(v_hist), 1):.2f} m/s")
+        _n = n_sum.clamp(min=1.0)
+        print(f"  per-episode |beta - beta_ref| {(beta_sum / _n).mean():.3f} rad  "
+              f"per-episode speed {(v_sum / _n).mean():.2f} m/s")
         return
 
     n_done = int((fails + succ).sum().item())
@@ -266,12 +286,11 @@ def main():
     print(f"  episodes finished {n_done}: failed {int(fails.sum())} succeeded {int(succ.sum())}")
     print(f"  mean episode length {args.steps * args.n / max(n_done, 1) * env.dt:.2f} s")
     print(f"  failure reasons: no_progress {reason[0]}  course {reason[1]}  off_path {reason[2]}")
-    print(f"  mean |beta - beta_ref| {sum(beta_err) / len(beta_err):.3f} rad "
-          f"(last 100 steps {sum(beta_err[-100:]) / min(100, len(beta_err)):.3f})")
+    print(f"  mean |beta - beta_ref| {float((beta_sum / n_sum.clamp(min=1.0)).mean()):.3f} rad")
     if getattr(env, "rew_stats", None):
         print("  reward components", {k: round(v, 2) for k, v in env.rew_stats.items()})
-    print(f"  mean speed {sum(v_hist) / len(v_hist):.2f} m/s  "
-          f"alive fraction {sum(alive_hist) / len(alive_hist):.2f}")
+    print(f"  mean speed {float((v_sum / n_sum.clamp(min=1.0)).mean()):.2f} m/s  "
+          f"alive fraction {sum(alive_hist) / max(len(alive_hist), 1):.2f}")
 
 
 if __name__ == "__main__":

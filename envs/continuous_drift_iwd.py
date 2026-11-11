@@ -105,6 +105,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.pp_weight = float(kwargs.get("pp_weight", 0.0))
 
         n_ctrl = 3 if self.pedals else 4
+        if not self.pedals:
+            # the 27-channel actor contract assumes the pedal triple; the legacy
+            # wheel-speed mode would make it 28 channels
+            raise ValueError("continuous_drift_iwd uses the 27-channel pedals actor")
         # the 27-channel actor contract is fixed: privileged plant quantities
         # (beta, V, vx, vy) are only ever exposed through the asymmetric critic
         self.obs_privileged = False
