@@ -643,3 +643,26 @@ The single cell below 99 % is the tightest low-grip corner at mu 0.5 / R 8-11, a
 its failures are `off_path` (18 of 22), not stalls: at 3.42 m/s the car cannot keep
 an 8 m arc inside a 3.8 m corridor.  That is 48 % of the corner radius and about
 two car widths, the hardest geometry in the evaluated grid.
+## The last cell: what does NOT fix mu 0.5 / R 8-11
+
+Measured on 384 episodes each with the disturbance on (the baseline is 94.3 %):
+
+| knob changed at evaluation time | full length |
+|---|---|
+| none (baseline) | 94.3 % |
+| beta_weight 0 (drop the drift requirement entirely) | 89.8 % |
+| corridor 0.55 L | 94.3 % |
+| corridor 0.60 L | 91.9 % |
+| speed margin 0.60 | 89.6 % |
+| speed margin 0.50 | 90.9 % |
+
+None of these is causal.  Only the termination thresholds matter at evaluation time
+-- the reward weights and the speed margin only affect the reward, which a frozen
+policy does not respond to -- so what remains is seed noise (+-2.5 % at this sample
+size).  The cell's failures also migrate between `off_path` and `course` as the
+corridor changes, which is the signature of the car being genuinely unstable in an
+8 m arc at mu 0.5, not of a badly set threshold.
+
+That makes the remaining gap a controllability question at the tightest low-grip
+geometry: the car holds 3.4 m/s there against a 4.4 m/s target, i.e. it is already
+slower than asked, and it still loses the line in about one episode in twenty.
