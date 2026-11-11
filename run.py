@@ -120,6 +120,8 @@ parser.add_argument("--speed-hinge", action="store_true",
                     help="one sided linear speed penalty instead of the quadratic")
 parser.add_argument("--critic-units", type=str, default="256,128,64",
                     help="hidden units of the privileged critic MLP")
+parser.add_argument("--seq-length", type=int, default=8,
+                    help="recurrent chunk length for BPTT; must divide --horizon")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -166,6 +168,7 @@ default_env_config = {
     "pp_weight": args.pp_weight,
     "seg_scale": args.seg_scale,
     "obs_privileged": args.obs_privileged,
+    "seq_length": args.seq_length,
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,
