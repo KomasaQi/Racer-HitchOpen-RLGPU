@@ -320,3 +320,21 @@ i.e. value capacity is a real lever, but the resulting policy trades differently
 
 The wider critic is better on the large circles but pays on the tight ones and on
 the sideslip error, so the archived policy keeps the narrower critic.
+**Distillation from the privileged teacher.** `experiments/continuous_drift_iwd/
+distill.py` rolls the privileged policy (`--obs-privileged`, 34 channels) through
+the environment and trains the 30 channel GRU actor to reproduce its pre-tanh
+action (MSE 0.06 -> 0.013 over 4000 steps at 4096 envs), then PPO fine-tunes the
+result.  This is the only intervention that moved the survival numbers
+substantially:
+
+| policy | R 14-18 m | R 11-14 m | R 8-11 m | |beta-beta_ref| | mean lateral offset | speed |
+|---|---|---|---|---|---|
+| trained from scratch | 12.76 s, 4 % | 10.52 s, 4 % | 8.50 s, <1 % | 0.09 | 2.8 m | 3.7 m/s |
+| distilled + fine-tuned | **15.00 s, 11 %** | **13.62 s, 15 %** | **14.40 s, 15 %** | 0.18-0.21 | 6.5 m | 1.4 m/s |
+
+The distillation buys 20-70 % more survival and four times the full length rate,
+but it does so by trading speed and lateral accuracy: the car sits about 6.5 m
+off the line (inside the 1.4 L corridor) and crawls at 1.4 m/s.  Neither a
+position weight of 25 nor a potential recovery weight of 15 pulls it back, so the
+fine tuning is not being limited by the shaping signal.  Both checkpoints are
+archived (`runs/drift_ev_best` = tracking, `runs/drift_ev_distill` = survival).
