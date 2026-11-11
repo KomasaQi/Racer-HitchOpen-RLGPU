@@ -149,6 +149,14 @@ parser.add_argument("--speed-cap", type=float, default=None,
                     help="upper clamp on the friction-limit speed target")
 parser.add_argument("--preview-time", type=str, default=None,
                     help="comma separated preview headways in seconds, e.g. 0.5,1.0,1.6")
+parser.add_argument("--sigma-per-dim", type=str, default=None,
+                    help="initial action std per dimension, e.g. 0.6,0.25,0.25")
+parser.add_argument("--ackermann-lo", type=float, default=0.8)
+parser.add_argument("--ackermann-hi", type=float, default=1.2)
+parser.add_argument("--beta-ref-mode", type=str, default="physics")
+parser.add_argument("--beta-max", type=float, default=0.25)
+parser.add_argument("--beta-util-floor", type=float, default=0.6)
+parser.add_argument("--path-regen-every", type=int, default=60000)
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -214,6 +222,12 @@ default_env_config = {
     "spawn_deficit_frac": args.spawn_deficit_frac,
     "speed_target_mode": args.speed_target_mode,
     "speed_margin": args.speed_margin,
+    "ackermann_lo": args.ackermann_lo,
+    "ackermann_hi": args.ackermann_hi,
+    "beta_ref_mode": args.beta_ref_mode,
+    "beta_max": args.beta_max,
+    "beta_util_floor": args.beta_util_floor,
+    "path_regen_every": args.path_regen_every,
     "speed_cap": (args.speed_cap if args.speed_cap is not None else float("inf")),
     "speed_weight": args.speed_weight,
     "speed_target": (args.speed_target if args.speed_target is not None
@@ -319,6 +333,27 @@ runner_config["params"]["config"]["num_actors"] = args.num_parallel
 runner_config["params"]["config"]["max_epochs"] = args.epochs
 # the CLI knob must actually reach PPO, otherwise --seq-length is inert
 runner_config["params"]["config"]["seq_length"] = args.seq_length
+
+    # Per-dimension initial action std.  rl_games uses one scalar sigma for all
+    # action dims, but the ranges are +-0.45 rad for steering and [0, 1] for each
+    # pedal, so a std of 1.0 is 220 % of the steering range and 100 % of a pedal.
+    # Patching the model right after construction gives each dim its own value.
+if args.sigma_per_dim:
+        _sig = [float(x) for x in args.sigma_per_dim.split(",")]
+        try:
+            from rl_games.algos_torch.models import ModelA2CContinuousLogStd
+            _orig_init = ModelA2CContinuousLogStd.__init__
+
+            def _patched_init(self, *a, **k):
+                _orig_init(self, *a, **k)
+                if getattr(self, "sigma", None) is not None and self.sigma.numel() == len(_sig):
+                    with torch.no_grad():
+                        self.sigma.data[:] = torch.log(torch.tensor(_sig, dtype=self.sigma.dtype, device=self.sigma.device))
+                    print("per-dim sigma set to", _sig)
+
+            ModelA2CContinuousLogStd.__init__ = _patched_init
+        except Exception as _e:  # pragma: no cover
+            print("WARNING: per-dim sigma not applied:", _e)
 batch = args.num_parallel * args.horizon
 runner_config["params"]["config"]["minibatch_size"] = max(
     min(args.minibatch, batch), min(batch, 1024))

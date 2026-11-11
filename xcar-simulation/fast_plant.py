@@ -231,6 +231,9 @@ class FastRacerPlant:
         self._ay_guess = torch.zeros(self.n, device=self.device, dtype=self.dtype)
         #: optional per-env multiplicative friction scale (time varying disturbance)
         self.tyre_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
+        #: per-env Ackermann blend for the front axle: 0 = parallel steering,
+        #: 1 = exact Ackermann geometry.  Randomised per episode by the env.
+        self.ackermann_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
 
     # -- helpers ----------------------------------------------------------
     def col(self, key: str) -> torch.Tensor:
@@ -359,6 +362,35 @@ class FastRacerPlant:
         mz = xp * fy
         return fx, fy, fz, mx, my, mz
 
+    def _front_steer(self, delta):
+        """Left/right front wheel angles from the nominal steer.
+
+        ``ackermann_scale`` is per env: 0 keeps the two front wheels parallel,
+        1 applies the exact Ackermann geometry about the rear axle centre, and
+        values in between blend the two.  ``delta`` is (n, 1).
+        """
+        if delta.dim() == 1:
+            delta = delta.unsqueeze(1)
+        L = self.col("lF").unsqueeze(1) + self.col("lR").unsqueeze(1)
+        half = 0.5 * self.col("Tf").unsqueeze(1)
+        ack = self.ackermann_scale
+        small = delta.abs() < 1e-3
+        safe = torch.where(small, torch.full_like(delta, 1e-3), delta)
+        radius = L / torch.tan(safe)
+        r_in = radius - torch.sign(safe) * half
+        r_out = radius + torch.sign(safe) * half
+        # keep the inner radius away from the singularity of a locked steer
+        r_in = torch.where(torch.sign(safe) * r_in > 0.2 * L, r_in, 0.2 * L * torch.sign(safe))
+        d_in = torch.atan(L / r_in)
+        d_out = torch.atan(L / r_out)
+        inner = delta + ack * (d_in - delta)
+        outer = delta + ack * (d_out - delta)
+        left = torch.where(safe > 0, inner, outer)
+        right = torch.where(safe > 0, outer, inner)
+        left = torch.where(small, delta, left)
+        right = torch.where(small, delta, right)
+        return torch.cat([left, right], dim=1)
+
     def _wheel_forces(self, s, delta, fz, geometry):
         """Combined-slip isotropic tire forces in wheel and body frames.
 
@@ -372,11 +404,18 @@ class FastRacerPlant:
 
         vx_b = vxb.unsqueeze(1) - r.unsqueeze(1) * y_pos
         vy_b = vyb.unsqueeze(1) + r.unsqueeze(1) * x_pos
-        cd, sd = torch.cos(delta).unsqueeze(1), torch.sin(delta).unsqueeze(1)
+        # ``delta`` is (n, 2): the left and right front wheel angles.  The rear
+        # wheels are not steered.
+        if delta.dim() == 1:
+            delta = delta.unsqueeze(1).expand(-1, 2)
+        cd = torch.ones_like(vx_b)
+        sd = torch.zeros_like(vx_b)
+        cd[:, :2] = torch.cos(delta)
+        sd[:, :2] = torch.sin(delta)
         vx_l = vx_b.clone()
         vy_l = vy_b.clone()
-        vx_l[:, :2] = cd * vx_b[:, :2] + sd * vy_b[:, :2]
-        vy_l[:, :2] = -sd * vx_b[:, :2] + cd * vy_b[:, :2]
+        vx_l[:, :2] = cd[:, :2] * vx_b[:, :2] + sd[:, :2] * vy_b[:, :2]
+        vy_l[:, :2] = -sd[:, :2] * vx_b[:, :2] + cd[:, :2] * vy_b[:, :2]
 
         B, C, D, E = self.col("B").unsqueeze(1), self.col("C").unsqueeze(1), \
             self.col("D").unsqueeze(1), self.col("E").unsqueeze(1)
@@ -412,8 +451,8 @@ class FastRacerPlant:
 
         fx_body = fx_wheel.clone()
         fy_body = fy_wheel.clone()
-        fx_body[:, :2] = cd * fx_wheel[:, :2] - sd * fy_wheel[:, :2]
-        fy_body[:, :2] = sd * fx_wheel[:, :2] + cd * fy_wheel[:, :2]
+        fx_body[:, :2] = cd[:, :2] * fx_wheel[:, :2] - sd[:, :2] * fy_wheel[:, :2]
+        fy_body[:, :2] = sd[:, :2] * fx_wheel[:, :2] + cd[:, :2] * fy_wheel[:, :2]
 
         # |dFx/domega| used by the semi-implicit wheel update.  The tangent alone
         # under-estimates the stiffness when the step crosses toward zero slip
@@ -519,6 +558,7 @@ class FastRacerPlant:
             throttle = torch.zeros_like(steer)
             brake = torch.zeros_like(steer)
         delta = torch.clamp(steer, -self.col("max_steer_rad"), self.col("max_steer_rad"))
+        delta = self._front_steer(delta)
 
         m = self.col("m")
         aero = self._aero(s)
