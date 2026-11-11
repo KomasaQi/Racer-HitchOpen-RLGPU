@@ -601,7 +601,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # failure after the environment has already respawned
         self._term_masks = torch.stack((fail_npc, fail_course, fail_off), dim=1)
         if self.train:
-            succeeded = (self.step_count >= self.max_steps) | (self.progress >= self.num_waypoints - 100)
+            # the episode cap is the ONLY success criterion: reaching the end of the
+            # reference bank is not a task objective and, with a progress index that
+            # can advance 19 waypoints per step, it fired after a few seconds and
+            # mislabelled early terminations as successes
+            succeeded = self.step_count >= self.max_steps
         else:
             succeeded = (self.step_count >= self.max_steps)
         # a failure on the final step must not be overwritten by the time-out
