@@ -557,3 +557,40 @@ Reward settings that got here, in order of effect:
 2. `speed_weight 12` with the two-sided limit target;
 3. `stall_move 1.0` (a 1 m/s floor instead of 1.9 m/s) so a legitimate slow
    low-grip corner is not scored as a stall.
+## v17: the task is essentially solved once the plant and the path are correct
+
+Two bugs dominated every earlier result:
+
+1. `fast_plant` gave the `iwd` drivetrain HALF the rear-axle torque (only `awd`
+   routed the other half forward), so the drive force was silently halved;
+2. the hybrid reference is an open path and episodes spawned uniformly in its
+   first half, leaving as little as 189 m of road while a 30 s episode at 6-8 m/s
+   needs 180-240 m.  The car ran off the end, progress and the previews clamped,
+   and the episode was scored `off_path` -- a bias that hit exactly the fast,
+   high-grip episodes.
+
+With both fixed, plus the feasibility-faded reference sideslip, curvature
+smoothing and a grip-consistent spawn, the policy reaches the following grid
+after only ~100 PPO epochs of a from-scratch 900-epoch run (one episode per
+environment, 96 envs per cell, 3.8 m corridor):
+
+| curvature (R) | mu 0.50 | mu 0.75 | mu 1.00 |
+|---|---|---|---|
+| 0.55 (R 14-18) | 100.0 % / 0.064 | 100.0 % / 0.072 | 100.0 % / 0.087 |
+| 0.70 (R 11-14) | 100.0 % / 0.059 | 100.0 % / 0.075 | 100.0 % / 0.083 |
+| 0.90 (R 8-11)  | 100.0 % / 0.049 | 99.0 % / 0.077 | 99.0 % / 0.089 |
+
+Mean 99.6 % full length, per-episode |beta - beta_ref| 0.049-0.089 (all inside the
+0.12 target), speeds 3.9-5.5 m/s rising with grip.
+
+Strict validation with 384 episodes per cell (a 96/96 cell only has a 96 % Wilson
+lower bound):
+
+| cell | full length | failures | |beta - beta_ref| | speed |
+|---|---|---|---|---|---|
+| mu 1.00, R 8-11  | 95.8 % (93.3-97.4) | no_progress 16, off_path 0 | 0.088 | 4.58 m/s |
+| mu 1.00, R 14-18 | 98.4 % (96.6-99.3) | no_progress 0, off_path 6  | 0.078 | 5.53 m/s |
+
+The residual failures are stalls, not tracking errors: at the tight high-grip
+cell the remaining 4 % are `no_progress`, i.e. the car decelerates below the
+1 m/s stall floor for a full second.
