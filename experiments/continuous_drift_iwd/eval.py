@@ -100,6 +100,8 @@ def main():
     ap.add_argument("--flip-prob", type=float, default=None)
     ap.add_argument("--stall-window", type=int, default=None)
     ap.add_argument("--stall-move", type=float, default=1.0)
+    ap.add_argument("--spawn-speed-min", type=float, default=None)
+    ap.add_argument("--spawn-deficit-frac", type=float, default=0.0)
     ap.add_argument("--yaw-weight", type=float, default=0.0)
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
@@ -121,6 +123,8 @@ def main():
                                 curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
                                 flip_prob=args.flip_prob,
                                 stall_window=args.stall_window, stall_move=args.stall_move,
+                                spawn_speed_min=(args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
+                                spawn_deficit_frac=args.spawn_deficit_frac,
                                 yaw_weight=args.yaw_weight, beta_weight=args.beta_weight,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight, train=True)
     obs = env.reset()
