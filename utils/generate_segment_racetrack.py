@@ -57,7 +57,8 @@ class TrajGen:
         query = s.unsqueeze(0).expand(num_scenes, -1)
         seg = torch.searchsorted(threshold.contiguous(), query.contiguous()).clamp(max=threshold.shape[1] - 1)
         kappa = torch.gather(curvature, 1, seg)                        # (n, W)
-        beta_ref = - torch.sign(kappa)
+        # (the reference sideslip is no longer stored on the path: it is a
+        # function of the local curvature and the grip, computed by the env)
 
         # Curvature smoothing: the generator draws a piecewise CONSTANT curvature
         # with an independent random sign per segment, so kappa jumps
@@ -70,6 +71,9 @@ class TrajGen:
             import torch.nn.functional as Fn
             kern = torch.ones(1, 1, smooth_w, device=self.device) / smooth_w
             kappa = Fn.conv1d(kappa.unsqueeze(1), kern, padding=smooth_w // 2).squeeze(1)
+            # an even kernel produces num_waypoints + 1 outputs, which silently
+            # made the bank one waypoint longer than the path
+            kappa = kappa[:, :self.num_waypoints]
         
         # Integrate curvature to get heading angle theta
         theta = torch.cumsum(kappa * ds, dim=1)  # Numeric integration of kappa to get angle
@@ -81,21 +85,15 @@ class TrajGen:
         x = torch.cumsum(torch.cos(theta + theta0) * ds, dim=1) + x0
         y = torch.cumsum(torch.sin(theta + theta0) * ds, dim=1) + y0
         
-        # Velocity direction (theta) and sign of curvature (beta)
+        # Velocity direction only: the reference sideslip is NOT a path property
+        # any more (it is a function of the local curvature and the grip, built by
+        # the environment for the reward and the critic).
         vel_dir = torch.atan2(torch.sin(theta + theta0), torch.cos(theta + theta0))
-        # The sideslip demand must be interpolated with the SAME profile as the
-        # curvature: smoothing kappa alone still leaves beta jumping from
-        # +beta_scale to -beta_scale within a single waypoint at a reversal.
-        beta = beta_ref
-        if smooth_w > 1:
-            kern_b = torch.ones(1, 1, smooth_w, device=self.device) / smooth_w
-            beta = Fn.conv1d(beta.unsqueeze(1), kern_b, padding=smooth_w // 2).squeeze(1)
-        
-        # Stack the output: [x, y, velocity direction, sign of curvature]
-        waypoints = torch.stack((x, y, vel_dir, beta, kappa), dim=2)
-        
+
+        # Stack the output: [x, y, velocity direction, curvature]
+        waypoints = torch.stack((x, y, vel_dir, kappa), dim=2)
+
         return waypoints
-    
     def generate_custom_waypoints(self, segment_length: torch.Tensor, curvature: torch.Tensor, theta0: float = 0.) -> torch.Tensor:
         assert segment_length.shape[0] == curvature.shape[0], "segment_length and curvature must have the same number of scenes"
 
@@ -120,12 +118,10 @@ class TrajGen:
         x = torch.cumsum(torch.cos(theta + theta0) * ds, dim=1) + x0
         y = torch.cumsum(torch.sin(theta + theta0) * ds, dim=1) + y0
 
-        # Velocity direction (theta) and sign of curvature (beta)
+        # Velocity direction only: the reference sideslip is NOT a path property
+        # any more (it is a function of the local curvature and the grip, built by
+        # the environment for the reward and the critic).
         vel_dir = torch.atan2(torch.sin(theta + theta0), torch.cos(theta + theta0))
-        beta = - torch.sign(kappa)
-
-        # Stack the output: [x, y, velocity direction, sign of curvature]
-        waypoints = torch.stack((x, y, vel_dir, beta, kappa), dim=2)
 
         return waypoints
     
@@ -186,12 +182,10 @@ class TrajGen:
         x = torch.cumsum(torch.cos(theta + theta0) * ds, dim=1) + x0
         y = torch.cumsum(torch.sin(theta + theta0) * ds, dim=1) + y0
 
-        # Velocity direction (theta) and sign of curvature (beta)
+        # Velocity direction only: the reference sideslip is NOT a path property
+        # any more (it is a function of the local curvature and the grip, built by
+        # the environment for the reward and the critic).
         vel_dir = torch.atan2(torch.sin(theta + theta0), torch.cos(theta + theta0))
-        beta = - torch.sign(kappa)
-
-        # Stack the output: [x, y, velocity direction, sign of curvature]
-        waypoints = torch.stack((x, y, vel_dir, beta, kappa), dim=2)
 
         return waypoints
 

@@ -212,9 +212,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             waypoint_y = radius - radius * torch.cos(torch.arange(self.num_waypoints) / self.num_waypoints * 4 * np.pi)
             waypoint_veldir = torch.arange(self.num_waypoints) / self.num_waypoints * 4 * np.pi
             waypoint_veldir = torch.atan2(torch.sin(waypoint_veldir), torch.cos(waypoint_veldir))
-            waypoint_betaref = -torch.ones((self.num_waypoints, ))
             waypoint_kappa = torch.ones((self.num_waypoints, )) / radius
-            self.path_bank = self._scale_waypoints(torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_betaref, waypoint_kappa), dim=1).to(self.device)).unsqueeze(0)
+            self.path_bank = self._scale_waypoints(torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_kappa), dim=1).to(self.device)).unsqueeze(0)
         # eight-shaped trajectory
         elif ref_mode == "eight":
             self.num_waypoints = 2512      # one waypoint per 0.005m
@@ -229,15 +228,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 self.num_waypoints // 2 - torch.arange(self.num_waypoints // 2) / self.num_waypoints * 2,
             )) * 2 * np.pi
             waypoint_veldir = torch.atan2(torch.sin(waypoint_veldir), torch.cos(waypoint_veldir))
-            waypoint_betaref = torch.cat((
-                -torch.ones((self.num_waypoints // 2, )),
-                torch.ones((self.num_waypoints // 2, )),
-            ))
+
             waypoint_kappa = torch.cat((
                 torch.ones((self.num_waypoints // 2, )) / radius,
                 -torch.ones((self.num_waypoints // 2, )) / radius,
             ))
-            self.path_bank = self._scale_waypoints(torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_betaref, waypoint_kappa), dim=1).to(self.device)).unsqueeze(0)
+            self.path_bank = self._scale_waypoints(torch.stack((waypoint_x, waypoint_y, waypoint_veldir, waypoint_kappa), dim=1).to(self.device)).unsqueeze(0)
         elif ref_mode == "three":
             path_length = 12 * torch.pi
             self.num_waypoints = int(path_length / 0.005)
@@ -305,7 +301,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # time-based preview headways (seconds); None keeps the metric previews
         pt = kwargs.get("preview_time", None)
         # arc length of one waypoint, needed to turn a time headway into an index
-        self.waypoint_ds = float(self._path_length_xcar * self.length_scale / max(self.num_waypoints - 1, 1))
+        self.waypoint_ds = float(getattr(self, "_path_length_xcar", 50.0) * self.length_scale / max(self.num_waypoints - 1, 1))
         self.preview_time = None if pt is None else torch.as_tensor(
             [float(x) for x in (pt if not isinstance(pt, str) else pt.split(","))],
             device=self.device, dtype=torch.float32)
@@ -320,9 +316,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         if abs(self.length_scale - 1.0) > 1e-9:
             out[..., 0] *= self.length_scale
             out[..., 1] *= self.length_scale
-            out[..., 4] /= self.length_scale
-        if abs(self.beta_scale - 1.0) > 1e-9:
-            out[..., 3] *= self.beta_scale
+            out[..., 3] /= self.length_scale
+        if False:  # the path no longer carries a reference sideslip
+            pass
         return out
 
     def update_recent_obs(self, obs):
@@ -343,13 +339,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         offs = self.search_offsets
         ind = (self.progress.unsqueeze(1) + offs).clamp_(0, self.num_waypoints - 1)
         waypoints_filtered = self.waypoints_at(ind)
-        current = torch.stack((x, y, veldir, beta, kappa), dim=1)
+        # four reference channels: [x, y, veldir, kappa]; the nearest point is
+        # chosen on position only, so ``beta`` is not part of the comparison
+        current = torch.stack((x, y, veldir, kappa), dim=1)
         diff = current.unsqueeze(1) - waypoints_filtered
         # wrap angle diff to (-pi, pi)
         angle_diff = torch.atan2(torch.sin(diff[:, :, 2]), torch.cos(diff[:, :, 2]))
         pos_diff = torch.hypot(diff[:, :, 0], diff[:, :, 1])
-        beta_diff = torch.atan2(torch.sin(diff[:, :, 3]), torch.cos(diff[:, :, 3]))
-        kappa_diff = diff[:, :, 4]
+        # the path no longer carries a beta column: column 3 is the curvature
+        beta_diff = torch.zeros_like(diff[:, :, 0])
+        kappa_diff = diff[:, :, 3]
         best = torch.argmin(pos_diff, 1)
         bidx = best.unsqueeze(1)
         self.step_progress = (best - self.win_back).to(torch.int16)
@@ -391,9 +390,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.angle_diff = angle_diff.gather(1, bidx).squeeze(1)
         self.signed_pos_diff = pos_diff_sign * pos_diff.gather(1, bidx).squeeze(1)
         self.beta_diff = beta_diff.gather(1, bidx).squeeze(1)
-        self.beta_ref = waypoints_filtered[:, :, 3].gather(1, bidx).squeeze(1)
+        self.beta_ref = torch.zeros_like(self.beta_diff)   # set from the curvature map later
         self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
-        self.kappa_ref = waypoints_filtered[:, :, 4].gather(1, bidx).squeeze(1)
+        self.kappa_ref = waypoints_filtered[:, :, 3].gather(1, bidx).squeeze(1)
 
     def _reference_beta(self, kappa):
         """Reference sideslip from the rear-axle slip angle at the drift limit.
@@ -517,7 +516,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         la = [self.waypoints_at(la_ind).squeeze(1) for la_ind in la_inds]
         # curvature at the preview points, used by the friction-limit speed target
-        self.kappa_preview = torch.stack([w[:, 4] for w in la], dim=1)
+        self.kappa_preview = torch.stack([w[:, 3] for w in la], dim=1)
 
 
         def convert(waypoints):
@@ -525,19 +524,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             x1 = waypoints[:, 0]
             y1 = waypoints[:, 1]
             veldir1 = waypoints[:, 2]
-            beta1 = waypoints[:, 3]
-            kappa1 = waypoints[:, 4]
+            kappa1 = waypoints[:, 3]
             theta = torch.atan2(y1 - y, x1 - x) - veldir
             l = torch.hypot(y1 - y, x1 - x)
             x2 = l * torch.cos(theta)
             y2 = l * torch.sin(theta)
             veldir2 = veldir1 - veldir
             veldir2 = torch.atan2(torch.sin(veldir2), torch.cos(veldir2))
-            # reference sideslip sign only; the measured sideslip is not observed
-            beta2 = beta1
             kappa2 = kappa1 * self.length_scale          # O(1) normalisation
-            x2, y2, veldir2, beta2, kappa2 = map(lambda t: torch.unsqueeze(t, 1),
-                                                 [x2, y2, veldir2, beta2, kappa2])
+            x2, y2, veldir2, kappa2 = map(lambda t: torch.unsqueeze(t, 1),
+                                                 [x2, y2, veldir2, kappa2])
             # reference sideslip is NOT observable to the actor: it belongs to the reward and to the critic only.  kappa_ref is kept because it is the
             # geometric cue from which the required sideslip can be inferred.
             return torch.cat([x2, y2, veldir2, kappa2], 1)
@@ -836,8 +832,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             x = waypoints[:, 0]
             y = waypoints[:, 1]
             veldir = waypoints[:, 2]
-            beta = waypoints[:, 3]
-            kappa = waypoints[:, 4]
+
+            kappa = waypoints[:, 3]
 
             x += 0.1 * self.length_scale * torch.randn_like(x)
             y += 0.1 * self.length_scale * torch.randn_like(y)
@@ -853,18 +849,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # the spawn sideslip is its own distribution, NOT the path beta
                 # column (which is now only a legacy slot)
                 beta0 = -torch.sign(kappa) * self.spawn_beta_mag * torch.clamp(
-                    1.0 + self.spawn_beta_noise * torch.randn_like(beta), 0.4, 1.4)
-                deficit = (torch.rand_like(beta) < self.spawn_deficit_frac)
-                v_low = self.spawn_speed_min + (self.spawn_speed - self.spawn_speed_min) * torch.rand_like(beta)
+                    1.0 + self.spawn_beta_noise * torch.randn_like(kappa), 0.4, 1.4)
+                deficit = (torch.rand_like(kappa) < self.spawn_deficit_frac)
+                v_low = self.spawn_speed_min + (self.spawn_speed - self.spawn_speed_min) * torch.rand_like(kappa)
                 v0 = torch.where(deficit, v_low, self.spawn_speed * torch.clamp(
-                    1.0 + self.spawn_speed_noise * torch.randn_like(beta), 0.6, 1.3))
+                    1.0 + self.spawn_speed_noise * torch.randn_like(kappa), 0.6, 1.3))
                 psi = veldir - beta0 + 0.1 * torch.randn_like(veldir)
                 xd = v0 * torch.cos(beta0 + psi)
                 yd = v0 * torch.sin(beta0 + psi)
                 psid = v0 * kappa
             else:
                 random_V = torch.rand(prog.shape, device=self.device) * 3 * self.speed_scale
-                random_beta = torch.sign(beta) * torch.rand(prog.shape, device=self.device) * self.beta_scale
+                random_beta = -torch.sign(kappa) * torch.rand(prog.shape, device=self.device) * self.spawn_beta_mag
                 psi = veldir - random_beta
                 psi += 0.1 * torch.randn_like(psi)
                 xd = random_V * torch.cos(random_beta + psi)
