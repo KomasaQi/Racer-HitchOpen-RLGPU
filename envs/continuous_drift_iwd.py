@@ -252,7 +252,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                     writer.writerow([x, y, psi])
 
         self.progress = torch.zeros(self.n, dtype=torch.long, device=self.device)
-        self.step_progress = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
+        self.step_progress = torch.zeros(self.n, dtype=torch.int16, device=self.device)
+        self.win_back = 20
+        self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)   # 0 = not done, 1 = failed, 2 = succeeded
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
@@ -278,12 +280,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         return self.path_bank[self.path_id.unsqueeze(1), ind]
 
     def find_nearest_waypoint(self, x, y, veldir, beta, kappa):
-        # Look ahead 20 steps
-        if self.train:
-            ind = torch.stack([self.progress + i for i in range(20)], dim=1)
-            ind[ind >= self.num_waypoints] = self.num_waypoints - 1
-        else:
-            ind = torch.stack([self.progress + i for i in range(20)], dim=1) % self.num_waypoints
+        # Local projection around the last known progress.  The window is
+        # symmetric because a car that has been pushed off the line must be able
+        # to re-acquire a reference point slightly BEHIND the last one; the old
+        # forward-only window plus the "freeze progress while off path" rule made
+        # the target stale exactly inside the recovery band (progress froze at
+        # 3.8 m of lateral error while the failure corridor is 10.6 m).
+        offs = self.search_offsets
+        ind = (self.progress.unsqueeze(1) + offs).clamp_(0, self.num_waypoints - 1)
         waypoints_filtered = self.waypoints_at(ind)
         current = torch.stack((x, y, veldir, beta, kappa), dim=1)
         diff = current.unsqueeze(1) - waypoints_filtered
@@ -292,17 +296,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         pos_diff = torch.hypot(diff[:, :, 0], diff[:, :, 1])
         beta_diff = torch.atan2(torch.sin(diff[:, :, 3]), torch.cos(diff[:, :, 3]))
         kappa_diff = diff[:, :, 4]
-        self.step_progress = torch.argmin(pos_diff, 1)
-        # Progress gating: if the closest reference point is far away the car is
-        # sliding wide, and the argmin would otherwise jump up to the whole
-        # look-ahead window (19 waypoints) in one step and desynchronise the
-        # reference.  Freeze progress and do not count it as "stalled" while the
-        # car is off the reference; the position error already punishes that.
-        best_dist = pos_diff.gather(1, self.step_progress.unsqueeze(1)).squeeze(1)
-        on_path = best_dist < self.progress_gate
-        self.step_progress = torch.where(on_path, self.step_progress,
-                                         torch.zeros_like(self.step_progress))
-        self.progress = (self.progress + self.step_progress)
+        best = torch.argmin(pos_diff, 1)
+        bidx = best.unsqueeze(1)
+        self.step_progress = (best - self.win_back).to(torch.int16)
+        self.progress = (self.progress + self.step_progress.long()).clamp_(0, self.num_waypoints - 1)
+        best_dist = pos_diff.gather(1, bidx).squeeze(1)
         # "stalled" means the car is actually stopped (or crawling).  Tying it to
         # the reference progress instead let a 0.7 m/s crawl survive forever,
         # while killing drifting cars that legitimately lose ground for a moment.
@@ -322,19 +320,19 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # theta = angle from u to v
         # theta > 0 means current pos is to the right of waypoint
         best = self.step_progress.unsqueeze(1)
-        ux = diff[:, :, 0].gather(1, best).squeeze(1)
-        uy = diff[:, :, 1].gather(1, best).squeeze(1)
+        ux = diff[:, :, 0].gather(1, bidx).squeeze(1)
+        uy = diff[:, :, 1].gather(1, bidx).squeeze(1)
         u_angle = torch.atan2(uy, ux)
-        v_angle = waypoints_filtered[:, :, 2].gather(1, best).squeeze(1)
+        v_angle = waypoints_filtered[:, :, 2].gather(1, bidx).squeeze(1)
         theta = v_angle - u_angle
         theta = torch.atan2(torch.sin(theta), torch.cos(theta))
         pos_diff_sign = torch.sign(theta)
-        self.angle_diff = angle_diff.gather(1, best).squeeze(1)
-        self.signed_pos_diff = pos_diff_sign * pos_diff.gather(1, best).squeeze(1)
-        self.beta_diff = beta_diff.gather(1, best).squeeze(1)
-        self.beta_ref = waypoints_filtered[:, :, 3].gather(1, best).squeeze(1)
-        self.kappa_diff = kappa_diff.gather(1, best).squeeze(1)
-        self.kappa_ref = waypoints_filtered[:, :, 4].gather(1, best).squeeze(1)
+        self.angle_diff = angle_diff.gather(1, bidx).squeeze(1)
+        self.signed_pos_diff = pos_diff_sign * pos_diff.gather(1, bidx).squeeze(1)
+        self.beta_diff = beta_diff.gather(1, bidx).squeeze(1)
+        self.beta_ref = waypoints_filtered[:, :, 3].gather(1, bidx).squeeze(1)
+        self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
+        self.kappa_ref = waypoints_filtered[:, :, 4].gather(1, bidx).squeeze(1)
 
     def obs(self):
         """Real-vehicle observable state, after the XCAR observation design.
@@ -592,7 +590,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
     def reset(self):
         super().reset()
         self.progress = torch.zeros(self.n, dtype=torch.long, device=self.device)
-        self.step_progress = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
+        self.step_progress = torch.zeros(self.n, dtype=torch.int16, device=self.device)
+        self.win_back = 20
+        self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
@@ -698,8 +698,28 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self.es = self.plant.extended_state(self.s, self.u_cmd)
 
     def step(self, action, **kwargs):
-        if self.train:
-            self.reset_done_envs()
+        # Physics first, THEN respawn: the action was chosen from the terminal
+        # observation, so it has to act on the terminal state.  Resetting before
+        # the step (the previous order) applied that action to the freshly
+        # spawned car, which injected an arbitrary command into the start of
+        # every episode and made the reward history cross episode boundaries.
         obs, reward, done, info = super().step(action, **kwargs)
+        if self.train:
+            newly = (self.is_done != 0)
+            if bool(newly.any()):
+                self.reset_done_envs()
+                fresh = self.obs()
+                if isinstance(obs, dict):
+                    obs = {k: torch.where(newly.unsqueeze(-1), fresh[k], obs[k])
+                           for k in obs}
+                else:
+                    obs = torch.where(newly.unsqueeze(-1), fresh, obs)
+                # the first reward of the new episode must not see the previous
+                # episode's state through the difference terms
+                if self._prev is not None and self._now is not None:
+                    for k in self._now:
+                        if k in self._prev and torch.is_tensor(self._prev[k]):
+                            m = newly.view(-1, *([1] * (self._prev[k].dim() - 1)))
+                            self._prev[k] = torch.where(m, self._now[k], self._prev[k])
         self.update_recent_obs(obs)
         return obs, reward, done, info
