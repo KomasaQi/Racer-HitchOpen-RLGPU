@@ -33,7 +33,22 @@ class TrajGen:
         if isinstance(curv_scale, (tuple, list)):
             lo, hi = curv_scale
             curv_scale = (torch.rand((num_scenes, 1), device=self.device) * (hi - lo) + lo)
-        curvature = (torch.rand_like(threshold, device=self.device) * 0.36 + 0.7) * curv_scale * torch.sign(torch.randn_like(threshold))
+        magnitude = (torch.rand_like(threshold, device=self.device) * 0.36 + 0.7) * curv_scale
+        flip_prob = getattr(self, "flip_prob", None)
+        if flip_prob is None:
+            curvature = magnitude * torch.sign(torch.randn_like(threshold))
+        else:
+            # Correlated signs: an independent sign per segment makes a curvature
+            # REVERSAL the default at every boundary, which is far harder than a
+            # series of same-direction arcs.  A figure of eight stays in the
+            # benchmark through the remaining probability.
+            flip = torch.rand_like(threshold) < float(flip_prob)
+            flip[:, 0] = False
+            parity = torch.cumsum(flip.long(), dim=1) & 1
+            init = torch.where(torch.rand((num_scenes, 1), device=self.device) < 0.5,
+                               -torch.ones((num_scenes, 1), device=self.device),
+                               torch.ones((num_scenes, 1), device=self.device))
+            curvature = magnitude * init * (1.0 - 2.0 * parity.float())
         
         # Vectorised segment lookup. ``torch.searchsorted`` accepts a batched
         # sorted sequence, which replaces the per-scene python loop.  That loop
@@ -42,6 +57,7 @@ class TrajGen:
         query = s.unsqueeze(0).expand(num_scenes, -1)
         seg = torch.searchsorted(threshold.contiguous(), query.contiguous()).clamp(max=threshold.shape[1] - 1)
         kappa = torch.gather(curvature, 1, seg)                        # (n, W)
+        beta_ref = - torch.sign(kappa)
 
         # Curvature smoothing: the generator draws a piecewise CONSTANT curvature
         # with an independent random sign per segment, so kappa jumps
@@ -67,7 +83,13 @@ class TrajGen:
         
         # Velocity direction (theta) and sign of curvature (beta)
         vel_dir = torch.atan2(torch.sin(theta + theta0), torch.cos(theta + theta0))
-        beta = - torch.sign(kappa)
+        # The sideslip demand must be interpolated with the SAME profile as the
+        # curvature: smoothing kappa alone still leaves beta jumping from
+        # +beta_scale to -beta_scale within a single waypoint at a reversal.
+        beta = beta_ref
+        if smooth_w > 1:
+            kern_b = torch.ones(1, 1, smooth_w, device=self.device) / smooth_w
+            beta = Fn.conv1d(beta.unsqueeze(1), kern_b, padding=smooth_w // 2).squeeze(1)
         
         # Stack the output: [x, y, velocity direction, sign of curvature]
         waypoints = torch.stack((x, y, vel_dir, beta, kappa), dim=2)

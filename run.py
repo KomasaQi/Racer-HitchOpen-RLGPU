@@ -128,6 +128,10 @@ parser.add_argument("--curv-smooth", type=int, default=0,
                     help="moving average width (waypoints) applied to the reference curvature")
 parser.add_argument("--preview-scale", type=float, default=1.0,
                     help="multiplier on the preview distances (1 = 200/400/600 waypoints)")
+parser.add_argument("--flip-prob", type=float, default=None,
+                    help="curvature sign flip probability per segment (None = 0.5, independent)")
+parser.add_argument("--terminal-cost", type=float, default=100.0,
+                    help="reward penalty applied on the terminal step")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -178,6 +182,8 @@ default_env_config = {
     "num_paths": args.num_paths,
     "curv_smooth": args.curv_smooth,
     "preview_scale": args.preview_scale,
+    "flip_prob": args.flip_prob,
+    "terminal_cost": args.terminal_cost,
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "yaw_scale": args.yaw_scale,

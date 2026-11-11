@@ -74,6 +74,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # learned to stop, which ends the episode).  A constant alive bonus makes
         # surviving strictly better than terminating.
         self.alive_bonus = float(kwargs.get("alive_bonus", 0.0))
+        self.terminal_cost = float(kwargs.get("terminal_cost", 100.0))
         self.yaw_weight = float(kwargs.get("yaw_weight", 0.0))
         self.yaw_scale = float(kwargs.get("yaw_scale", 0.5))
         self.progress_gate = 0.5 * self.length_scale
@@ -159,6 +160,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self.trajectory_generator.curv_scale = cs if isinstance(cs, (tuple, list)) else float(cs)
             self.trajectory_generator.seg_scale = float(kwargs.get("seg_scale", 1.0))
             self.trajectory_generator.curv_smooth = int(kwargs.get("curv_smooth", 0))
+            self.trajectory_generator.flip_prob = kwargs.get("flip_prob", None)
             self.num_paths = int(kwargs.get("num_paths", 256))
             self.path_bank = self._scale_waypoints(
                 self.trajectory_generator.generate_random_waypoints(self.num_paths))
@@ -602,6 +604,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             "speed": self.speed_weight * rew_speed,
             "yaw": self.yaw_weight * rew_yaw,
             "alive": torch.full_like(rew_pos, self.alive_bonus),
+            # without an explicit terminal cost most shaping terms are negative, so
+            # braking into termination was genuinely profitable (the review caught
+            # that rew_final was computed and then dropped)
+            "terminal": self.terminal_cost * rew_final,
         }
         rew = torch.zeros_like(rew_pos)
         for term in terms.values():
@@ -622,7 +628,6 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.search_offsets = torch.arange(-self.win_back, 20, device=self.device)
         self.stall_move_min = 1.0
         self._stall_anchor = torch.zeros((self.n, 2), device=self.device)
-        self.preview_scale = float(kwargs.get("preview_scale", 1.0))
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
