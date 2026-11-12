@@ -62,6 +62,10 @@ params:
     learning_rate: 3.e-4 # overwritten by adaptive lr_schedule
     lr_schedule: adaptive
     kl_threshold: 0.008 # target kl for adaptive lr
+    # adaptive lr has no floor by default and this task drives it to zero:
+    # KL hit 0.34 against a 0.008 threshold, lr went to 0, training froze and the
+    # reward fell from +648 to -239.  A floor keeps learning alive.
+    min_learning_rate: 3.e-5
     truncate_grads: True
     grad_norm: 1.
     horizon_length: 200
