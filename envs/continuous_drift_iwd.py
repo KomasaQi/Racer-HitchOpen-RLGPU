@@ -36,6 +36,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # env parameters
         self.max_steps = int(round(30.0 / self.dt))
         self.quiet = kwargs.get("quiet", False)
+        self.smooth_weight = float(kwargs.get("smooth_weight", 0.015))
         self.smooth_scale = 0.01 / self.dt   # keep reward per unit time constant
 
         self.pedals = self.control_mode == "pedals"
@@ -859,7 +860,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # reward double-counts it and always favours going faster, which is
             # what pushed the car past the corridor at high grip
             "prog": self.prog_weight * rew_prog,
-            "smooth": 0.015 * rew_smooth,
+            # steering chatter is smooth-band energy; the weight is a knob because
+            # the default was far too small to compete with the alive bonus
+            "smooth": self.smooth_weight * rew_smooth,
             "beta": self.beta_weight * rew_beta,
             "lowspeed": 0.1 * rew_lowspeed,
             "sf": 0.005 * rew_sf,

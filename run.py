@@ -172,6 +172,8 @@ parser.add_argument("--steer-actuator-tau", type=float, default=0.08,
                     help="first order steering lag in seconds (0 disables)")
 parser.add_argument("--steer-rate-limit", type=float, default=1.5,
                     help="max road-wheel slew rate, rad/s (0 disables)")
+parser.add_argument("--smooth-weight", type=float, default=0.015,
+                    help="weight on the steering/step smoothness term")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -308,6 +310,7 @@ default_env_config = {
     "grip_bias": args.grip_bias,
     "steer_actuator_tau": args.steer_actuator_tau,
     "steer_rate_limit": args.steer_rate_limit,
+    "smooth_weight": args.smooth_weight,
     "aux_reward_decay_steps": args.aux_reward_decay_steps,
     "aux_reward_coef": args.aux_reward_coef,
     "gamma": args.gamma,
