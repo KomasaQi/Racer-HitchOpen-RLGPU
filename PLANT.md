@@ -848,3 +848,30 @@ small pedal.  Closing the gap means either a non-linear pedal map in the GPU pla
 (`t_motor = q**0.5 * t_max`, for instance) or fixing whichever of the three effects
 above is dominant -- and that has to be measured, not guessed: log the rear wheel
 speed, slip ratio and longitudinal force in the same 3 s run at 0.15 throttle.
+## Round 44: the attainable sideslip is 0.12 rad, and beta_ref asked for 0.24
+
+A feasible trim scan over mu x R x V (residual < 1e-3, throttle in [0,1]) gives the
+largest steady sideslip this vehicle can hold anywhere:
+
+    mu    R      V      beta    delta   throttle   residual
+    1.00  10.0   2.50   0.116   0.264   0.009      7.8e-11
+    0.75  10.0   2.50   0.115   0.265   0.009      1.3e-13
+    1.00  10.0   4.00   0.110   0.267   0.011      1.7e-15
+    0.50   8.0   4.50   0.117   0.351   0.018      9.1e-04
+
+and the steady sideslip DECREASES with speed (0.087 rad at 5 m/s down to 0.040 at
+10 m/s on a 12 m radius).
+
+Why: at low utilisation the rear slip angle is nearly zero, so the steady sideslip is
+close to the kinematic term l_R*kappa.  At R = 10 m that is 1.195/10 = 0.120 rad, which
+is what the solver finds.  The reward asked for
+
+    beta_ref = alpha_peak + l_R*kappa = 0.12 + 0.120 = 0.240 rad
+
+i.e. it added a PEAK slip angle on top of the kinematic sideslip while the real rear
+slip angle is about 0.03 rad.  The reference was about twice the attainable value,
+which is a permanent penalty the policy could never clear.
+
+Consequence for the task: the biggest demonstrable drift is at LOW speed on an 8-10 m
+radius, not at the friction limit -- which also matches the owner's instruction to
+prefer the drift attitude over speed.
