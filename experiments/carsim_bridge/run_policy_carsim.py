@@ -3,6 +3,7 @@
 One episode per scenario: the car starts from rest at the origin, follows one of our
 own reference roads, and the shared task logic scores it.
 """
+import json
 import os
 import sys
 
@@ -19,6 +20,7 @@ from experiments.continuous_drift_iwd.eval import Policy  # noqa: E402
 
 CKPT = os.path.join(ROOT, "experiments", "continuous_drift_iwd", "runs",
                     "drift_ev_v17", "nn")
+RUN_DIR = os.path.dirname(CKPT)
 CKPT_FILE = None
 for f in os.listdir(CKPT):
     if f.startswith("last_") and f.endswith(".pth"):
@@ -27,7 +29,18 @@ for f in os.listdir(CKPT):
 
 def run(scenario, policy_path, steps=600, seed=0):
     torch.manual_seed(seed)
-    env = CarSimDriftEnv(scenario)
+    # reconstruct the trained task configuration, otherwise the actor sees a
+    # different preview geometry from the one it was trained with
+    with open(os.path.join(RUN_DIR, "env_config.json"), encoding="utf-8") as f:
+        cfg = json.load(f)
+    for key in ("plant", "control_mode", "train", "ref_mode_cli",
+                "disturbance_param", "randomize_param", "quiet", "num_paths"):
+        cfg.pop(key, None)
+    cfg.pop("curv_scale", None)      # a list here, the env wants the tuple marker
+    cfg["curv_scale"] = 0.7
+    env = CarSimDriftEnv(scenario, **cfg)
+    # one physical episode: never tensor-respawn while the solver keeps its state
+    env.train = False
     obs = env.reset()
     env.asymmetric = True
     pol = Policy(policy_path, torch.device("cuda:0"))

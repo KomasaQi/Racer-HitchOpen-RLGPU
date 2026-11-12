@@ -25,13 +25,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from envs.carsim_flat_env import (CHANNELS, DEFAULT_SCENARIOS, IDX,  # noqa: E402
-                                  MAX_BRAKE_MPA, MAX_STEER_SW_DEG,
-                                  CarSimFlatEnv)
+from envs.carsim_flat_env import (CARSIM_WHEEL_SUFFIXES, CHANNELS,  # noqa: E402
+                                  DEFAULT_SCENARIOS, IDX, MAX_BRAKE_MPA,
+                                  MAX_STEER_SW_DEG, CarSimFlatEnv)
 from envs.continuous_drift_iwd import ContinuousDriftIWDEnv  # noqa: E402
 
 G = 9.81
 R_EFF = 0.332
+# ContinuousDriftIWDEnv does not command a normalised steering value: the action's
+# first component is already a ROAD WHEEL angle in radians, bounded by the plant's
+# max_steer (0.45 rad).  Treating it as [-1, 1] under-commands the steering by
+# 1/0.45 = 2.22x, which is exactly the "runs wide" symptom seen in the first test.
+MAX_ROAD_WHEEL_RAD = 0.45
 
 
 class CarSimPlant:
@@ -64,7 +69,7 @@ class CarSimPlant:
     def col(self, name):
         if name in self._cols:
             return self._cols[name]
-        return torch.zeros(self.n, device=self.device, dtype=self.dtype)
+        raise KeyError("CarSimPlant has no parameter column %r" % name)
 
     def geometry(self):
         x = torch.tensor([1.455, 1.455, -1.195, -1.195], device=self.device)
@@ -101,7 +106,8 @@ class CarSimPlant:
     # ------------------------------------------------------------------ step
     def step(self, s, command, dt, substeps=1, mode="pedals"):
         cmd = command.detach().cpu().numpy().reshape(-1)
-        steer = float(np.clip(cmd[0], -1.0, 1.0)) * MAX_STEER_SW_DEG
+        steer = (float(np.clip(cmd[0] / MAX_ROAD_WHEEL_RAD, -1.0, 1.0))
+                 * MAX_STEER_SW_DEG)
         throttle = float(np.clip(cmd[1], 0.0, 1.0))
         brake = float(np.clip(cmd[2], 0.0, 1.0)) * MAX_BRAKE_MPA
         imp = [steer, throttle, brake]
@@ -114,9 +120,9 @@ class CarSimPlant:
                 status, self.sim._exp = self.sim._vs.integrate_io(
                     self.sim._t, imp, self.sim._exp)
                 if status != 0:
-                    break
-            raw = np.asarray(self.sim._exp, dtype=np.float64)
-            acc.append((raw[IDX["Ax"]] * G, raw[IDX["Ay"]] * G, raw[IDX["AVz"]]))
+                    raise RuntimeError("CarSim integrate_io status %d" % status)
+                raw_i = np.asarray(self.sim._exp, dtype=np.float64)
+                acc.append((raw_i[IDX["Ax"]] * G, raw_i[IDX["Ay"]] * G))
         raw = np.asarray(self.sim._exp, dtype=np.float64)
         self.sim._raw = raw.copy()
         self.sim._update_state(raw)
@@ -137,20 +143,21 @@ class CarSimPlant:
 
     def _wheel_terms(self, raw):
         dev = self.device
-        kappa = torch.tensor([raw[IDX["Kappa_L1"]], raw[IDX["Kappa_L2"]],
-                              raw[IDX["Kappa_R1"]], raw[IDX["Kappa_R2"]]],
+        kappa = torch.tensor([raw[IDX["Kappa_" + k]]
+                              for k in CARSIM_WHEEL_SUFFIXES],
                              device=dev, dtype=self.dtype)
-        alpha = torch.tensor([raw[IDX["Alpha_L1"]], raw[IDX["Alpha_L2"]],
-                              raw[IDX["Alpha_R1"]], raw[IDX["Alpha_R2"]]],
+        alpha = torch.tensor([raw[IDX["Alpha_" + k]]
+                              for k in CARSIM_WHEEL_SUFFIXES],
                              device=dev, dtype=self.dtype) * (math.pi / 180.0)
-        fz = torch.tensor([raw[IDX["Fz_WC_L1"]], raw[IDX["Fz_WC_L2"]],
-                           raw[IDX["Fz_WC_R1"]], raw[IDX["Fz_WC_R2"]]], device=dev)
-        fx = torch.tensor([raw[IDX["Fx_WC_L1"]], raw[IDX["Fx_WC_L2"]],
-                           raw[IDX["Fx_WC_R1"]], raw[IDX["Fx_WC_R2"]]], device=dev)
-        fy = torch.tensor([raw[IDX["Fy_WC_L1"]], raw[IDX["Fy_WC_L2"]],
-                           raw[IDX["Fy_WC_R1"]], raw[IDX["Fy_WC_R2"]]], device=dev)
-        w = torch.tensor([raw[IDX["AVy_L1"]], raw[IDX["AVy_L2"]],
-                          raw[IDX["AVy_R1"]], raw[IDX["AVy_R2"]]], device=dev) * (2 * math.pi / 60.0)
+        fz = torch.tensor([raw[IDX["Fz_WC_" + k]]
+                           for k in CARSIM_WHEEL_SUFFIXES], device=dev)
+        fx = torch.tensor([raw[IDX["Fx_WC_" + k]]
+                           for k in CARSIM_WHEEL_SUFFIXES], device=dev)
+        fy = torch.tensor([raw[IDX["Fy_WC_" + k]]
+                           for k in CARSIM_WHEEL_SUFFIXES], device=dev)
+        w = torch.tensor([raw[IDX["AVy_" + k]]
+                          for k in CARSIM_WHEEL_SUFFIXES], device=dev)
+        w = w * (2 * math.pi / 60.0)
         vx_w = (w * R_EFF).unsqueeze(0)
         nan4 = torch.zeros((1, 4), device=dev)
         return {
@@ -203,7 +210,13 @@ class CarSimPlant:
 class CarSimDriftEnv(ContinuousDriftIWDEnv):
     """``ContinuousDriftIWDEnv`` with CarSim as the plant, n = 1."""
 
-    def __init__(self, scenario="flat_mu050", simfile=None, device="cuda:0", **kwargs):
+    def __init__(self, scenario="flat_mu050", simfile=None, device="cuda:0",
+                 stall_window=20, stall_move=0.6, **kwargs):
+        # CarSim releases the car FROM REST, while training spawned at 4.5 m/s.
+        # The default stall rule (10 steps / 1.0 m) therefore fires during the
+        # launch: in 0.5 s from standstill the car covers only about 0.5 m.
+        kwargs.setdefault("stall_window", stall_window)
+        kwargs.setdefault("stall_move", stall_move)
         if simfile is None:
             key = {"flat_mu050": 0.50, "flat_mu075": 0.75, "flat_mu100": 1.00}
             grip = key.get(str(scenario), 1.0)
@@ -215,9 +228,13 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self.car = CarSimPlant(simfile, device=device, grip=grip, n=1)
         self.plant_name = "fast"
         self.plant = self.car
+        # the base class cached the GPU plant's radii before the swap
+        self.wheel_radius = self.car.geometry()[2]
         self.grip = grip
         self.scenario = scenario
         self._normalise_paths()
+        self._startup_speed = 2.0
+        self._launched = False
 
     def _normalise_paths(self):
         """Move every reference road so it starts at the origin heading +x.
@@ -249,7 +266,11 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self._stall_anchor.copy_(self.s[:, :2])
         self.car.sim.reset()
         self.s.copy_(self.car.sim.s.to(self.s.device))
-        self.es = self.car.extended_state(self.s)
+        self.car._r_prev = float(self.s[0, 5])
+        self.car._rdot = 0.0
+        _, self.extras = self.car.derivatives(
+            self.s, self.u_cmd, mode=self.control_mode)
+        self.es = self.car.package_extended(self.s, self.extras)
         self._track_pending = True
         self._now = None
         self._prev = None

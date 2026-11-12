@@ -67,6 +67,11 @@ DEFAULT_SCENARIOS = {
 # so 345 deg of steering wheel is the 25.8 deg (0.45 rad) wheel angle the GPU
 # plant trains with -- command +/-1 must mean the same thing on both plants.
 MAX_STEER_SW_DEG = 345.0
+# CarSim names wheels by side then axle (L1, L2, R1, R2 = FL, RL, FR, RR) while the
+# plant contract is FL, FR, RL, RR.  Getting this wrong swaps the front-right and
+# rear-left channels, so the "front" speed estimate silently includes a driven rear
+# wheel.
+CARSIM_WHEEL_SUFFIXES = ("L1", "R1", "L2", "R2")
 MAX_BRAKE_MPA = 6.0           # agreed with the owner: 6 MPa is the working ceiling
 
 
@@ -174,8 +179,8 @@ class CarSimFlatEnv:
         cp, sp = np.cos(psi), np.sin(psi)
         vx_w = cp * vx_b - sp * vy_b
         vy_w = sp * vx_b + cp * vy_b
-        w = np.array([raw[IDX["AVy_L1"]], raw[IDX["AVy_L2"]],
-                      raw[IDX["AVy_R1"]], raw[IDX["AVy_R2"]]]) * (2.0 * np.pi / 60.0)
+        w = np.array([raw[IDX["AVy_" + k]] for k in CARSIM_WHEEL_SUFFIXES],
+                     dtype=np.float64) * (2.0 * np.pi / 60.0)
         self.s[0, 0] = x
         self.s[0, 1] = y
         self.s[0, 2] = psi
