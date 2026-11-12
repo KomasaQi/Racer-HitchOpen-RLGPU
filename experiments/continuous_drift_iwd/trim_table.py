@@ -80,28 +80,38 @@ class TrimSolver:
         ay_b = -sn * float(d[0, 3]) + c * float(d[0, 4])
         vx_b = c * float(s[0, 3]) + sn * float(s[0, 4])
         vy_b = -sn * float(s[0, 3]) + c * float(s[0, 4])
+        # scale every row to O(1) or the yaw and wheel rows dominate the cost by
+        # two orders of magnitude and least_squares stalls with delta frozen
         return np.array([
             (ax_b + vy_b * r) / G,
             (ay_b - vx_b * r) / G,
-            float(d[0, 5]),
-            float(d[0, 6]) / 300.0,
-            float(d[0, 7]) / 300.0,
-            float(d[0, 8]) / 300.0,
-            float(d[0, 9]) / 300.0,
+            float(d[0, 5]) / 50.0,
+            float(d[0, 6]) / 3000.0,
+            float(d[0, 7]) / 3000.0,
+            float(d[0, 8]) / 3000.0,
+            float(d[0, 9]) / 3000.0,
         ]), ex, r
 
     def solve(self, kappa, V, beta0=0.15):
         from scipy.optimize import least_squares
         lo = np.array([-1.2, -0.45, 0.0, 0.5, 0.5, 0.5, 0.5])
         hi = np.array([1.2, 0.45, 1.0, 900.0, 900.0, 900.0, 900.0])
-        x0 = np.array([beta0, -0.20, 0.12,
-                       0.8 * V / R_WHEEL, 0.8 * V / R_WHEEL,
-                       1.10 * V / R_WHEEL, 1.10 * V / R_WHEEL])
-        x0 = np.clip(x0, lo + 1e-6, hi - 1e-6)
-        res = least_squares(lambda x: self.residual(x, kappa, V)[0], x0,
-                            bounds=(lo, hi), xtol=1e-10, ftol=1e-10,
-                            max_nfev=400)
-        return res.x, float(np.abs(res.fun).max())
+        # multi-start: the yaw balance has more than one branch, so a single guess
+        # from -0.20 rad parks in a local minimum
+        best_x, best_e = None, np.inf
+        for d0 in (-0.35, -0.20, -0.05, 0.10, 0.25):
+            for w0 in (0.85, 1.0, 1.15):
+                x0 = np.array([beta0, d0, 0.15,
+                               w0 * V / R_WHEEL, w0 * V / R_WHEEL,
+                               w0 * V / R_WHEEL, w0 * V / R_WHEEL])
+                x0 = np.clip(x0, lo + 1e-6, hi - 1e-6)
+                res = least_squares(lambda x: self.residual(x, kappa, V)[0], x0,
+                                    bounds=(lo, hi), xtol=1e-12, ftol=1e-12,
+                                    x_scale="jac", max_nfev=600)
+                e = float(np.abs(res.fun).max())
+                if e < best_e:
+                    best_x, best_e = res.x, e
+        return best_x, best_e
 
 
 def build(cells, out_path):
