@@ -827,3 +827,24 @@ control steps after takeover with the car at 11.47 m/s and 4.06 m off the line.
 The remaining fix is a piecewise pedal-to-torque map fitted to CarSim's `Ax` and
 `AV_Motor` at 0.1 / 0.2 / 0.3 throttle, applied in `fast_plant.py`.  Nothing in the
 CarSim bridge is wrong at this point.
+## The low-pedal gap: where to look next
+
+`fast_plant._motor_torque` maps the pedal linearly, `t_motor = q * t_max`, so 0.15
+throttle already requests about 360 Nm at the motor.  That should give roughly
+2.3 m/s^2 on the 1515 kg car, i.e. 6-7 m/s after three seconds, yet the measured GPU
+speed at 0.15 throttle is 0.1-1.4 m/s.  Something downstream is eating the force at
+low speed, and the candidates are, in order:
+
+1. the tyre slip floor (`slip_v_floor 1.0`): at standstill the slip ratio is computed
+   against a 1 m/s denominator, so the force stays small until the car is moving;
+2. the wheel spin inertia, now 0.17 kg m^2: with 570 Nm per rear wheel the wheel
+   accelerates at 3350 rad/s^2, so it spins up long before the car does and the
+   friction circle then limits the longitudinal force;
+3. `coast_torque_nm` and rolling resistance, which are a larger fraction of the
+   command at small pedal.
+
+CarSim delivers 14.2 m/s at 0.15 throttle, so its motor gives most of its torque at a
+small pedal.  Closing the gap means either a non-linear pedal map in the GPU plant
+(`t_motor = q**0.5 * t_max`, for instance) or fixing whichever of the three effects
+above is dominant -- and that has to be measured, not guessed: log the rear wheel
+speed, slip ratio and longitudinal force in the same 3 s run at 0.15 throttle.
