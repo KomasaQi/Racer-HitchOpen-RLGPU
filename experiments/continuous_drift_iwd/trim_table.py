@@ -99,11 +99,15 @@ class TrimSolver:
         # multi-start: the yaw balance has more than one branch, so a single guess
         # from -0.20 rad parks in a local minimum
         best_x, best_e = None, np.inf
-        for d0 in (-0.35, -0.20, -0.05, 0.10, 0.25):
-            for w0 in (0.85, 1.0, 1.15):
+        # front and rear must start at DIFFERENT speeds: the front axle is
+        # undriven and sits at rolling, the rear is driven and spins faster.  An
+        # identical start for all four lets the solver sit in the symmetric saddle
+        # where no wheel torque balance exists at all.
+        for d0 in (-0.40, -0.25, -0.10, 0.05, 0.20, 0.35):
+            for wf, wr in ((0.98, 1.05), (1.0, 1.15), (1.02, 1.30), (0.95, 1.55)):
                 x0 = np.array([beta0, d0, 0.15,
-                               w0 * V / R_WHEEL, w0 * V / R_WHEEL,
-                               w0 * V / R_WHEEL, w0 * V / R_WHEEL])
+                               wf * V / R_WHEEL, wf * V / R_WHEEL,
+                               wr * V / R_WHEEL, wr * V / R_WHEEL])
                 x0 = np.clip(x0, lo + 1e-6, hi - 1e-6)
                 res = least_squares(lambda x: self.residual(x, kappa, V)[0], x0,
                                     bounds=(lo, hi), xtol=1e-12, ftol=1e-12,
