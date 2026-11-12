@@ -208,7 +208,12 @@ fullsize_racecar_ev:
     drivetrain: rwd
     gear_ratio: 3.44
     drive_efficiency: 0.92
-    max_power_w: 384000.
+    # A rear-drive car that can hold 20-40 degrees of sideslip needs its rear axle to
+    # saturate laterally well before the front, and enough power to keep spinning it.
+    # Measured: with mu_y_rear 0.85 the sustained sideslip was pinned at 0.14-0.16 rad
+    # across every speed, tyre model and reward weight tried.
+    mu_y_ratio_rear: 0.65
+    max_power_w: 500000.
     motor: [[0., 2400.], [250., 2400.], [500., 2400.], [750., 2400.],
             [1000., 2400.], [1250., 2400.], [1500., 2400.], [1600., 2293.62],
             [1800., 2038.77], [2000., 1834.89], [2500., 1467.91], [3000., 1223.26],
