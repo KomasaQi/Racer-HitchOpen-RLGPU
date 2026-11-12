@@ -52,9 +52,19 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     # the car reach that speed in a straight line before the policy takes over.
     # This is evaluation-only and tests whether the rest start is what breaks it.
     if entry_speed > 0.0:
+        # Launch along the REFERENCE, not straight: a straight launch on a
+        # curving road leaves the car off the path by the takeover point.
         launch = torch.zeros((1, 3), device="cuda:0")
-        launch[0, 1] = 0.35
         for _ in range(200):
+            # pure pursuit toward a point 3 m down the reference
+            pr = min(int(env.progress[0].item()) + 80, env.num_waypoints - 1)
+            gp, pid = int(env.path_generation[0].item()), int(env.path_id[0].item())
+            ref = env.path_bank[gp, pid, pr, :2].cpu().numpy()
+            cur = env.s[0, :2].cpu().numpy()
+            psi = float(env.s[0, 2])
+            des = float(np.arctan2(ref[1] - cur[1], ref[0] - cur[0]))
+            err = float(np.arctan2(np.sin(des - psi), np.cos(des - psi)))
+            launch[0, 0] = float(np.clip(2.5 * err, -0.35, 0.35))
             obs, _, done, _ = env.step(launch)
             v_now = float(env.es.reshape(1, -1)[0, 6])
             if v_now >= entry_speed:

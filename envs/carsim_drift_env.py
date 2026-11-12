@@ -267,14 +267,15 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         """
         x0, y0, psi0 = self.s[0, 0], self.s[0, 1], self.s[0, 2]
         bank = self.path_bank[self.current_generation]
-        dx = bank[:, :, 0] - x0
-        dy = bank[:, :, 1] - y0
+        # shift by the PATH's own first point, rotate into the car frame, then
+        # place it on the car: shifting by the car position (the first attempt)
+        # left the anchor 1.8 m off the line
+        dx = bank[:, :, 0] - bank[:, 0, 0:1]
+        dy = bank[:, :, 1] - bank[:, 0, 1:2]
         c, sn = torch.cos(-psi0), torch.sin(-psi0)
-        bank[:, :, 0] = c * dx - sn * dy
-        bank[:, :, 1] = sn * dx + c * dy
-        bank[:, :, 2] = bank[:, :, 2] - psi0
-        self.progress.zero_()
-        self.step_progress.zero_()
+        bank[:, :, 0] = c * dx - sn * dy + x0
+        bank[:, :, 1] = sn * dx + c * dy + y0
+        bank[:, :, 2] = bank[:, :, 2] - bank[:, 0, 2:3]
         self.step_count.zero_()
         self.travel.zero_()
         self.no_progress_count.zero_()
