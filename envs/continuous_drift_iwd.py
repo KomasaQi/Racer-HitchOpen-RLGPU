@@ -1014,6 +1014,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                     1.0 + self.spawn_speed_noise * torch.randn_like(kappa), 0.6, 1.3))
                 beta0 = self.spawn_beta_frac * self._reference_beta(
                     kappa.unsqueeze(1), v0, idx=indices).squeeze(1)
+                # A car that starts from standstill has no sideslip and no countersteer:
+                # carrying the drift trim into a rest start asks the policy to hold a state
+                # the physics forbids at v = 0.  Fade both in over the first 3 m/s so the
+                # spawn distribution covers rest through full drift continuously.
+                _fade = (v0 / 3.0).clamp(0.0, 1.0)
+                beta0 = beta0 * _fade
                 beta0 = beta0 * torch.clamp(
                     1.0 + self.spawn_beta_noise * torch.randn_like(beta0), 0.4, 1.4)
                 psi = veldir - beta0 + 0.1 * torch.randn_like(veldir)
@@ -1048,13 +1054,22 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # works on whole batches, so evaluate it for all envs and index)
             _di = is_done.nonzero(as_tuple=False).squeeze(1)
             kappa_all = self.path_bank[self.path_generation, self.path_id, self.progress, 3]
-            beta_all = self._reference_beta(kappa_all.unsqueeze(1), self.spawn_speed).squeeze(1)
+            beta_all = self._reference_beta(
+                kappa_all.unsqueeze(1),
+                torch.hypot(self.s[:, 3], self.s[:, 4])).squeeze(1)
+            # the trim must use the ACTUAL spawn speed, not spawn_speed: with rest
+            # starts in the distribution the two differ by up to 4.5 m/s.squeeze(1)
             # Trim commands measured with the solver (rounds 43-45): the steer needed to
             # hold a steady sideslip is about 2.4-2.6x that sideslip on an 8-12 m radius,
             # and the throttle needed is 1-3 %, NOT the 0.55 that used to sit here.
             # A 0.55 throttle on the corrected plant is a hard acceleration command, which
             # is why the car left the corridor in 2.1 s with no action at all.
-            self.u_cmd[_di, 0] = (2.5 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
+            # the trim steer must fade with speed as well, or a rest start gets a full
+            # countersteer while its sideslip is zero
+            _v_now = torch.hypot(self.s[_di, 3], self.s[_di, 4])
+            _fade_cmd = (_v_now / 3.0).clamp(0.0, 1.0)
+            self.u_cmd[_di, 0] = (2.5 * beta_all[_di] * _fade_cmd).clamp(
+                -self.max_steer, self.max_steer)
             # The throttle needed to HOLD a given speed is the one thing about the plant
             # that CarSim does not share with the GPU model: the GPU policy settles on
             # 0.004 because the trim supplies 0.02, and in CarSim that command lets the car
