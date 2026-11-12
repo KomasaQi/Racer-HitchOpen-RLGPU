@@ -191,12 +191,16 @@ fullsize_racecar_ev:
     IwF: 0.17
     IwR: 0.17
     # isotropic XCAR tire, peak at ~0.11 combined slip
-    B: 10.0
+    # throttle-map evidence: with B 10 the GPU car peaks at 15.0 m/s at 0.45 throttle
+    # and then gets SLOWER (13.9 at 0.60, 12.4 at 1.00) because the rear axle spins;
+    # CarSim rises monotonically to 21.8 m/s.  B 6, i.e. a later force peak, plus a
+    # stronger rear axle reproduces the monotonic rise: 17.5 / 22.0 / 23.4 / 23.8.
+    B: 6.0
     C: 1.90
     D: 1.00
     E: 0.97
     tyre_scale_front: 1.00
-    tyre_scale_rear: 1.05
+    tyre_scale_rear: 1.40
     slip_v_floor: 1.0
     slip_alpha_v_floor: 1.0
     load_sensitivity: 0.0
