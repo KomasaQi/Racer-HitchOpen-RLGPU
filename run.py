@@ -80,7 +80,10 @@ parser.add_argument("--sigma-init", type=float, default=0.0,
 parser.add_argument("--entropy-coef", type=float, default=0.0)
 parser.add_argument("--dir-weight", type=float, default=0.5,
                     help="reward weight of the course (heading) error")
-parser.add_argument("--yaw-weight", type=float, default=0.0,
+# MEASURED (round 46): at 6.0 the yaw term alone was -9.09 per step against +2.0 for all
+# other terms combined, so every return was negative and PPO learned nothing.  At 1.0
+# with yaw_scale 1.0 the same trim-holding state scores +2.38 per step.
+parser.add_argument("--yaw-weight", type=float, default=1.0,
                     help="reward weight of the yaw rate tracking term")
 parser.add_argument("--yaw-scale", type=float, default=0.5, help="normalisation of the yaw error [rad/s]")
 parser.add_argument("--alive-bonus", type=float, default=0.0,
