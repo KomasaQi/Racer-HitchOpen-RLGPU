@@ -258,6 +258,34 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         bank[:, :, 1] = s * dx + c * dy
         bank[:, :, 2] = bank[:, :, 2] - d0
 
+    def begin_policy_episode(self):
+        """Start a clean timed episode at the current rolling vehicle pose.
+
+        The launch controller runs through the full task step, so it consumes
+        step_count, advances path progress and accumulates travel.  Without this
+        re-anchor the "30 s" episode is really 29.5 s of policy plus a launch.
+        """
+        x0, y0, psi0 = self.s[0, 0], self.s[0, 1], self.s[0, 2]
+        bank = self.path_bank[self.current_generation]
+        dx = bank[:, :, 0] - x0
+        dy = bank[:, :, 1] - y0
+        c, sn = torch.cos(-psi0), torch.sin(-psi0)
+        bank[:, :, 0] = c * dx - sn * dy
+        bank[:, :, 1] = sn * dx + c * dy
+        bank[:, :, 2] = bank[:, :, 2] - psi0
+        self.progress.zero_()
+        self.step_progress.zero_()
+        self.step_count.zero_()
+        self.travel.zero_()
+        self.no_progress_count.zero_()
+        self.is_done.zero_()
+        self._stall_anchor.copy_(self.s[:, :2])
+        self._now = None
+        self._prev = None
+        self._track_pending = True
+        self._physics_advanced = False
+        return self.obs()
+
     def reset(self):
         super().reset()
         # the car is at rest at the origin; put the task bookkeeping there too

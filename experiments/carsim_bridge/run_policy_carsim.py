@@ -59,6 +59,9 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
             v_now = float(env.es.reshape(1, -1)[0, 6])
             if v_now >= entry_speed:
                 break
+        # the launch is not part of the scored episode: re-anchor the reference
+        # and clear the task counters so the 30 s timer starts here
+        obs = env.begin_policy_episode()
     pol = Policy(policy_path, torch.device("cuda:0"))
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device="cuda:0"))
     speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
