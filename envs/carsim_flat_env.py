@@ -62,8 +62,12 @@ DEFAULT_SCENARIOS = {
 }
 
 # pedal scaling: this vehicle's steering wheel range and brake pressure range
-MAX_STEER_SW_DEG = 720.0      # +/- 720 deg steering wheel = +/- 1.0 command
-MAX_BRAKE_MPA = 6.0           # full pedal = 6 MPa master cylinder
+# calibrated (see experiments/carsim_bridge/carsim_calib.py): the steering
+# wheel to wheel-angle map measured 13.9:1 near centre and 12.0:1 at full lock,
+# so 345 deg of steering wheel is the 25.8 deg (0.45 rad) wheel angle the GPU
+# plant trains with -- command +/-1 must mean the same thing on both plants.
+MAX_STEER_SW_DEG = 345.0
+MAX_BRAKE_MPA = 6.0           # agreed with the owner: 6 MPa is the working ceiling
 
 
 class CarSimFlatEnv:
@@ -197,7 +201,10 @@ class CarSimFlatEnv:
 
     def geometry(self):
         """Wheel positions and radius for compatibility with the GPU plant."""
+        x = torch.tensor([1.455, 1.455, -1.195, -1.195])   # l_f 1.455, l_r 1.195
         x = torch.tensor([1.455, 1.455, -1.195, -1.195])
         y = torch.tensor([0.8, -0.8, 0.8, -0.8])
-        rad = torch.full((4,), 0.33)
+        # measured: ground speed / front wheel spin gave 0.3319-0.3321 m flat
+        # across 0.10-0.30 throttle, so the effective rolling radius is 0.332
+        rad = torch.full((4,), 0.332)
         return x, y, rad, torch.zeros(4)
