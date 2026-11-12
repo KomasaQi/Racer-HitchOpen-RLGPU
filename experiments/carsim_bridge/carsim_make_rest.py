@@ -63,6 +63,9 @@ def patch_par(src_par, dst_par):
     return skipped
 
 
+# NOTE: INPUT must use the WORK_DIR macro form, not a bare absolute path --
+# vs_solver.read_configuration returns n_export 0 for the bare form, which is why the
+# regenerated runs could never be loaded even though PORTS_EXP was present.
 SIM_TEMPLATE = """SIMFILE
 
 SET_MACRO $(ROOT_FILE_NAME)$ {root}
@@ -71,7 +74,7 @@ SET_MACRO $(WORK_DIR)$ {outdir}
 SET_MACRO $(OUTPUT_FILE_PREFIX)$ $(WORK_DIR)$Results\\$(ROOT_FILE_NAME)$\\LastRun
 
 FILEBASE $(OUTPUT_FILE_PREFIX)$
-INPUT {par}
+INPUT $(WORK_DIR)$Run_all.par
 INPUTARCHIVE $(OUTPUT_FILE_PREFIX)$_all.par
 ECHO $(OUTPUT_FILE_PREFIX)$_echo.par
 FINAL $(OUTPUT_FILE_PREFIX)$_end.par
