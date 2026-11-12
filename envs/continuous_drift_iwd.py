@@ -1055,7 +1055,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # A 0.55 throttle on the corrected plant is a hard acceleration command, which
             # is why the car left the corridor in 2.1 s with no action at all.
             self.u_cmd[_di, 0] = (2.5 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
-            self.u_cmd[_di, 1] = 0.02
+            # The throttle needed to HOLD a given speed is the one thing about the plant
+            # that CarSim does not share with the GPU model: the GPU policy settles on
+            # 0.004 because the trim supplies 0.02, and in CarSim that command lets the car
+            # decelerate to a standstill.  Randomising the trim throttle over a wide range
+            # forces the policy to close the speed loop from the wheel-speed channels
+            # instead of memorising one value.
+            _lo = float(getattr(self, "trim_throttle_lo", 0.0))
+            _hi = float(getattr(self, "trim_throttle_hi", 0.25))
+            self.u_cmd[_di, 1] = _lo + (_hi - _lo) * torch.rand(
+                len(_di), device=self.device, dtype=self.u_cmd.dtype)
         # the actor emits a CORRECTION on top of this trim, so store it
         self.u_trim = getattr(self, "u_trim", None)
         if self.u_trim is None:
