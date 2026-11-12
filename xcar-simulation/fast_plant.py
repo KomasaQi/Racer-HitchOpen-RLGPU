@@ -709,7 +709,13 @@ class FastRacerPlant:
                 # a wheel may not reverse through zero within one physics step
                 # a wheel may not reverse through zero within one physics step; a
                 # small negative allowance keeps it from being pinned by the clamp
-                s[:, 6:10] = torch.clamp(s[:, 6:10], min=-2.0, max=2500.0)
+                # a wheel may not run backwards: if the step would take it negative,
+                # project it onto the rolling speed instead of zero.  Clamping at zero
+                # (or at a small negative) pins the wheel while the tyre keeps braking
+                # it, which is what made the car crawl at low pedal.
+                v_roll = torch.hypot(s[:, 3], s[:, 4]).unsqueeze(1) / extras["wheel_radius"]
+                s[:, 6:10] = torch.where(s[:, 6:10] < 0.0, v_roll,
+                                         torch.clamp(s[:, 6:10], max=2500.0))
             s[:, 2] = torch.atan2(torch.sin(s[:, 2]), torch.cos(s[:, 2]))
         extras["ax"] = ax_sum / n_sub
         extras["ay"] = ay_sum / n_sub
