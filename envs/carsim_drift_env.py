@@ -178,7 +178,17 @@ class CarSimPlant:
 
     # --------------------------------------------------------- extended state
     def package_extended(self, s, extras):
-        return self._assemble(s, extras)
+        # Read the acceleration channels straight from the solver's newest export.
+        # Trusting the passed-in extras left them at their reset values: measured
+        # raw Ax = 0.6236 g after a second of 0.3 throttle while the environment
+        # reported es_ax = -0.0031, i.e. the actor's longitudinal-acceleration channel
+        # was DEAD and the policy was blind to the one signal it needs to regulate
+        # speed.  That is the transfer failure.
+        raw = self.sim._raw
+        merged = dict(extras)
+        merged["ax"] = torch.tensor([raw[IDX["Ax"]] * G], device=self.device)
+        merged["ay"] = torch.tensor([raw[IDX["Ay"]] * G], device=self.device)
+        return self._assemble(s, merged)
 
     def extended_state(self, s, command=None, mode="pedals"):
         raw = self.sim._raw
