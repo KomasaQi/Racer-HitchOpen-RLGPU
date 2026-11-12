@@ -172,6 +172,10 @@ parser.add_argument("--steer-actuator-tau", type=float, default=0.08,
                     help="first order steering lag in seconds (0 disables)")
 parser.add_argument("--steer-rate-limit", type=float, default=1.5,
                     help="max road-wheel slew rate, rad/s (0 disables)")
+parser.add_argument("--steer-deadband", type=float, default=0.0,
+                    help="hold the wheel while the target error is below this [rad]")
+parser.add_argument("--brake-margin", type=float, default=0.0,
+                    help="brake engages only when it exceeds throttle by this much")
 parser.add_argument("--smooth-weight", type=float, default=0.015,
                     help="weight on the steering/step smoothness term")
 args = parser.parse_args()
@@ -311,6 +315,8 @@ default_env_config = {
     "steer_actuator_tau": args.steer_actuator_tau,
     "steer_rate_limit": args.steer_rate_limit,
     "smooth_weight": args.smooth_weight,
+    "steer_deadband": args.steer_deadband,
+    "brake_margin": args.brake_margin,
     "aux_reward_decay_steps": args.aux_reward_decay_steps,
     "aux_reward_coef": args.aux_reward_coef,
     "gamma": args.gamma,

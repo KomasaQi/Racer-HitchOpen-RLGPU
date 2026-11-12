@@ -86,6 +86,8 @@ class GPUVectorizedCarEnv:
         self.train = kwargs.get("train", False)
         self.randomize_param = randomize_param or {}
         self.disturbance_param = disturbance_param
+        self.steer_deadband = float(kwargs.get("steer_deadband", 0.0))
+        self.brake_margin = float(kwargs.get("brake_margin", 0.0))
         self.steer_actuator_tau = float(kwargs.get("steer_actuator_tau", 0.0))
         self.steer_rate_limit = float(kwargs.get("steer_rate_limit", 0.0))
         self._steer_state = torch.zeros((self.n,), device=self.device)
@@ -274,13 +276,20 @@ class GPUVectorizedCarEnv:
             # Saturated first order servovalve: the rate is limited BEFORE it is
             # integrated, so a step cannot cross the target and the actuator can
             # never be faster than the slew limit.
-            rate = (target - self._steer_state) / self.steer_actuator_tau
+            # a deadband holds the wheel for tiny target errors, which is what a
+            # driver does and what removes sub-limit dither without touching real
+            # countersteer
+            error = target - self._steer_state
+            error = torch.where(error.abs() <= self.steer_deadband,
+                                torch.zeros_like(error), error)
+            effective_target = self._steer_state + error
+            rate = error / self.steer_actuator_tau
             if self.steer_rate_limit > 0.0:
                 rate = torch.clamp(rate, -self.steer_rate_limit, self.steer_rate_limit)
             nxt = self._steer_state + self.dt * rate
-            nxt = torch.where(target >= self._steer_prev,
-                              torch.minimum(nxt, target),
-                              torch.maximum(nxt, target))
+            nxt = torch.where(effective_target >= self._steer_state,
+                              torch.minimum(nxt, effective_target),
+                              torch.maximum(nxt, effective_target))
             self._steer_state = nxt
             self._steer_prev = self._steer_state.clone()
             u[:, 0] = self._steer_state
@@ -290,8 +299,12 @@ class GPUVectorizedCarEnv:
             u[:, 1] = torch.clamp(u[:, 1], 0.0, 1.0)
             u[:, 2] = torch.clamp(u[:, 2], 0.0, 1.0)
             q, b = u[:, 1].clone(), u[:, 2].clone()
-            u[:, 1] = torch.clamp(q - b, min=0.0)
-            u[:, 2] = torch.clamp(b - q, min=0.0)
+            # only the difference is physical, so (q, b) and (q+c, b+c) are the
+            # same command and small taps are free.  A margin means the brake only
+            # engages once it clearly exceeds the throttle, killing the taps.
+            longitudinal = q - b
+            u[:, 1] = torch.clamp(longitudinal, min=0.0)
+            u[:, 2] = torch.clamp(-longitudinal - self.brake_margin, min=0.0)
         else:
             u[:, 1:] = torch.clamp(u[:, 1:], 0.0, 7.0)
         return u

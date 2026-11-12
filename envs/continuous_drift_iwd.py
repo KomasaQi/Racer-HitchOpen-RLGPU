@@ -1025,6 +1025,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             beta_all = self._reference_beta(kappa_all.unsqueeze(1), self.spawn_speed).squeeze(1)
             self.u_cmd[_di, 0] = (0.55 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
             self.u_cmd[_di, 1] = 0.55
+        # the equilibrium spawn installs a physical steering command; keep the
+        # actuator state consistent with it or the first steps fight the wheel
+        if getattr(self, "steer_actuator_tau", 0.0) > 0.0:
+            self._steer_state[is_done] = self.u_cmd[is_done, 0]
+            self._steer_prev[is_done] = self.u_cmd[is_done, 0]
         if self.plant_name == "fast":
             self.plant.init_wheels_mask(self.s, is_done)
             self.plant.reset_guess(is_done)
