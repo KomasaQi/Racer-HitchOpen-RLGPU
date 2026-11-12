@@ -171,19 +171,25 @@ fullsize_racecar_ev:
   parameters:
     lF: 1.455
     lR: 1.195
-    # matched to the CarSim vehicle ("Exotic Racecar, Mid-Engine"): the sprung mass
-    # is 1200 kg, the four wheels add 787 kg, so the total is 1987 kg; the measured
-    # front track is 1720 mm and every wheel measures a 0.332 m rolling radius.
+    # Matched to the CarSim vehicle ("Exotic Racecar, Mid-Engine"), read from its
+    # own pars: sprung mass 1200 kg, unsprung 65.7 kg front and 91.7 kg rear per
+    # corner, so the total is 1514.8 kg.  Iz is the sprung 1065.2 plus the unsprung
+    # contributions about the CG (2*65.7*1.455^2 + 2*91.7*1.195^2) = 1605.3 kg m^2.
+    # The earlier 1987 kg figure came from summing Fz at 200 km/h, which includes
+    # aerodynamic downforce -- that was wrong.
     Tf: 1.720
     Tr: 1.600
-    m: 1987.0
+    m: 1514.8
     h: 0.375
     g: 9.81
-    Iz: 1350.0
+    Iz: 1605.3
     rF: 0.33200
     rR: 0.33200
-    IwF: 1.9
-    IwR: 2.2
+    # CarSim wheel spin inertia is IW = 0.17 kg m^2 for every wheel; the previous
+    # 1.9 / 2.2 were 11x too high, which changes wheel-spin transients, i.e. exactly
+    # the four wheel-speed channels the actor sees.
+    IwF: 0.17
+    IwR: 0.17
     # isotropic XCAR tire, peak at ~0.11 combined slip
     B: 10.0
     C: 1.90
