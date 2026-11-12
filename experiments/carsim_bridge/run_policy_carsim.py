@@ -80,6 +80,10 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
             des = float(np.arctan2(ref[1] - cur[1], ref[0] - cur[0]))
             err = float(np.arctan2(np.sin(des - psi), np.cos(des - psi)))
             launch[0, 0] = float(np.clip(2.5 * err, -0.35, 0.35))
+            # BUG: the launch command only set the steering -- the throttle stayed zero, so the
+            # car could never accelerate to the requested entry speed and every "rolling entry"
+            # run was silently a from-rest run.  The throttle has to be opened for the launch.
+            launch[0, 1] = 0.65
             obs, _, done, _ = env.step(launch)
             v_now = float(env.es.reshape(1, -1)[0, 6])
             if v_now >= entry_speed:
