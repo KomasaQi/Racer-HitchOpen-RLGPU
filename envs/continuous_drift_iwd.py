@@ -545,8 +545,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         if self.drift_mode:
             # explicit drift target: a large sideslip, faded in only at very low speed and
             # faded out above the point where the car cannot hold it any more
+            # The trim solver's drift branch has beta and delta of OPPOSITE sign with beta
+            # taking the sign of the curvature (trim_solve.py), so the target is
+            # +sign(kappa)*target, NOT -sign(kappa).  The old sign asked for beta = -0.4 on
+            # a positive-curvature corner while the physically correct drift is +0.4, which
+            # made a real drift score exactly the same as no sideslip at all.
             _tgt = torch.full_like(kappa, self.drift_beta_target)
-            return -torch.sign(kappa) * _tgt * (speed / 2.0).clamp(0.0, 1.0)
+            return torch.sign(kappa) * _tgt * (speed / 2.0).clamp(0.0, 1.0)
         return -torch.sign(kappa) * beta_geo * factor * speed_fade
 
     def obs(self):
@@ -840,7 +845,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         beta_target = self.beta_ref * beta_gate if self.beta_gate_scale > 0 else self.beta_ref
         # cap the shaping term: an uncapped quadratic lets a single spin dominate the
         # return with hundreds of negative reward in one step, which swamps the critic
-        rew_beta = -torch.clamp((beta - beta_target) ** 2, max=self.beta_max ** 2)
+        # The clamp must never be active at beta = 0, or the quadratic has zero gradient
+        # there and PPO gets no direction at all.  With the drift target at 0.40 rad the old
+        # cap of beta_max**2 = 0.32**2 was already saturated at beta = 0, which is why the
+        # sideslip collapsed to zero and stayed there.
+        _b_cap = max(self.beta_max, self.drift_beta_target + 0.15) ** 2
+        rew_beta = -torch.clamp((beta - beta_target) ** 2, max=_b_cap)
         # Potential based recovery term: reward REDUCING the lateral error, not
         # just having a small one.  The static quadratic gives no direction at the
         # operating point and the car never learns to come back to the line.
@@ -911,7 +921,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # a power slide needs the driver holding the throttle open
         rew_drift_throttle = torch.clamp(self.u_cmd[:, 1] - self.drift_throttle_gate, min=0.0)
         # countersteer: the wheel must point out of the turn while the car slides
-        _sig = torch.sign(now["kappa"])
+        # r/V is near zero during a forward slide, so keying the countersteer off it asks
+        # for no countersteer exactly when one is needed.  Use the reference curvature.
+        _sig = torch.sign(now.get("kappa_ref", now["kappa"]))
         rew_drift_counter = -torch.clamp((self.u_cmd[:, 0] + 0.25 * _sig) ** 2, max=1.0)
 
         terms = {

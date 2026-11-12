@@ -83,6 +83,14 @@ parser.add_argument("--dir-weight", type=float, default=0.5,
 # MEASURED (round 46): at 6.0 the yaw term alone was -9.09 per step against +2.0 for all
 # other terms combined, so every return was negative and PPO learned nothing.  At 1.0
 # with yaw_scale 1.0 the same trim-holding state scores +2.38 per step.
+parser.add_argument("--drift-mode", action="store_true",
+                    help="explicit large sideslip target for a power slide")
+parser.add_argument("--drift-beta-target", type=float, default=0.40)
+parser.add_argument("--drift-kappa-target", type=float, default=0.55)
+parser.add_argument("--drift-kappa-weight", type=float, default=60.0)
+parser.add_argument("--drift-throttle-gate", type=float, default=0.30)
+parser.add_argument("--drift-throttle-weight", type=float, default=4.0)
+parser.add_argument("--drift-counter-weight", type=float, default=8.0)
 parser.add_argument("--yaw-weight", type=float, default=1.0,
                     help="reward weight of the yaw rate tracking term")
 parser.add_argument("--yaw-scale", type=float, default=0.5, help="normalisation of the yaw error [rad/s]")
@@ -212,6 +220,13 @@ default_env_config = {
     "pos_weight": args.pos_weight,
     "dir_weight": args.dir_weight,
     "yaw_weight": args.yaw_weight,
+    "drift_mode": args.drift_mode,
+    "drift_beta_target": args.drift_beta_target,
+    "drift_kappa_target": args.drift_kappa_target,
+    "drift_kappa_weight": args.drift_kappa_weight,
+    "drift_throttle_gate": args.drift_throttle_gate,
+    "drift_throttle_weight": args.drift_throttle_weight,
+    "drift_counter_weight": args.drift_counter_weight,
     "alive_bonus": args.alive_bonus,
     "stall_speed": args.stall_speed,
     "offpath_scale": args.offpath_scale,
