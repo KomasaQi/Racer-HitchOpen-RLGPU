@@ -119,7 +119,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.drift_throttle_gate = float(kwargs.get("drift_throttle_gate", 0.30))
         self.drift_throttle_weight = float(kwargs.get("drift_throttle_weight", 4.0))
         self.drift_counter_weight = float(kwargs.get("drift_counter_weight", 8.0))
-        self.drift_joint_weight = float(kwargs.get("drift_joint_weight", 40.0))
+        # MEASURED: 40 made it WORSE -- the rear slip fell from 0.2-1.2 to 0.06-0.29 and the
+        # throttle from 0.23-0.28 to 0.15-0.24, because the joint gate then demanded
+        # |beta| 0.18-0.36 while the policy could hold 0.15, so it gave up on the gate
+        # entirely and minimised the slip penalty instead.  12 is the measured optimum
+        # so far and is restored.
+        self.drift_joint_weight = float(kwargs.get("drift_joint_weight", 12.0))
         # The faded kinematic reference was correct for path tracking but it is the wrong
         # target for a drift: measured with the drift slip reward active, the car reached
         # throttle 0.18-0.29 and a positive rear slip of 0.03-0.36 (both good) while its
