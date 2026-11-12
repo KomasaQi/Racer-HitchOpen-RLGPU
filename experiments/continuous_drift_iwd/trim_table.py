@@ -70,13 +70,19 @@ class TrimSolver:
         self.plant.reset_guess()
         d, ex = self.plant.derivatives(s, cmd, mode="pedals")
         r = float(s[0, 5])
-        # body velocity implied by the state, to express dvy in the body frame
+        # d[3], d[4] are WORLD accelerations (already the body accelerations rotated
+        # by psi).  The steady-state conditions are on the BODY velocity
+        # derivatives, which carry the Coriolis terms:
+        #   dvx_b = ax_b + vy_b*r = 0      dv_y_b = ay_b - vx_b*r = 0
+        # Comparing a_y with V^2*kappa (as the first version did) mixes the two.
         c, sn = np.cos(psi), np.sin(psi)
-        dvx_body = c * float(d[0, 3]) + sn * float(d[0, 4])
-        dvy_body = -sn * float(d[0, 3]) + c * float(d[0, 4])
+        ax_b = c * float(d[0, 3]) + sn * float(d[0, 4])
+        ay_b = -sn * float(d[0, 3]) + c * float(d[0, 4])
+        vx_b = c * float(s[0, 3]) + sn * float(s[0, 4])
+        vy_b = -sn * float(s[0, 3]) + c * float(s[0, 4])
         return np.array([
-            dvx_body / G,
-            (dvy_body - V * V * kappa) / G,
+            (ax_b + vy_b * r) / G,
+            (ay_b - vx_b * r) / G,
             float(d[0, 5]),
             float(d[0, 6]) / 300.0,
             float(d[0, 7]) / 300.0,
