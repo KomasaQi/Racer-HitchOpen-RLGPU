@@ -28,8 +28,13 @@ SCENARIOS = {
 
 # procedure par that carries the driver model / speed controller links
 CONTROL_LINK = re.compile(r"^(ENTER_PARSFILE|PARSFILE)\s+Control[\\/]", re.I)
+# INSTALL_SPEED_CONTROLLER was MISSING from this block list, so the generated run kept
+# CarSim's own speed controller installed.  It then owned the throttle: applying 0.2, 0.6, 20
+# or 60 through the second import produced an identical trajectory (v 4.05) because the
+# controller, not the pedal, was driving.  That is why no drift ever transferred to CarSim.
 CONTROL_BLOCK = re.compile(r"^(INSTALL_DM_PATH_FOLLOWER|INSTALL_DM_IMPORTS|"
-                           r"OPT_DM|LTARG_|CREATE_PATH_OBJ|OPT_STR_BY_TRQ)\b")
+                           r"INSTALL_SPEED_CONTROLLER|OPT_DM|LTARG_|CREATE_PATH_OBJ|"
+                           r"OPT_STR_BY_TRQ|OPT_SPEED_CONTROLLER)\b")
 SPEED_KEYS = re.compile(r"^(SPEED_|VSTART|OPT_INIT_SPEED)\b")
 
 
