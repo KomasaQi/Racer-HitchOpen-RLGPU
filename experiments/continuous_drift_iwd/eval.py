@@ -135,6 +135,7 @@ def main():
     ap.add_argument("--spawn-speed-min", type=float, default=None)
     ap.add_argument("--spawn-deficit-frac", type=float, default=0.0)
     ap.add_argument("--yaw-weight", type=float, default=0.0)
+    ap.add_argument("--yaw-scale", type=float, default=0.5)
     ap.add_argument("--beta-weight", type=float, default=1.6)
     ap.add_argument("--dir-weight", type=float, default=0.5)
     ap.add_argument("--pos-weight", type=float, default=2.4)
@@ -204,6 +205,12 @@ def main():
                                 spawn_speed_min=(args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
                                 spawn_deficit_frac=args.spawn_deficit_frac,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight,
+                                # loaded from env_config.json but previously dropped:
+                                beta_weight=args.beta_weight,
+                                yaw_weight=args.yaw_weight, yaw_scale=args.yaw_scale,
+                                spawn_beta_frac=args.spawn_beta_frac,
+                                terminal_cost=args.terminal_cost,
+                                smooth_weight=args.smooth_weight,
                                 speed_weight=args.speed_weight,
                                 speed_target=(args.speed_target if args.speed_target is not None else args.spawn_speed),
                                 speed_hinge=args.speed_hinge,
