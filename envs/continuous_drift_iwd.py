@@ -1041,6 +1041,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # is why the car left the corridor in 2.1 s with no action at all.
             self.u_cmd[_di, 0] = (2.5 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
             self.u_cmd[_di, 1] = 0.02
+        # the actor emits a CORRECTION on top of this trim, so store it
+        self.u_trim = getattr(self, "u_trim", None)
+        if self.u_trim is None:
+            self.u_trim = torch.zeros_like(self.u_cmd)
+        self.u_trim[is_done] = self.u_cmd[is_done]
         # the equilibrium spawn installs a physical steering command; keep the
         # actuator state consistent with it or the first steps fight the wheel
         if getattr(self, "steer_actuator_tau", 0.0) > 0.0:
