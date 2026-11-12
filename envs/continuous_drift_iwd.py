@@ -119,7 +119,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.drift_throttle_gate = float(kwargs.get("drift_throttle_gate", 0.30))
         self.drift_throttle_weight = float(kwargs.get("drift_throttle_weight", 4.0))
         self.drift_counter_weight = float(kwargs.get("drift_counter_weight", 8.0))
-        self.drift_joint_weight = float(kwargs.get("drift_joint_weight", 12.0))
+        self.drift_joint_weight = float(kwargs.get("drift_joint_weight", 40.0))
         # The faded kinematic reference was correct for path tracking but it is the wrong
         # target for a drift: measured with the drift slip reward active, the car reached
         # throttle 0.18-0.29 and a positive rear slip of 0.03-0.36 (both good) while its
@@ -938,7 +938,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         _g_slip = torch.clamp((_kx_rear - 0.20) / 0.20, 0.0, 1.0)
         _b = now["beta"]
         _kap = now["kappa_ref"]
-        _g_beta = torch.clamp((_b.abs() - 0.18) / 0.12, 0.0, 1.0)
+        # gate ramps from 45 % to 90 % of the drift target, so as the target rises the
+        # gate tracks it instead of saturating at a hard-coded 0.30 rad
+        _b_lo = 0.45 * self.drift_beta_target
+        _b_hi = 0.90 * self.drift_beta_target
+        _g_beta = torch.clamp((_b.abs() - _b_lo) / max(_b_hi - _b_lo, 1e-6), 0.0, 1.0)
         _sign_ok = ((_b * _kap) < 0.0).to(_b.dtype)
         _g_delta = torch.clamp((_d_expr := (_sig * 0.0 + 1.0)) * 0.0 + 1.0, 0.0, 1.0)
         _g_thr = torch.clamp((self.u_cmd[:, 1] - 0.28) / 0.15, 0.0, 1.0)
