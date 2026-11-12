@@ -316,7 +316,22 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
             self.u_trim = torch.zeros_like(self.u_cmd)
         self.u_trim.zero_()
         self.u_trim[:, 0] = (2.5 * _beta).clamp(-self.max_steer, self.max_steer)
-        self.u_trim[:, 1] = 0.02
+        if getattr(self, "drift_mode", False):
+            # The drift policy is trained from a drift SPAWN: |beta| 0.40, the rear axle
+            # pre-spun at (1 + drift_kappa_target) x rolling, and a trim throttle of
+            # 0.35-0.70.  The evaluation path used to install the old trim (throttle 0.02)
+            # from rest, so the policy saw a state it had never been trained on and stalled
+            # at 0.6 s with the car stationary.  Reproduce the spawn here.
+            self.u_trim[:, 1] = 0.50
+            _v = torch.hypot(self.s[:, 3], self.s[:, 4])
+            _rad = self.car.radius if hasattr(self.car, "radius") else None
+            if _rad is None:
+                _rad = torch.full_like(_v, 0.332)
+            _spin = 1.0 + float(getattr(self, "drift_kappa_target", 0.55))
+            self.s[:, 8] = (_v * _spin / _rad).clamp(min=0.0)
+            self.s[:, 9] = (_v * _spin / _rad).clamp(min=0.0)
+        else:
+            self.u_trim[:, 1] = 0.02
         self.u_cmd.copy_(self.u_trim)
         self._steer_state.copy_(self.u_trim[:, 0])
         self._steer_prev.copy_(self.u_trim[:, 0])
