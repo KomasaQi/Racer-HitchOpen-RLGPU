@@ -111,6 +111,9 @@ class GPUVectorizedCarEnv:
             # 0.05 / 0.10 / 0.20 pedal) for one eighth of the cost: 49 ms instead of
             # 387 ms per control step at 2048 environments.
             self.substeps = 1
+            # one substep means the physics step IS the control step; the wheel solve is
+            # implicit so this is stable, and it is 8x cheaper than five substeps
+            self.physics_dt = self.dt
             if abs(self.substeps * self.physics_dt - self.dt) > 1e-9:
                 raise ValueError("dt must be an integer multiple of physics_dt")
 
