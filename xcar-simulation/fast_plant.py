@@ -202,6 +202,15 @@ class FastRacerPlant:
         self.drivetrain = str(params.get("drivetrain", "rwd")).lower()
         self.load_iters = max(int(params.get("load_iters", 2)), 1)
         self.slip_max = float(params.get("slip_max", 5.0))
+        # separate longitudinal and lateral pure-slip curves (review round 5): the
+        # lateral peak occurs at a much larger slip angle than the longitudinal peak
+        self.bx = float(params.get("bx", params.get("B", 6.0)))
+        self.cx = float(params.get("cx", params.get("C", 1.90)))
+        self.ex = float(params.get("ex", params.get("E", 0.97)))
+        self.by = float(params.get("by", 8.0))
+        self.cy = float(params.get("cy", 1.30))
+        self.ey = float(params.get("ey", -0.5))
+        self.mu_y_ratio = float(params.get("mu_y_ratio", 1.05))
         self.wheel_implicit_weight = float(params.get("wheel_implicit_weight", 0.5))
 
         # per-env float parameters, shape (n, len(TENSOR_KEYS))
@@ -466,13 +475,34 @@ class FastRacerPlant:
         # tends to D*sin(C*pi/2)).  Real tires show a plateau; clamp the evaluated
         # slip so a spinning wheel keeps a physically sensible force instead of
         # losing almost all grip at 100x the peak slip.
-        slip = torch.clamp(slip_raw, max=self.slip_max)
-        mu, dmu = self._mf(slip, B, C, d_eff, E)
+        # --- separate longitudinal and lateral pure-slip curves, then a friction
+        # ellipse.  The isotropic form mu(hypot(sx, sy)) with the force direction from
+        # atan2(sy, sx) gives a tyre only about 0.48 of whose force is lateral at
+        # kx = 0.55, and yaw balance needs roughly 55 % of the lateral force from the
+        # REAR (lF 1.455 against lR 1.195).  With the total already reduced by the
+        # falling Magic Formula at high longitudinal slip the rear cannot deliver that
+        # share while spinning, which is why the trim solver finds no power-drift state
+        # in either sign convention.  A real tyre's lateral and longitudinal peaks occur
+        # at very different slips, so they are modelled separately here.
+        _sx_abs = sx.abs()
+        _sy_abs = sy.abs()
+        _shape_x, _dshape_x = self._mf(_sx_abs, self.bx, self.cx, 1.0, self.ex)
+        _shape_y, _dshape_y = self._mf(_sy_abs, self.by, self.cy, 1.0, self.ey)
+        mux_peak = d_eff                      # D_eff is the longitudinal friction level
+        muy_peak = d_eff * self.mu_y_ratio    # lateral peak relative to longitudinal
+        _fx0 = -torch.sign(sx) * mux_peak * fz * _shape_x
+        _fy0 = -torch.sign(sy) * muy_peak * fz * _shape_y
+        # ellipse projection: scale both together when the combined demand exceeds 1
+        _q = torch.sqrt((_fx0 / mux_peak.clamp(min=1e-3) / fz.clamp(min=1.0)) ** 2
+                        + (_fy0 / muy_peak.clamp(min=1e-3) / fz.clamp(min=1.0)) ** 2)
+        _scale = torch.where(_q > 1.0, 1.0 / _q.clamp(min=1e-6), torch.ones_like(_q))
+        fx_wheel = _scale * _fx0
+        fy_wheel = _scale * _fy0
+        mux = _fx0 / fz.clamp(min=1.0)
+        muy = _fy0 / fz.clamp(min=1.0)
+        mu = torch.hypot(mux, muy)
+        dmu = torch.zeros_like(mu)
         alpha = torch.atan2(sy, sx)
-        mux = -torch.cos(alpha) * mu
-        muy = -torch.sin(alpha) * mu
-        fx_wheel = mux * fz
-        fy_wheel = muy * fz
 
         fx_body = fx_wheel.clone()
         fy_body = fy_wheel.clone()
@@ -485,18 +515,17 @@ class FastRacerPlant:
         # local tangent and the secant to the zero-force point so the implicit
         # step cannot overshoot the rolling equilibrium and chatter.
         with torch.no_grad():
-            ds_dsx = torch.where(slip > 1e-9, sx / slip.clamp(min=1e-9),
-                                 torch.zeros_like(slip))
-            kappa = (fz * torch.cos(alpha).abs() * dmu.abs()
-                     * ds_dsx.abs() * radius / denom)
-            kappa = torch.where(slip_raw < self.slip_max, kappa, torch.zeros_like(kappa))
+            # longitudinal stiffness of the new separate-curve model: dFx/dsx from the
+            # pure longitudinal shape, plus the secant so the implicit step cannot
+            # overshoot the rolling equilibrium
+            kappa = (fz * mux_peak * _dshape_x.abs() * radius / denom)
             secant = fx_wheel.abs() / torch.clamp(sx.abs(), min=1e-3) * radius / denom
             kappa = torch.maximum(kappa, secant).clamp(min=0.0)
 
         return {
             "fx_wheel": fx_wheel, "fy_wheel": fy_wheel,
             "fx_body": fx_body, "fy_body": fy_body,
-            "fz": fz, "sx": sx, "sy": sy, "slip": slip, "mu": mu,
+            "fz": fz, "sx": sx, "sy": sy, "slip": slip_raw, "mu": mu,
             "alpha": alpha, "mux": mux, "muy": muy,
             "dFx_domega": kappa, "vx_wheel": vx_l, "vy_wheel": vy_l,
         }
