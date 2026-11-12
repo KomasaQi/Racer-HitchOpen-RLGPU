@@ -211,6 +211,7 @@ class FastRacerPlant:
         self.cy = float(params.get("cy", 1.30))
         self.ey = float(params.get("ey", -0.5))
         self.mu_y_ratio = float(params.get("mu_y_ratio", 1.05))
+        self.mu_y_ratio_rear = float(params.get("mu_y_ratio_rear", 0.85))
         self.wheel_implicit_weight = float(params.get("wheel_implicit_weight", 0.5))
 
         # per-env float parameters, shape (n, len(TENSOR_KEYS))
@@ -489,7 +490,14 @@ class FastRacerPlant:
         _shape_x, _dshape_x = self._mf(_sx_abs, self.bx, self.cx, 1.0, self.ex)
         _shape_y, _dshape_y = self._mf(_sy_abs, self.by, self.cy, 1.0, self.ey)
         mux_peak = d_eff                      # D_eff is the longitudinal friction level
-        muy_peak = d_eff * self.mu_y_ratio    # lateral peak relative to longitudinal
+        # Lateral peak is per AXLE: a rear-drive car that can hold a slide needs the rear
+        # to saturate laterally before the front, and the measured behaviour was a 0.4 rad
+        # sideslip decaying to zero within 3 s precisely because the rear had MORE lateral
+        # grip than the front (the 1.40 rear longitudinal scale was bleeding into it).
+        _ratio = torch.tensor([self.mu_y_ratio, self.mu_y_ratio,
+                               self.mu_y_ratio_rear, self.mu_y_ratio_rear],
+                              dtype=d_eff.dtype, device=d_eff.device)
+        muy_peak = d_eff * _ratio             # lateral peak relative to longitudinal
         _fx0 = -torch.sign(sx) * mux_peak * fz * _shape_x
         _fy0 = -torch.sign(sy) * muy_peak * fz * _shape_y
         # ellipse projection: scale both together when the combined demand exceeds 1
