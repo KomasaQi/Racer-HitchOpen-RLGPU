@@ -109,6 +109,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.kappa_weight = float(kwargs.get("kappa_weight", 0.15))
         self.pp_weight = float(kwargs.get("pp_weight", 0.0))
         self.prog_weight = float(kwargs.get("prog_weight", 0.2))
+        # --- DRIFT terms (added after the owner reported that the car was only crawling
+        # along the path).  Measured on the previous best policy: throttle 0.000-0.037,
+        # rear wheels SLOWER than the front, rear longitudinal slip NEGATIVE (-0.09 to
+        # -0.14), i.e. the direction of engine braking.  No existing term asked the rear
+        # axle to spin, so coasting was optimal.
+        self.drift_kappa_target = float(kwargs.get("drift_kappa_target", 0.55))
+        self.drift_kappa_weight = float(kwargs.get("drift_kappa_weight", 60.0))
+        self.drift_throttle_gate = float(kwargs.get("drift_throttle_gate", 0.30))
+        self.drift_throttle_weight = float(kwargs.get("drift_throttle_weight", 4.0))
+        self.drift_counter_weight = float(kwargs.get("drift_counter_weight", 8.0))
 
         n_ctrl = 3 if self.pedals else 4
         if not self.pedals:
@@ -879,6 +889,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             rew_prog = rew_prog * _v_gate
         rew_final = -is_failed
 
+        # --- drift quantities (computed before the dict; see the config block) -----
+        _w = now["wheel"]
+        _v = now["v"].clamp(min=1.0)
+        # rear longitudinal slip, positive when the rear axle spins faster than ground
+        _kx_rear = ((_w[:, 2] + _w[:, 3]) * 0.5 - _v) / _v
+        rew_drift_kappa = -torch.clamp((_kx_rear - self.drift_kappa_target) ** 2, max=4.0)
+        # a power slide needs the driver holding the throttle open
+        rew_drift_throttle = torch.clamp(self.u_cmd[:, 1] - self.drift_throttle_gate, min=0.0)
+        # countersteer: the wheel must point out of the turn while the car slides
+        _sig = torch.sign(now["kappa"])
+        rew_drift_counter = -torch.clamp((self.u_cmd[:, 0] + 0.25 * _sig) ** 2, max=1.0)
+
         terms = {
             "pos": self.pos_weight * rew_pos,
             "recover": self.recover_weight * rew_recover,
@@ -891,6 +913,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # steering chatter is smooth-band energy; the weight is a knob because
             # the default was far too small to compete with the alive bonus
             "smooth": self.smooth_weight * rew_smooth,
+            "drift_kappa": self.drift_kappa_weight * rew_drift_kappa,
+            "drift_throttle": self.drift_throttle_weight * rew_drift_throttle,
+            "drift_counter": self.drift_counter_weight * rew_drift_counter,
             "beta": self.beta_weight * rew_beta,
             "lowspeed": 0.1 * rew_lowspeed,
             "sf": 0.005 * rew_sf,
