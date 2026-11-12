@@ -171,14 +171,17 @@ fullsize_racecar_ev:
   parameters:
     lF: 1.455
     lR: 1.195
-    Tf: 1.650
+    # matched to the CarSim vehicle ("Exotic Racecar, Mid-Engine"): the sprung mass
+    # is 1200 kg, the four wheels add 787 kg, so the total is 1987 kg; the measured
+    # front track is 1720 mm and every wheel measures a 0.332 m rolling radius.
+    Tf: 1.720
     Tr: 1.600
-    m: 1320.0
+    m: 1987.0
     h: 0.375
     g: 9.81
     Iz: 1350.0
-    rF: 0.32355
-    rR: 0.33280
+    rF: 0.33200
+    rR: 0.33200
     IwF: 1.9
     IwR: 2.2
     # isotropic XCAR tire, peak at ~0.11 combined slip
