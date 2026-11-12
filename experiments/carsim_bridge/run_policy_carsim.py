@@ -39,6 +39,10 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
         cfg.pop(key, None)
     cfg.pop("curv_scale", None)      # a list here, the env wants the tuple marker
     cfg["curv_scale"] = 0.7
+    if os.environ.get("CARSIM_BRAKE_MARGIN") is not None:
+        cfg["brake_margin"] = float(os.environ["CARSIM_BRAKE_MARGIN"])
+    if os.environ.get("CARSIM_DEADBAND") is not None:
+        cfg["steer_deadband"] = float(os.environ["CARSIM_DEADBAND"])
     env = CarSimDriftEnv(scenario, **cfg)
     # one physical episode: never tensor-respawn while the solver keeps its state
     env.train = False
