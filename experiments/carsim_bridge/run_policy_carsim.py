@@ -35,7 +35,8 @@ def run(scenario, policy_path, steps=600, seed=0):
     speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
     done_step = steps
     for k in range(steps):
-        a = pol.act(obs["obs"] if isinstance(obs, dict) else obs)
+        actor_obs = obs["obs"] if isinstance(obs, dict) else obs
+        a = pol.act(actor_obs.float())
         obs, rew, done, info = env.step(a)
         if k % 5 == 0:
             es = env.es.reshape(1, -1)
