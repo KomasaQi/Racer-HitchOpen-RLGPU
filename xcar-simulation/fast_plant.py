@@ -106,8 +106,14 @@ DEFAULT_PARAMS = {
     "lsd_tau_max": 300.0,         # N m, per side coupling cap
     # --- brakes ---
     "brake_pressure_max_mpa": 6.0,
-    "brake_torque_front_nm_per_mpa": 400.0,
-    "brake_torque_rear_nm_per_mpa": 175.0,
+    # MEASURED against CarSim (round 68).  At 0.05 / 0.10 / 0.20 pedal the GPU plant
+    # changed speed by +0.15 / +0.41 / +0.61 m/s over one second while CarSim changed
+    # -0.39 / -1.02 / -2.27: the GPU brakes were 2.5-3.7x too weak, and at 0.05 they did
+    # not even overcome the coast.  A policy that trims with a small brake on the GPU
+    # therefore brakes HARD in CarSim -- which is exactly why the transferred car was
+    # too slow.  Scaled by 3.0 to match.
+    "brake_torque_front_nm_per_mpa": 1200.0,
+    "brake_torque_rear_nm_per_mpa": 525.0,
     # --- misc ---
     "rolling_resistance": 0.012,
     "max_steer_rad": 0.45,
