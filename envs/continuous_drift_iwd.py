@@ -504,10 +504,19 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             speed = torch.full_like(kappa, float(speed))
         if speed.dim() < kappa.dim():
             speed = speed.reshape(-1, *((1,) * (kappa.dim() - speed.dim())))
-        beta_geo = torch.clamp(
-            self.beta_scale * (self.alpha_peak + lr * kap), max=self.beta_max)
+        # MEASURED against the trim solver (rounds 43-44): the steady sideslip the
+        # car can actually hold is l_R*kappa plus a rear slip angle that is SMALL and
+        # slightly negative at these utilisations -- 0.087 rad at (mu 1, R 12, 5 m/s)
+        # against l_R*kappa = 0.0996, and 0.040 at 10 m/s.  The old expression added a
+        # PEAK slip angle on top and then faded it UP with speed, both backwards: it
+        # asked 0.220 rad where 0.074 was attainable, so the penalty was permanent.
+        beta_geo = torch.clamp(self.beta_scale * lr * kap, max=self.beta_max)
         util = (speed.square() * kap / (mu * gg)).clamp(0.0, 1.0)
-        factor = (util / self.beta_util_ref).clamp(self.beta_util_lo, 1.0)
+        # the attainable sideslip FALLS as the car uses more grip (trim: 0.087 at
+        # util 0.21, 0.074 at 0.42, 0.040 at 0.85 as a fraction of l_R*kappa), so the
+        # fade has to go DOWN with utilisation -- the old one went up, which is why
+        # the reference was worst exactly at the operating point
+        factor = (1.05 - 0.75 * util).clamp(0.35, 1.0)
         return -torch.sign(kappa) * beta_geo * factor
 
     def obs(self):
