@@ -225,7 +225,12 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
     """``ContinuousDriftIWDEnv`` with CarSim as the plant, n = 1."""
 
     def __init__(self, scenario="flat_mu050", simfile=None, device="cuda:0",
-                 stall_window=20, stall_move=0.6, **kwargs):
+                 # A CarSim episode starts from REST, and building 4.5 m/s takes about
+                 # two seconds, so a one-second stall window fires on every legitimate
+                 # launch: measured, no_progress_count hit exactly 20 at t = 1.00 s with
+                 # the car already at 2.26 m/s and accelerating.  Four seconds is enough
+                 # to tell a launch from a genuine stall.
+                 stall_window=80, stall_move=0.6, **kwargs):
         # CarSim releases the car FROM REST, while training spawned at 4.5 m/s.
         # The default stall rule (10 steps / 1.0 m) therefore fires during the
         # launch: in 0.5 s from standstill the car covers only about 0.5 m.

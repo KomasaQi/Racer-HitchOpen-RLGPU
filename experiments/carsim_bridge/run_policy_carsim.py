@@ -44,6 +44,11 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
         cfg.pop(key, None)
     cfg.pop("curv_scale", None)      # a list here, the env wants the tuple marker
     cfg["curv_scale"] = 0.7
+    # A CarSim episode starts from REST and needs about two seconds to build 4.5 m/s,
+    # so the training stall window of 20 steps (1 s) fires on every legitimate launch:
+    # measured, no_progress_count reached exactly 20 at t = 1.00 s with the car already
+    # at 2.26 m/s and accelerating.
+    cfg["stall_window"] = 80
     if os.environ.get("CARSIM_BRAKE_MARGIN") is not None:
         cfg["brake_margin"] = float(os.environ["CARSIM_BRAKE_MARGIN"])
     if os.environ.get("CARSIM_DEADBAND") is not None:
