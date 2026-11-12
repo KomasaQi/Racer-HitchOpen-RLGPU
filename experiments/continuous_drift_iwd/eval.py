@@ -76,6 +76,15 @@ class Policy:
         return torch.nn.functional.linear(x, self.mu[0], self.mu[1])
 
 
+def physical_action(raw, env):
+    # rl_games clips the raw action to [-1, 1] and then rescales it affinely onto
+    # the declared action space.  The evaluator used to feed raw values straight
+    # in, so a raw steering of 0.2 became 0.2 rad here but 0.09 rad in training.
+    raw = raw.clamp(-1.0, 1.0)
+    low = torch.as_tensor(env.action_space.low, device=raw.device, dtype=raw.dtype)
+    high = torch.as_tensor(env.action_space.high, device=raw.device, dtype=raw.dtype)
+    return low + 0.5 * (raw + 1.0) * (high - low)
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("checkpoint")
@@ -267,7 +276,7 @@ def main():
     end_succ = torch.zeros(args.n, dtype=torch.bool, device=dev)
     end_reason = torch.zeros((args.n, 3), dtype=torch.bool, device=dev)
     for step in range(args.steps):
-        a = policy.act(obs)
+        a = physical_action(policy.act(obs), env)
         done_prev = env.is_done.clone()
         obs, reward, done, info = env.step(a)
         # the environment respawns inside step(), so ``env.is_done`` is already
