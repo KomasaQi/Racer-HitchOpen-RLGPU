@@ -315,7 +315,18 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         if getattr(self, "u_trim", None) is None:
             self.u_trim = torch.zeros_like(self.u_cmd)
         self.u_trim.zero_()
-        self.u_trim[:, 0] = (2.5 * _beta).clamp(-self.max_steer, self.max_steer)
+        # In drift mode training installs -0.25*sign(kappa) as the trim steer, but this path still
+        # installed 2.5*beta = -1.0*sign(kappa), i.e. saturated full lock.  The policy's correction
+        # baseline was therefore inconsistent at takeover.
+        if getattr(self, "drift_mode", False):
+            _kap = getattr(self, "kappa_ref", None)
+            if _kap is not None:
+                self.u_trim[:, 0] = (-0.25 * torch.sign(_kap)).clamp(
+                    -self.max_steer, self.max_steer)
+            else:
+                self.u_trim[:, 0] = (2.5 * _beta).clamp(-self.max_steer, self.max_steer)
+        else:
+            self.u_trim[:, 0] = (2.5 * _beta).clamp(-self.max_steer, self.max_steer)
         if getattr(self, "drift_mode", False):
             # The drift policy is trained from a drift SPAWN: |beta| 0.40, the rear axle
             # pre-spun at (1 + drift_kappa_target) x rolling, and a trim throttle of

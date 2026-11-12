@@ -44,6 +44,16 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
         cfg.pop(key, None)
     cfg.pop("curv_scale", None)      # a list here, the env wants the tuple marker
     cfg["curv_scale"] = float(os.environ.get("CARSIM_CURV", "0.7"))
+    # FEASIBILITY: a drifting car can hold at most about eta*mu*g/V^2 of curvature.  At
+    # 6 m/s and kappa 0.40 the demand is 12 m/s^2, above even mu = 1.0, so the car MUST run
+    # wide no matter how it is controlled.  Scale the reference down to what the friction
+    # can supply, using eta 0.65 for a sliding rear axle.
+    if os.environ.get("CARSIM_FEASIBLE_CURV") is not None:
+        _v_tgt = float(os.environ.get("CARSIM_VTGT", "6.0"))
+        _mu = float(scenario.split("mu")[-1]) / 100.0
+        _eta = float(os.environ["CARSIM_FEASIBLE_CURV"])
+        _kmax = _eta * _mu * 9.81 / (_v_tgt * _v_tgt)
+        cfg["curv_scale"] = min(cfg["curv_scale"], _kmax / 0.12)
     # A CarSim episode starts from REST and needs about two seconds to build 4.5 m/s,
     # so the training stall window of 20 steps (1 s) fires on every legitimate launch:
     # measured, no_progress_count reached exactly 20 at t = 1.00 s with the car already
