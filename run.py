@@ -166,6 +166,8 @@ parser.add_argument("--grip-range", type=str, default=None,
                     help="override the D range of the tyre preset, e.g. 0.6,0.9")
 parser.add_argument("--grip-bias", type=float, default=1.0,
                     help=">1 oversamples low friction while keeping the full D range")
+parser.add_argument("--learning-rate", type=float, default=None,
+                    help="override the PPO learning rate (default 3e-4)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -425,6 +427,9 @@ runner_config["params"]["config"]["full_experiment_name"] = full_experiment_name
 runner_config["params"]["network"]["mlp"]["units"] = [args.mlp_size_last * i for i in (4, 2, 1)]
 runner_config["params"]["config"]["save_frequency"] = args.save_freq
 runner_config["params"]["config"]["entropy_coef"] = args.entropy_coef
+if args.learning_rate is not None:
+    runner_config["params"]["config"]["learning_rate"] = args.learning_rate
+    runner_config["params"]["config"]["min_learning_rate"] = args.learning_rate * 0.1
 if args.asymmetric:
     # Privileged critic: its own MLP over the drift related + absolute state
     # channels, no shared backbone with the GRU actor.
