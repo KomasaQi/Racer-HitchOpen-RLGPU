@@ -17,9 +17,10 @@ sys.path.insert(0, os.path.join(ROOT, "utils"))
 
 from envs.carsim_drift_env import CarSimDriftEnv  # noqa: E402
 from experiments.continuous_drift_iwd.eval import Policy  # noqa: E402
+from experiments.carsim_bridge.steer_metrics import steering_metrics, format_metrics  # noqa: E402
 
 CKPT = os.path.join(ROOT, "experiments", "continuous_drift_iwd", "runs",
-                    "drift_ev_v17", "nn")
+                os.environ.get("CARSIM_RUN", "drift_ev_v17"), "nn")
 RUN_DIR = os.path.dirname(CKPT)
 CKPT_FILE = None
 for f in os.listdir(CKPT):
@@ -58,6 +59,7 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device="cuda:0"))
     speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
     dsteer, prev_steer, sign_flips, prev_dsign = 0.0, None, 0, None
+    applied = []
     done_step = steps
     for k in range(steps):
         actor_obs = obs["obs"] if isinstance(obs, dict) else obs
@@ -71,6 +73,7 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
                 sign_flips += 1
             prev_dsign = sg
         prev_steer = s_now
+        applied.append(float(env.u_cmd[0, 0]))
         obs, rew, done, info = env.step(a)
         if k % 5 == 0:
             es = env.es.reshape(1, -1)
@@ -86,6 +89,7 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     env.close()
     return {"scenario": scenario, "steps": done_step,
             "dsteer": dsteer / max(n, 1), "flips": sign_flips,
+            "metrics": steering_metrics(applied, dt=env.dt),
             "seconds": done_step * env.dt,
             "speed": speed / max(n, 1),
             "beta_err": beta_err / max(n, 1),
@@ -102,3 +106,4 @@ if __name__ == "__main__":
         rows.append(r)
         print("%-12s %6.1f s  v %5.2f m/s  |dbeta| %.3f  |e_pos| %.2f m"
               % (r["scenario"], r["seconds"], r["speed"], r["beta_err"], r["epos"]))
+        print("             steer: " + format_metrics(r["metrics"]))
