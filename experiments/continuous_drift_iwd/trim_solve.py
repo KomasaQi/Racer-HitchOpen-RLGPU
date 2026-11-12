@@ -64,6 +64,13 @@ class Trim:
     def residual(self, z, kappa, V):
         s = self._state(float(z[0]), kappa, V, z[2:6])
         thr = self._thr(s, float(z[1]))
+        # Out-of-range throttle must REJECT the point, not be clipped.  Clipping evaluates
+        # the residual with a throttle that does not satisfy the rear torque-sum equation,
+        # which silently drops that equation and admits false low residuals -- the review
+        # flagged this.  A drift state needs the rear axle spinning under power, so if the
+        # required throttle leaves [0, 1] the state is not attainable and must be penalised.
+        if thr is None or not (0.0 <= thr <= 1.0):
+            return np.full(6, 1e3)
         if thr is None:
             return np.full(6, 1e3)
         d, ex = self._eval(s, float(z[1]), float(np.clip(thr, 0.0, 1.0)))
