@@ -132,6 +132,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # an explicit large sideslip, so when drift_mode is on the reference becomes a
         # constant magnitude of this many radians with the sign of the local curvature.
         self.drift_mode = bool(kwargs.get("drift_mode", False))
+        # In drift mode the lateral error is only penalised BEYOND a deadband, so the car has
+        # room to hold a drift attitude without being pushed toward zero sideslip by a
+        # uniform quadratic.  A uniform penalty is what made every attempt trade attitude for
+        # line, one for one.
+        self.drift_corridor_deadband = float(kwargs.get("drift_corridor_deadband", 0.6))
         self.drift_beta_target = float(kwargs.get("drift_beta_target", 0.40))
 
         n_ctrl = 3 if self.pedals else 4
@@ -830,6 +835,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # fail anyway, and an unbounded quadratic made long episodes massively
         # negative (reward -2000 per episode at a relaxed corridor)
         rew_pos = - torch.clamp((signed_pos_diff / s) ** 2, max=self.pos_cap)
+        if self.drift_mode:
+            # only the excess beyond the deadband is penalised
+            _cap_m = max(self.offpath_limit, 1.0)
+            _band = self.drift_corridor_deadband * _cap_m
+            _excess = torch.clamp(now["e_pos"].abs() - _band, min=0.0)
+            rew_pos = -torch.clamp((_excess / max(_cap_m - _band, 0.5)) ** 2, max=1.0)
         rew_dir = - angle_diff ** 2
         # progress is capped at the rate the reference speed implies, exactly like
         # the original XCAR formulation caps it: a car that goes faster than the
