@@ -945,12 +945,20 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         _kap = now["kappa_ref"]
         # gate ramps from 45 % to 90 % of the drift target, so as the target rises the
         # gate tracks it instead of saturating at a hard-coded 0.30 rad
-        _b_lo = 0.45 * self.drift_beta_target
-        _b_hi = 0.90 * self.drift_beta_target
+        # The gate must be ACTIVE where the policy currently lives, or it is worth zero and --
+        # worse -- its gradient is zero there too, which is why raising its weight to 40 could
+        # not help.  The measured solution sits at |beta| 0.15 and throttle 0.23-0.28, so the
+        # ramps start BELOW that and pay for improvement rather than for an unreachable target.
+        _b_lo = 0.10
+        _b_hi = 0.30
         _g_beta = torch.clamp((_b.abs() - _b_lo) / max(_b_hi - _b_lo, 1e-6), 0.0, 1.0)
         _sign_ok = ((_b * _kap) < 0.0).to(_b.dtype)
-        _g_delta = torch.clamp((_d_expr := (_sig * 0.0 + 1.0)) * 0.0 + 1.0, 0.0, 1.0)
-        _g_thr = torch.clamp((self.u_cmd[:, 1] - 0.28) / 0.15, 0.0, 1.0)
+        # the countersteer gate was accidentally a CONSTANT 1, so the joint term never
+        # checked countersteer at all.  Clamp((steer - target) / band) in the correct
+        # direction: the wheel must sit near -0.25*sign(kappa).
+        _g_delta = torch.clamp(1.0 - (self.u_cmd[:, 0] + 0.25 * _sig).abs() / 0.20,
+                               0.0, 1.0)
+        _g_thr = torch.clamp((self.u_cmd[:, 1] - 0.20) / 0.15, 0.0, 1.0)
         _g_turn = torch.clamp((_kap.abs() - 0.02) / 0.02, 0.0, 1.0)
         rew_drift_joint = (_g_slip * _g_beta * _sign_ok * _g_delta * _g_thr * _g_turn)
 
@@ -1161,8 +1169,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # countersteer while its sideslip is zero
             _v_now = torch.hypot(self.s[_di, 3], self.s[_di, 4])
             _fade_cmd = (_v_now / 3.0).clamp(0.0, 1.0)
-            self.u_cmd[_di, 0] = (2.5 * beta_all[_di] * _fade_cmd).clamp(
-                -self.max_steer, self.max_steer)
+            if self.drift_mode:
+                # In drift mode the countersteer target is -0.25*sign(kappa) and the spawn must
+                # be consistent with it.  The old 2.5*beta gave -1.0*sign(kappa) (clamped to the
+                # steering limit), i.e. a full opposite lock, which the joint gate's countersteer
+                # factor correctly rejected -- so the joint bonus was worth zero at the spawn.
+                self.u_cmd[_di, 0] = (-0.25 * torch.sign(kappa_all[_di])).clamp(
+                    -self.max_steer, self.max_steer)
+            else:
+                self.u_cmd[_di, 0] = (2.5 * beta_all[_di] * _fade_cmd).clamp(
+                    -self.max_steer, self.max_steer)
             # The throttle needed to HOLD a given speed is the one thing about the plant
             # that CarSim does not share with the GPU model: the GPU policy settles on
             # 0.004 because the trim supplies 0.02, and in CarSim that command lets the car
