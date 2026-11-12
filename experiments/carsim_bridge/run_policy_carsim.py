@@ -96,7 +96,10 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
             es = env.es.reshape(1, -1)
             br = env.beta_ref.reshape(1, -1)
             sp = env.signed_pos_diff.reshape(1, -1)
-            speed += float(es[0, 6])
+            # the extended state is not refreshed by begin_policy_episode() until the
+            # first step, which is why this used to print 0.00; the world velocity is
+            # always current
+            speed += float(torch.hypot(env.s[0, 3], env.s[0, 4]))
             beta_err += float((es[0, 7] - br[0, 0]).abs())
             epos += float(sp[0, 0].abs())
             n += 1
@@ -104,7 +107,13 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
                 done_step = k + 1
                 break
     env.close()
-    return {"scenario": scenario, "steps": done_step,
+    _reason = ""
+    try:
+        if getattr(env, "_term_reason", None) is not None:
+            _reason = str(int(env._term_reason.reshape(-1)[0]))
+    except Exception:
+        _reason = "?"
+    return {"scenario": scenario, "steps": done_step, "reason": _reason,
             "dsteer": dsteer / max(n, 1), "flips": sign_flips,
             "metrics": steering_metrics(applied, dt=env.dt),
             "seconds": done_step * env.dt,
@@ -121,6 +130,7 @@ if __name__ == "__main__":
     for sc in ("flat_mu050", "flat_mu075", "flat_mu100"):
         r = run(sc, CKPT_FILE, entry_speed=ENTRY)
         rows.append(r)
-        print("%-12s %6.1f s  v %5.2f m/s  |dbeta| %.3f  |e_pos| %.2f m"
-              % (r["scenario"], r["seconds"], r["speed"], r["beta_err"], r["epos"]))
+        print("%-12s %6.1f s  v %5.2f m/s  |dbeta| %.3f  |e_pos| %.2f m  reason %s"
+              % (r["scenario"], r["seconds"], r["speed"], r["beta_err"], r["epos"],
+                 r.get("reason", "?")))
         print("             steer: " + format_metrics(r["metrics"]))
