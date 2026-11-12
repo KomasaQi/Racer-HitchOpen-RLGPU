@@ -209,7 +209,7 @@ class FastRacerPlant:
         drive = torch.zeros(4, device=self.device, dtype=self.dtype)
         if self.drivetrain in ("rwd", "awd", "iwd"):
             drive[2:] = 1.0
-        if self.drivetrain in ("fwd", "awd", "iwd"):
+        if self.drivetrain in ("fwd", "awd"):
             drive[:2] = 1.0
         self.drive_mask = drive
         self.is_rwd = self.drivetrain == "rwd"

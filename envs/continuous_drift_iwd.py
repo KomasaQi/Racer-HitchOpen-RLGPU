@@ -468,7 +468,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
         self.kappa_ref = waypoints_filtered[:, :, 3].gather(1, bidx).squeeze(1)
 
-    def _reference_beta(self, kappa, speed):
+    def _reference_beta(self, kappa, speed, idx=None):
         """Reference sideslip: the tight-corner target, faded by feasibility.
 
         The geometric target is the rear-slip-at-peak relation
@@ -488,9 +488,17 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         """
         kap = kappa.abs()
         extra = (1,) * max(kappa.dim() - 1, 0)
+        # ``idx`` selects the environments being spawned: the plant columns are
+        # full batch tensors, while a respawn only draws a subset of kappa
         lr = self.plant.col("lR").reshape(-1, *extra)
+        if idx is not None:
+            lr = lr[idx]
         mu = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp_min(0.05).reshape(-1, *extra)
+        if idx is not None:
+            mu = mu[idx]
         gg = self.plant.col("g").reshape(-1, *extra)
+        if idx is not None:
+            gg = gg[idx]
         if not torch.is_tensor(speed):
             speed = torch.full_like(kappa, float(speed))
         if speed.dim() < kappa.dim():
@@ -557,7 +565,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # corner at low speed asks for almost no sideslip and a corner at the
         # friction limit asks for beta_max.  It uses the TRUE speed and the TRUE
         # grip, so it is privileged information and never reaches the actor.
-        if self.beta_ref_mode == "physics":
+        if self.beta_ref_mode in ("physics", "constant"):
             self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1), v).squeeze(1)
             self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),
                                          torch.cos(beta - self.beta_ref))
@@ -937,6 +945,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             n_ack = int(torch.sum(is_done).item())
             if n_ack:
                 self.plant.ackermann_scale[is_done] = (self.ackermann_lo + (self.ackermann_hi - self.ackermann_lo) * torch.rand((n_ack, 1), device=self.device))
+        # sample the episode tyre FIRST: the equilibrium spawn below is grip
+        # dependent and must see this episode's D, not the previous episode's
+        self.randomize(is_done)
 
         def gen_random_state(indices):
             # The XCAR code spawned 20 % of the episodes at the path start at
@@ -967,12 +978,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # task becomes recovering from a spin rather than drifting.
                 # the spawn sideslip is its own distribution, NOT the path beta
                 # column (which is now only a legacy slot)
-                beta0 = -torch.sign(kappa) * self.spawn_beta_mag * torch.clamp(
-                    1.0 + self.spawn_beta_noise * torch.randn_like(kappa), 0.4, 1.4)
+
                 deficit = (torch.rand_like(kappa) < self.spawn_deficit_frac)
                 v_low = self.spawn_speed_min + (self.spawn_speed - self.spawn_speed_min) * torch.rand_like(kappa)
                 v0 = torch.where(deficit, v_low, self.spawn_speed * torch.clamp(
                     1.0 + self.spawn_speed_noise * torch.randn_like(kappa), 0.6, 1.3))
+                beta0 = self.spawn_beta_frac * self._reference_beta(
+                    kappa.unsqueeze(1), v0, idx=indices).squeeze(1)
+                beta0 = beta0 * torch.clamp(
+                    1.0 + self.spawn_beta_noise * torch.randn_like(beta0), 0.4, 1.4)
                 psi = veldir - beta0 + 0.1 * torch.randn_like(veldir)
                 xd = v0 * torch.cos(beta0 + psi)
                 yd = v0 * torch.sin(beta0 + psi)
@@ -984,13 +998,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 psi += 0.1 * torch.randn_like(psi)
                 xd = random_V * torch.cos(random_beta + psi)
                 yd = random_V * torch.sin(random_beta + psi)
-                psid = -torch.sign(beta) * (1 + torch.rand(prog.shape, device=self.device) * 2) / self.speed_scale
+                psid = -torch.sign(random_beta) * (1 + torch.rand(prog.shape, device=self.device) * 2) / self.speed_scale
 
             x, y, psi, xd, yd, psid = map(lambda t: torch.unsqueeze(t, 1), [x, y, psi, xd, yd, psid])
             return torch.cat([x, y, psi, xd, yd, psid], 1)
 
         self.s[is_done, :] = 0
         self.s[is_done, :6] = gen_random_state(is_done.nonzero().squeeze(-1))
+        self._stall_anchor[is_done] = self.s[is_done, :2]
         self.u[is_done, :] = 0
         self.u_cmd[is_done, :] = 0
         if self.pedals and self.spawn_mode == "equilibrium":
@@ -1007,7 +1022,6 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             beta_all = self._reference_beta(kappa_all.unsqueeze(1), self.spawn_speed).squeeze(1)
             self.u_cmd[_di, 0] = (0.55 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
             self.u_cmd[_di, 1] = 0.55
-        self.randomize(is_done)
         if self.plant_name == "fast":
             self.plant.init_wheels_mask(self.s, is_done)
             self.plant.reset_guess(is_done)
@@ -1020,6 +1034,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # the previous episode's state, and any controller that reads ``es``
             # sees stale values on the spawn step.
             self.es = self.plant.extended_state(self.s, self.u_cmd)
+        # the next observation belongs to the new pose/path position, not to the
+        # terminal tracking solution of the episode that just ended
+        self._track_pending = True
+        self._physics_advanced = False
 
     # ---------------------------------------------------------------- scenarios
     def capture_scenario(self):

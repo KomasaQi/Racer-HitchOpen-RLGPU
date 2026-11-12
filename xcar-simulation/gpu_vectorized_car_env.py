@@ -306,11 +306,20 @@ class GPUVectorizedCarEnv:
         return obs, reward, done, info
 
     def _update_disturbance(self):
-        """Time varying friction disturbance (OU process on the effective mu)."""
+        """Mean-one AR(1) disturbance on the effective tyre friction.
+
+        The process must fluctuate AROUND 1, not decay: with
+        ``x <- a*x + w*N(0,1)`` and no mean reversion the expectation is a^t, so
+        after 100 steps of a=0.97 it is 0.048 and the clamp pins every episode to
+        the 0.4 floor -- the friction a car experiences then has nothing to do
+        with the nominal value of the cell being evaluated.
+        """
         if self.disturbance_param is None or self.plant_name != "fast":
             return
         a, w = self.disturbance_param
-        self.tyre_scale = a * self.tyre_scale + w * torch.randn_like(self.tyre_scale)
+        self.tyre_scale = (
+            1.0 + a * (self.tyre_scale - 1.0) + w * torch.randn_like(self.tyre_scale)
+        )
         self.tyre_scale.clamp_(0.4, 1.6)
         self.plant.tyre_scale = self.tyre_scale
 

@@ -107,7 +107,8 @@ def main():
     ap.add_argument("--save-path-bank", type=str, default=None)
     ap.add_argument("--load-path-bank", type=str, default=None)
     ap.add_argument("--config-from", type=str, default=None,
-                    help="run directory whose env_config.json defines the MDP")
+                    help="load the supported evaluator defaults from env_config.json; "
+                         "fields that cannot be reconstructed are reported")
     ap.add_argument("--renewal-eval", action="store_true",
                     help="allow repeated respawns (biased); one episode per env is the default")
     ap.add_argument("--curv-smooth", type=int, default=0)
@@ -150,6 +151,13 @@ def main():
                     setattr(args, _k, _v)
                     _applied[_k] = _v
             print("env_config loaded:", len(_applied), "parameters")
+            _skip = {"seq_length", "gamma", "aux_reward_decay_steps",
+                     "aux_reward_coef", "train", "ref_mode_cli"}
+            _unsupported = sorted(k for k in _cfg
+                                  if not hasattr(args, k) and k not in _skip)
+            if _unsupported:
+                print("WARNING: env_config fields not reconstructed:",
+                      ", ".join(_unsupported))
             if _cfg.get("ref_mode_cli"):
                 args.ref_mode = _cfg["ref_mode_cli"]
                 _applied["ref_mode"] = args.ref_mode
@@ -208,6 +216,9 @@ def main():
     if getattr(env, "train", False):
         env.is_done[:] = 1
         env.reset_done_envs()
+        # the spawn above invalidated the observation, which still carried the
+        # pre-spawn tracking errors
+        obs = env.obs()
     if args.load_scenario:
         _sc = np.load(args.load_scenario)
         obs = env.apply_scenario(_sc)
