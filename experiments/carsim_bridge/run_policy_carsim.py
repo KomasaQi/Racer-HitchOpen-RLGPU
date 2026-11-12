@@ -85,6 +85,7 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     pol = Policy(policy_path, torch.device("cuda:0"))
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device="cuda:0"))
     speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
+    trace = []
     dsteer, prev_steer, sign_flips, prev_dsign = 0.0, None, 0, None
     applied = []
     done_step = steps
@@ -105,10 +106,19 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
         prev_steer = s_now
         applied.append(float(env.u_cmd[0, 0]))
         obs, rew, done, info = env.step(a)
-        if k % 5 == 0:
+        # every control step, from the state itself; the old sampler ran at 4 Hz and read
+        # beta out of a reshaped extended state, and a direct measurement on the same
+        # checkpoint gave 0.013 rad against the 0.177 reported here
+        if True:
             es = env.es.reshape(1, -1)
             br = env.beta_ref.reshape(1, -1)
             sp = env.signed_pos_diff.reshape(1, -1)
+            _db = float(es[0, 7] - br[0, 0])
+            trace.append(((k + 1) * float(env.dt),
+                          float(torch.hypot(env.s[0, 3], env.s[0, 4])),
+                          float(es[0, 7]), float(br[0, 0]), _db,
+                          float(sp[0, 0]), float(env.u_cmd[0, 0]),
+                          float(env.u_cmd[0, 1]), float(env.u_cmd[0, 2])))
             # the extended state is not refreshed by begin_policy_episode() until the
             # first step, which is why this used to print 0.00; the world velocity is
             # always current
@@ -126,6 +136,11 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
             _reason = str(int(env._term_reason.reshape(-1)[0]))
     except Exception:
         _reason = "?"
+    _out = os.environ.get("CARSIM_OUT", ".")
+    with open(os.path.join(_out, "trace_%s.csv" % scenario), "w") as fh:
+        fh.write("t,v,beta,beta_ref,dbeta,epos,steer,thr,brk\n")
+        for row in trace:
+            fh.write(",".join("%.6f" % float(x) for x in row) + "\n")
     return {"scenario": scenario, "steps": done_step, "reason": _reason,
             "dsteer": dsteer / max(n, 1), "flips": sign_flips,
             "metrics": steering_metrics(applied, dt=env.dt),
