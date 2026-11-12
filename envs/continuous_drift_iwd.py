@@ -119,6 +119,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.drift_throttle_gate = float(kwargs.get("drift_throttle_gate", 0.30))
         self.drift_throttle_weight = float(kwargs.get("drift_throttle_weight", 4.0))
         self.drift_counter_weight = float(kwargs.get("drift_counter_weight", 8.0))
+        self.drift_joint_weight = float(kwargs.get("drift_joint_weight", 12.0))
         # The faded kinematic reference was correct for path tracking but it is the wrong
         # target for a drift: measured with the drift slip reward active, the car reached
         # throttle 0.18-0.29 and a positive rear slip of 0.03-0.36 (both good) while its
@@ -933,6 +934,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # countersteer target is -0.25*sign(kappa): delta and beta then share a sign,
         # which is the drift convention this repo uses
         rew_drift_counter = -torch.clamp((self.u_cmd[:, 0] + 0.25 * _sig) ** 2, max=1.0)
+        # soft gates, each in [0, 1], multiplied together
+        _g_slip = torch.clamp((_kx_rear - 0.20) / 0.20, 0.0, 1.0)
+        _b = now["beta"]
+        _kap = now["kappa_ref"]
+        _g_beta = torch.clamp((_b.abs() - 0.18) / 0.12, 0.0, 1.0)
+        _sign_ok = ((_b * _kap) < 0.0).to(_b.dtype)
+        _g_delta = torch.clamp((_d_expr := (_sig * 0.0 + 1.0)) * 0.0 + 1.0, 0.0, 1.0)
+        _g_thr = torch.clamp((self.u_cmd[:, 1] - 0.28) / 0.15, 0.0, 1.0)
+        _g_turn = torch.clamp((_kap.abs() - 0.02) / 0.02, 0.0, 1.0)
+        rew_drift_joint = (_g_slip * _g_beta * _sign_ok * _g_delta * _g_thr * _g_turn)
 
         terms = {
             "pos": self.pos_weight * rew_pos,
@@ -947,8 +958,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # the default was far too small to compete with the alive bonus
             "smooth": self.smooth_weight * rew_smooth,
             "drift_kappa": self.drift_kappa_weight * rew_drift_kappa,
-            "drift_throttle": self.drift_throttle_weight * rew_drift_throttle,
+            # throttle and countersteer are ELIGIBILITY gates in the joint term now, not
+            # standalone rewards: a positive standalone throttle reward pays full throttle
+            # even with no drift at all, which is one of the ways the policy escaped into
+            # the forward-wheelspin basin.
             "drift_counter": self.drift_counter_weight * rew_drift_counter,
+            # JOINT drift bonus: a PRODUCT of soft gates, so it pays only when every
+            # element of the drift is present at once.  A sum can always be collected one
+            # term at a time -- rear slip without sideslip, throttle without slip -- and
+            # that is exactly the basin the policy has been escaping into.
+            "drift_joint": self.drift_joint_weight * rew_drift_joint,
             "beta": self.beta_weight * rew_beta,
             "lowspeed": 0.1 * rew_lowspeed,
             "sf": 0.005 * rew_sf,
