@@ -298,6 +298,20 @@ default_env_config = {
             # why v31/v32 were not training on the corrected plant at all.
             "B": [4.8, 7.2],
             "C": [1.7, 2.1],
+            # The vehicle itself must be randomised around the calibrated values,
+            # otherwise the policy fits 1514.8 kg / Iz 1605.3 / 0.332 m exactly and
+            # cannot transfer to a real car that differs by a few percent.
+            "m": [1470.0, 1560.0],        # +/-3 % about 1514.8
+            "Iz": [1480.0, 1730.0],       # +/-8 % about 1605.3
+            "IwF": [0.15, 0.19],          # +/-12 % about 0.17
+            "IwR": [0.15, 0.19],
+            "Tf": [1.700, 1.740],
+            "Tr": [1.580, 1.620],
+            "rF": [0.3290, 0.3350],       # +/-1 % about 0.332
+            "rR": [0.3290, 0.3350],
+            "load_sensitivity": [0.0, 0.25],
+            "drive_efficiency": [0.88, 0.95],
+            "max_power_w": [345600.0, 422400.0],  # +/-10 % about 384 kW
             "D": [0.50, 1.00],
         },
         "ev_wide": {

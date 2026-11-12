@@ -203,7 +203,11 @@ class GPUVectorizedCarEnv:
         if env_mask is None:
             env_mask = torch.ones(self.n, dtype=torch.bool, device=self.device)
         if self.plant_name == "fast":
-            ranges = {k: v for k, v in self.randomize_param.items() if k in ("B", "C", "D", "E")}
+            # pass EVERY range: the plant knows which parameters it can randomize
+            # (mass, inertia, geometry, tyre, powertrain).  Filtering to the four
+            # tyre shape parameters left the whole vehicle deterministic, which is
+            # exactly what makes a policy impossible to transfer.
+            ranges = dict(self.randomize_param)
             self.plant.randomize(env_mask, override=override, ranges=ranges)
         else:
             rand_item_ = lambda key, target: self.randomize_item_(env_mask, override, key, target)
