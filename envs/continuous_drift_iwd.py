@@ -860,6 +860,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         if not torch.is_tensor(_rate):
             _rate = torch.full_like(v, float(_rate))
         rew_prog = torch.minimum(_prog_raw.clamp(min=0.0), _rate)
+        # Over-speeding must not pay.  Measured at epoch 200 of drift_ev_v48: the car ran
+        # at 7.37 m/s where the limit target was about 5.4, because progress (+0.7) and
+        # the alive bonus (+2.5) outweighed the speed penalty (-1.6) and the car simply
+        # left the corridor (94/96 failures).  Progress is now gated on being at or below
+        # the target speed, so the only way to keep earning it is to hold the limit.
+        if getattr(self, "speed_weight", 0.0) > 0.0:
+            _v_gate = torch.where(self.es[:, 6] <= v_tgt,
+                                  torch.ones_like(rew_prog),
+                                  torch.zeros_like(rew_prog))
+            rew_prog = rew_prog * _v_gate
         rew_final = -is_failed
 
         terms = {
