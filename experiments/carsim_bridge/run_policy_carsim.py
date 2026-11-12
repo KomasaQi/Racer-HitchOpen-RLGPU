@@ -145,7 +145,14 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
                           float(torch.hypot(env.s[0, 3], env.s[0, 4])),
                           float(es[0, 7]), float(br[0, 0]), _db,
                           float(sp[0, 0]), float(env.u_cmd[0, 0]),
-                          float(env.u_cmd[0, 1]), float(env.u_cmd[0, 2])))
+                          float(env.u_cmd[0, 1]), float(env.u_cmd[0, 2]),
+                          # rear wheel surface speeds and the rear longitudinal slip, so a
+                          # drift can be judged directly instead of inferred: a spin gives a
+                          # large |beta| but no rear overslip, and a coasting car gives neither
+                          float(env.s[0, 8]) * 0.332, float(env.s[0, 9]) * 0.332,
+                          float(((env.s[0, 8] + env.s[0, 9]) * 0.5 * 0.332
+                                 - max(float(torch.hypot(env.s[0, 3], env.s[0, 4])), 1.0))
+                                / max(float(torch.hypot(env.s[0, 3], env.s[0, 4])), 1.0))))
             # the extended state is not refreshed by begin_policy_episode() until the
             # first step, which is why this used to print 0.00; the world velocity is
             # always current
@@ -165,7 +172,7 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
         _reason = "?"
     _out = os.environ.get("CARSIM_OUT", ".")
     with open(os.path.join(_out, "trace_%s.csv" % scenario), "w") as fh:
-        fh.write("t,v,beta,beta_ref,dbeta,epos,steer,thr,brk\n")
+        fh.write("t,v,beta,beta_ref,dbeta,epos,steer,thr,brk,wRL,wRR,kx_rear\n")
         for row in trace:
             fh.write(",".join("%.6f" % float(x) for x in row) + "\n")
     return {"scenario": scenario, "steps": done_step, "reason": _reason,
