@@ -1,10 +1,10 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """FastPlant: GPU-vectorized planar full-size RWD EV plant.
 
 The plant keeps XCAR's isotropic combined-slip Pacejka tire (a single
 ``mu(slip)`` curve for the whole contact patch, see ``IWDCarDynamics``) and adds
 the intermediate vehicle modules that the reference lab page
-(``理解Pacejka模型/xcar-tire-lab_aero.html``, sections 07-08) uses:
+(``鐞嗚ВPacejka妯″瀷/xcar-tire-lab_aero.html``, sections 07-08) uses:
 
 * simplified electric motor: speed dependent torque envelope + power limit;
 * viscous limited-slip differential on the driven axle;
@@ -58,7 +58,7 @@ import yaml
 G = 9.81
 
 #: 384 kW / 2400 Nm direct-drive motor map of the workspace EV conversion
-#: (``改造电车车辆/CarSim_motor_384kW_direct_drive.csv``).
+#: (``鏀归€犵數杞﹁溅杈?CarSim_motor_384kW_direct_drive.csv``).
 EV_MOTOR_384KW = [
     [0.0, 2400.0], [250.0, 2400.0], [500.0, 2400.0], [750.0, 2400.0],
     [1000.0, 2400.0], [1250.0, 2400.0], [1500.0, 2400.0], [1600.0, 2293.62],
@@ -269,6 +269,24 @@ class FastRacerPlant:
         y_pos = torch.stack([tf * 0.5, -tf * 0.5, tr * 0.5, -tr * 0.5], dim=1)
         radius = torch.stack([self.col("rF"), self.col("rF"), self.col("rR"), self.col("rR")], dim=1)
         inertia = torch.stack([self.col("IwF"), self.col("IwF"), self.col("IwR"), self.col("IwR")], dim=1)
+        # REFLECTED DRIVELINE INERTIA.  Iw as given is the wheel disc alone (0.17 kg m^2 here),
+        # but the driven wheels also have to accelerate the motor rotor through the gearbox:
+        #     J_eff = Iw + I_motor * gear_ratio^2
+        # With I_motor 0.30 and the gear ratio 3.44 that adds 3.55 kg m^2, i.e. 21x the disc.
+        # Without it the rear wheel accelerated from rest to 203 m/s of surface speed in ONE
+        # 50 ms step under 65 % throttle, because 7600 Nm against 0.17 kg m^2 has its root at
+        # about 2000 rad/s.  CarSim, with a real driveline, reaches 1.20 m/s in the same second.
+        _i_motor = 0.30
+        _i_dl = _i_motor * self.col("gear_ratio") ** 2
+        if self.drivetrain in ("rwd", "iwd"):
+            inertia = inertia.clone()
+            inertia[:, 2:] = inertia[:, 2:] + _i_dl
+        elif self.drivetrain == "fwd":
+            inertia = inertia.clone()
+            inertia[:, :2] = inertia[:, :2] + _i_dl
+        elif self.drivetrain == "awd":
+            inertia = inertia.clone()
+            inertia = inertia + 0.5 * _i_dl
         return x_pos, y_pos, radius, inertia
 
     # -- randomization ----------------------------------------------------
