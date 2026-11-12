@@ -59,6 +59,8 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     # measured, no_progress_count reached exactly 20 at t = 1.00 s with the car already
     # at 2.26 m/s and accelerating.
     cfg["stall_window"] = 80
+    if os.environ.get("CARSIM_COURSE_FAIL") is not None:
+        cfg["course_fail"] = float(os.environ["CARSIM_COURSE_FAIL"])
     # a drifting car legitimately needs more room than a gripping one: the trace showed it
     # running progressively wide while holding 10-11 degrees of sideslip, and ending when
     # it touched a 3.8 m corridor.  Allow an override so the corridor can be studied.
