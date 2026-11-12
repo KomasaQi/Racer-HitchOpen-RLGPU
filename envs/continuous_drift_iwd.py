@@ -517,7 +517,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # fade has to go DOWN with utilisation -- the old one went up, which is why
         # the reference was worst exactly at the operating point
         factor = (1.05 - 0.75 * util).clamp(0.35, 1.0)
-        return -torch.sign(kappa) * beta_geo * factor
+        # A car at standstill has NO sideslip, so the reference must fade to zero with
+        # speed as well.  Without this the very first observation of a rest start said
+        # "you are 0.356 rad off target" (measured in CarSim: e_beta = -0.3559 at v = 0),
+        # the actor answered with throttle 0.62 AND brake 0.47, pedal exclusivity kept the
+        # brake, and the car never launched -- which is why every CarSim episode ended at
+        # 1.1 s under the corrected action mapping.
+        speed_fade = (speed / 3.0).clamp(0.0, 1.0)
+        return -torch.sign(kappa) * beta_geo * factor * speed_fade
 
     def obs(self):
         """Real-vehicle observable state, after the XCAR observation design.
