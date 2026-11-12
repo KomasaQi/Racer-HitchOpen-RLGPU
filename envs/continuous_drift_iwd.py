@@ -1034,8 +1034,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             _di = is_done.nonzero(as_tuple=False).squeeze(1)
             kappa_all = self.path_bank[self.path_generation, self.path_id, self.progress, 3]
             beta_all = self._reference_beta(kappa_all.unsqueeze(1), self.spawn_speed).squeeze(1)
-            self.u_cmd[_di, 0] = (0.55 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
-            self.u_cmd[_di, 1] = 0.55
+            # Trim commands measured with the solver (rounds 43-45): the steer needed to
+            # hold a steady sideslip is about 2.4-2.6x that sideslip on an 8-12 m radius,
+            # and the throttle needed is 1-3 %, NOT the 0.55 that used to sit here.
+            # A 0.55 throttle on the corrected plant is a hard acceleration command, which
+            # is why the car left the corridor in 2.1 s with no action at all.
+            self.u_cmd[_di, 0] = (2.5 * beta_all[_di]).clamp(-self.max_steer, self.max_steer)
+            self.u_cmd[_di, 1] = 0.02
         # the equilibrium spawn installs a physical steering command; keep the
         # actuator state consistent with it or the first steps fight the wheel
         if getattr(self, "steer_actuator_tau", 0.0) > 0.0:
