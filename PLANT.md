@@ -875,3 +875,29 @@ which is a permanent penalty the policy could never clear.
 Consequence for the task: the biggest demonstrable drift is at LOW speed on an 8-10 m
 radius, not at the friction limit -- which also matches the owner's instruction to
 prefer the drift attitude over speed.
+## Round 69: the longitudinal actuators do not work in the training plant
+
+One second from 4.5 m/s at a pure rolling start, straight line:
+
+    brake  speed after 1 s   delta    omega_RL
+    0.0    6.03              +1.53    45.0
+    0.1    4.98              +0.48     8.1
+    0.3    4.49              -0.01    13.5
+    0.6    4.49              -0.01    13.5
+    1.0    4.49              -0.01    13.5
+
+Two defects, both confirmed:
+
+1. With NO brake the car ACCELERATES by 1.53 m/s in one second.  The rear wheel ends at
+   45 rad/s against a rolling value of 13.6, so something drives it far above rolling and
+   the resulting tyre force pushes the car forward.
+2. Braking SATURATES at 0.3 pedal: 0.3, 0.6 and 1.0 give an identical 4.49 m/s and an
+   identical wheel speed, so the car cannot be slowed below 4.49 m/s at all.
+
+CarSim, for comparison, gives -0.39 / -1.02 / -2.27 m/s per second at 0.05 / 0.10 / 0.20
+pedal, i.e. a brake that works and scales with the pedal.
+
+This is the highest-priority defect in the project.  Every reward weight, observation
+channel and servo calibration discussed so far sits on top of pedals that do not behave
+like pedals, which explains why the transferred policy creeps at 2 m/s: it asks for a tiny
+brake that is a harmless trim in the training plant and a hard stop in CarSim.
