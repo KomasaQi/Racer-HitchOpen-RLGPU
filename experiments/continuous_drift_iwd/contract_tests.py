@@ -79,11 +79,20 @@ def test_actuator():
     a[:, 0] = 0.45
     a[:, 1] = 0.6
     a[:, 2] = 0.6
+    trim = env.u_trim[0].clone()
     env.step(a)
-    check("first step is rate*dt", abs(float(env.u_cmd[0, 0]) - 1.8 * env.dt) < 0.003,
-          "got %.4f" % float(env.u_cmd[0, 0]))
-    check("pedals exclusive (both 0.6 -> 0/0)",
-          abs(float(env.u_cmd[0, 1])) < 1e-6 and abs(float(env.u_cmd[0, 2])) < 1e-6)
+    # the actor emits a CORRECTION around the trim, so the actuator moves rate*dt away
+    # from the trim, not from zero
+    moved = float(env.u_cmd[0, 0]) - float(trim[0])
+    check("first step moves rate*dt from the trim", abs(moved - 1.8 * env.dt) < 0.003,
+          "moved %.4f from trim %.3f" % (moved, float(trim[0])))
+    # both pedals maxed: the correction cancels and the trim is throttle 0.02, so the
+    # net longitudinal command is the trim throttle alone
+    check("pedals exclusive (both 0.6 -> trim throttle only)",
+          abs(float(env.u_cmd[0, 1]) - float(trim[1])) < 1e-5
+          and abs(float(env.u_cmd[0, 2])) < 1e-6,
+          "thr %.4f brake %.4f trim thr %.4f"
+          % (float(env.u_cmd[0, 1]), float(env.u_cmd[0, 2]), float(trim[1])))
     for _ in range(20):
         env.step(a)
     check("command never passes the target",
