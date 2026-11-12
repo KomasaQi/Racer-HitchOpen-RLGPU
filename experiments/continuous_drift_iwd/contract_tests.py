@@ -101,10 +101,31 @@ def test_observation_contract():
           str(tuple(obs["states"].shape)))
 
 
+
+def test_vehicle_randomisation():
+    """Every calibrated vehicle parameter must actually vary at reset."""
+    from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+    rng = {"B": [4.8, 7.2], "C": [1.7, 2.1], "D": [0.5, 1.0],
+           "m": [1470.0, 1560.0], "Iz": [1480.0, 1730.0],
+           "IwF": [0.15, 0.19], "IwR": [0.15, 0.19],
+           "Tf": [1.70, 1.74], "Tr": [1.58, 1.62],
+           "rF": [0.329, 0.335], "rR": [0.329, 0.335],
+           "load_sensitivity": [0.0, 0.25], "drive_efficiency": [0.88, 0.95],
+           "max_power_w": [345600.0, 422400.0]}
+    env = ContinuousDriftIWDEnv("fullsize_racecar_ev", 2048, "cuda:0",
+                                ref_mode="hybrid", control_mode="pedals",
+                                train=True, randomize_param=rng)
+    env.randomize()
+    for key in ("m", "Iz", "IwF", "rR", "max_power_w", "load_sensitivity"):
+        v = env.plant.col(key)
+        spread = float(v.max() - v.min())
+        check("DR varies %s" % key, spread > 1e-6, "spread %.3e" % spread)
+
 if __name__ == "__main__":
     print("contract tests")
     for fn in (test_preset, test_randomisation_covers_nominal, test_steering_conversion,
-               test_wheel_order, test_actuator, test_observation_contract):
+               test_wheel_order, test_actuator, test_observation_contract,
+               test_vehicle_randomisation):
         print(fn.__name__)
         fn()
     print()
