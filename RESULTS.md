@@ -57,3 +57,23 @@ the runner to CARSIM_OUT.
 The |dbeta| column is 0.157-0.177 against a 0.12 target and is NOT a plant defect: the trace
 shows the car holding ~0.17 rad of sideslip while the deliberately conservative reference
 asks for less.  Closing it is a choice about what the reference should be, not a bug fix.
+
+
+## The final checkpoint (epoch 300) is better than the one first measured
+
+Training ran to completion.  Epoch 300 scores +114.9 in training against epoch 140's +92.3,
+and in CarSim it is better on the two columns that matter most for the thesis:
+
+| scenario   | duration | speed | \|dbeta\| | e_pos | reversals | TV    | p95   | step  |
+|------------|----------|-------|-----------|-------|-----------|-------|-------|-------|
+| flat_mu050 | 30.0 s   | 4.11  | 0.161     | 0.74  | 0.167     | 0.016 | 0.080 | 0.001 |
+| flat_mu075 | 30.0 s   | 4.30  | 0.170     | 0.71  | 0.134     | 0.012 | 0.069 | 0.001 |
+| flat_mu100 | 30.0 s   | 4.35  | 0.174     | 0.70  | 0.134     | 0.013 | 0.069 | 0.001 |
+
+Against epoch 140 it halves the lateral error (0.70-0.74 m against 0.75-1.17), quarters the
+p95 steering rate (0.069-0.080 against 0.105-0.136), and gives up about 0.4 m/s of speed --
+all three speeds still inside the 4.0-5.4 target band.
+
+So the current best checkpoint is `experiments/continuous_drift_iwd/runs/drift_ev_v56ep300`
+(epoch 300, training reward +114.9), not the epoch-140 one quoted in the table above.  Both
+survive 30 s in all three scenarios from rest.
