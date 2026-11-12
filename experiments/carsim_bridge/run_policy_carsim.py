@@ -59,6 +59,12 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     # measured, no_progress_count reached exactly 20 at t = 1.00 s with the car already
     # at 2.26 m/s and accelerating.
     cfg["stall_window"] = 80
+    # a drifting car legitimately sits at low speed for long stretches (it is sliding
+    # sideways rather than driving forward), so the stall rule must not fire on it
+    if os.environ.get("CARSIM_STALL_SPEED") is not None:
+        cfg["stall_speed"] = float(os.environ["CARSIM_STALL_SPEED"])
+    if os.environ.get("CARSIM_STALL_WINDOW") is not None:
+        cfg["stall_window"] = int(os.environ["CARSIM_STALL_WINDOW"])
     if os.environ.get("CARSIM_COURSE_FAIL") is not None:
         cfg["course_fail"] = float(os.environ["CARSIM_COURSE_FAIL"])
     # a drifting car legitimately needs more room than a gripping one: the trace showed it
