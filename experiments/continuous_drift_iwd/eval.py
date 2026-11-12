@@ -87,6 +87,12 @@ def main():
     ap.add_argument("--speed-cap", type=float, default=None)
     ap.add_argument("--speed-weight", type=float, default=0.0)
     ap.add_argument("--prog-weight", type=float, default=0.2)
+    # the actuator is part of the trained MDP: evaluating a servo-trained
+    # policy without it measures a different task
+    ap.add_argument("--steer-actuator-tau", type=float, default=0.0)
+    ap.add_argument("--steer-rate-limit", type=float, default=0.0)
+    ap.add_argument("--steer-deadband", type=float, default=0.0)
+    ap.add_argument("--brake-margin", type=float, default=0.0)
     ap.add_argument("--alpha-peak", type=float, default=0.12)
     ap.add_argument("--beta-max", type=float, default=0.32)
     ap.add_argument("--ackermann-lo", type=float, default=0.8)

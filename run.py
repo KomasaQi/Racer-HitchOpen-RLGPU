@@ -293,7 +293,10 @@ default_env_config = {
         # 1.0, so 1.25 is dropped.  B and C keep the shape spread but are not
         # widened further (an uncalibrated tyre does not need more shape spread).
         "ev_drift": {
-            "B": [8.0, 12.0],
+            # Nominal B is 6.0 after the traction calibration.  The old [8, 12] range
+            # silently restored the pre-calibration tyre on every reset, which is
+            # why v31/v32 were not training on the corrected plant at all.
+            "B": [4.8, 7.2],
             "C": [1.7, 2.1],
             "D": [0.50, 1.00],
         },
@@ -435,6 +438,7 @@ runner_config["params"]["config"]["games_to_track"] = args.num_parallel
 runner_config["params"]["config"]["mini_epochs"] = args.mini_epochs
 runner_config["params"]["config"]["lr_schedule"] = args.lr_schedule
 runner_config["params"]["config"]["gamma"] = args.gamma
+runner_config["params"]["config"]["tau"] = args.tau
 runner_config["params"]["config"]["horizon_length"] = args.horizon
 runner_config["params"]["config"]["score_to_win"] = args.score_to_win
 runner_config["params"]["config"]["name"] = args.env
