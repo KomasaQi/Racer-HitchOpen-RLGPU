@@ -550,8 +550,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # +sign(kappa)*target, NOT -sign(kappa).  The old sign asked for beta = -0.4 on
             # a positive-curvature corner while the physically correct drift is +0.4, which
             # made a real drift score exactly the same as no sideslip at all.
+            # SIGN: in this repo beta = velocity heading - body heading, so a left-hand
+            # power slide at positive curvature has the nose pointing LEFT of the velocity
+            # vector, i.e. beta < 0 and delta < 0 (beta*delta > 0).  The review derived this
+            # from the rear slip angle at beta = +0.4 coming out positive (0.29-0.34) and the
+            # tyre then pushing OUTWARD, i.e. the wrong way for a left turn.  The target is
+            # therefore -sign(kappa)*target.
             _tgt = torch.full_like(kappa, self.drift_beta_target)
-            return torch.sign(kappa) * _tgt * (speed / 2.0).clamp(0.0, 1.0)
+            return -torch.sign(kappa) * _tgt * (speed / 2.0).clamp(0.0, 1.0)
         return -torch.sign(kappa) * beta_geo * factor * speed_fade
 
     def obs(self):
@@ -924,6 +930,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # r/V is near zero during a forward slide, so keying the countersteer off it asks
         # for no countersteer exactly when one is needed.  Use the reference curvature.
         _sig = torch.sign(now.get("kappa_ref", now["kappa"]))
+        # countersteer target is -0.25*sign(kappa): delta and beta then share a sign,
+        # which is the drift convention this repo uses
         rew_drift_counter = -torch.clamp((self.u_cmd[:, 0] + 0.25 * _sig) ** 2, max=1.0)
 
         terms = {
