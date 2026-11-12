@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.join(ROOT, "xcar-simulation"))
 sys.path.insert(0, os.path.join(ROOT, "utils"))
 
 from envs.carsim_drift_env import CarSimDriftEnv  # noqa: E402
-from experiments.continuous_drift_iwd.eval import Policy  # noqa: E402
+from experiments.continuous_drift_iwd.eval import Policy, physical_action  # noqa: E402
 from experiments.carsim_bridge.steer_metrics import steering_metrics, format_metrics  # noqa: E402
 
 CKPT = os.path.join(ROOT, "experiments", "continuous_drift_iwd", "runs",
@@ -85,7 +85,10 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     done_step = steps
     for k in range(steps):
         actor_obs = obs["obs"] if isinstance(obs, dict) else obs
-        a = pol.act(actor_obs.float())
+        # rl_games clips to [-1, 1] then rescales onto the action space; without
+        # this the raw steering 0.2 became 0.2 rad here and 0.09 rad in training
+        raw = pol.act(actor_obs.float())
+        a = physical_action(raw, env)
         s_now = float(a[0, 0])
         if prev_steer is not None:
             d = s_now - prev_steer
