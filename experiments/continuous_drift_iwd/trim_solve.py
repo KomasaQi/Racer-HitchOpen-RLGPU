@@ -89,8 +89,10 @@ class Trim:
         from scipy.optimize import least_squares
         sgn = 1.0 if kappa >= 0 else -1.0
         L = float(self.plant.col("lF") + self.plant.col("lR"))
+        # Rear slip bound raised from 0.35: the drift reward asks for 0.55, and a solver
+        # that cannot even search there cannot decide whether the target is feasible.
         lo = np.array([-0.65, -0.449, -0.08, -0.08, -0.02, -0.02])
-        hi = np.array([0.65, 0.449, 0.05, 0.05, 0.35, 0.35])
+        hi = np.array([0.65, 0.449, 0.05, 0.05, 1.20, 1.20])
         # The trim has more than one branch.  Normal cornering has beta and delta of
         # the SAME sign; a drift has beta large and delta OPPOSITE (countersteer).
         # Picking the lowest residual always lands on the normal branch, so converge
