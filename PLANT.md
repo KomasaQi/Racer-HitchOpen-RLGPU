@@ -800,3 +800,30 @@ coarsely, v31 steers best (three of five metrics inside target at mu 1.0, high
 frequency energy 0.062 against 0.05) but runs at 8 m/s where the in-domain band is
 4.0-5.4.  The split is longitudinal, not lateral: lateral grip now agrees to 1.3 %
 between the plants.
+## Round 19: the longitudinal gap, measured
+
+Acceleration from 4.5 m/s over two seconds at a fixed pedal (open loop, both plants):
+
+| throttle | GPU dV | CarSim dV | ratio |
+|---|---|---|---|
+| 0.80 | 10.21 | 13.86 | 1.36 |
+
+Speed after three seconds from rest:
+
+| throttle | 0.15 | 0.30 | 0.45 | 0.60 | 0.80 | 1.00 |
+|---|---|---|---|---|---|---|
+| GPU (B 6, rear 1.40) | 1.4 | 17.5 | 22.0 | 23.4 | 23.8 | 23.8 |
+| CarSim | 14.2 | 18.4 | 20.9 | 21.8 | 21.8 | 21.8 |
+
+So above 0.3 throttle the two plants now agree within about 10 %, and below 0.3 they
+disagree by an order of magnitude: CarSim's motor delivers most of its torque at a
+small pedal, the GPU plant delivers almost nothing.
+
+Why that matters for transfer: a policy trained where full throttle is
+traction-limited learns "full throttle is roughly the target speed".  In CarSim full
+throttle accelerates 36 % harder at 4.5 m/s, so the clean instrumented episode ends 22
+control steps after takeover with the car at 11.47 m/s and 4.06 m off the line.
+
+The remaining fix is a piecewise pedal-to-torque map fitted to CarSim's `Ax` and
+`AV_Motor` at 0.1 / 0.2 / 0.3 throttle, applied in `fast_plant.py`.  Nothing in the
+CarSim bridge is wrong at this point.
