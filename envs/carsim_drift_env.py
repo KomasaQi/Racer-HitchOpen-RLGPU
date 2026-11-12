@@ -38,7 +38,6 @@ R_EFF = 0.332
 # 1/0.45 = 2.22x, which is exactly the "runs wide" symptom seen in the first test.
 MAX_ROAD_WHEEL_RAD = 0.45
 # steering actuator model (per control period): first order lag and slew limit
-STEER_TAU = 0.08          # s, roughly a 12 Hz bandwidth
 STEER_RATE_LIMIT = 6.0    # rad of steering wheel per second
 
 
@@ -60,15 +59,12 @@ class CarSimPlant:
             "lR": torch.full((self.n,), 1.195, device=self.device, dtype=self.dtype),
             "lF": torch.full((self.n,), 1.455, device=self.device, dtype=self.dtype),
             "g": torch.full((self.n,), G, device=self.device, dtype=self.dtype),
-            "m": torch.full((self.n,), 1985.0, device=self.device, dtype=self.dtype),
+            "m": torch.full((self.n,), 1514.8, device=self.device, dtype=self.dtype),
             "D": torch.full((self.n,), self.grip, device=self.device, dtype=self.dtype),
         }
         self.tyre_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
         self.ackermann_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
         self.g = G
-        self.steer_tau = float(os.environ.get("CARSIM_STEER_TAU", STEER_TAU))
-        self.steer_rate_limit = float(os.environ.get("CARSIM_STEER_RATE", STEER_RATE_LIMIT))
-        self._steer_applied = 0.0
         self._steer_prev = 0.0
         self.n_physics_ok = True
 
@@ -113,22 +109,9 @@ class CarSimPlant:
     # ------------------------------------------------------------------ step
     def step(self, s, command, dt, substeps=1, mode="pedals"):
         cmd = command.detach().cpu().numpy().reshape(-1)
-        steer_cmd = (float(np.clip(cmd[0] / MAX_ROAD_WHEEL_RAD, -1.0, 1.0))
-                     * MAX_STEER_SW_DEG)
-        # Steering actuator: a real wheel cannot jump between two 20 Hz targets.
-        # Without this the policy chatters (bang-bang steering) because the plant
-        # it was trained on answered a step instantly.
-        if self.steer_tau > 0.0:
-            a = float(np.clip(float(dt) / (self.steer_tau + float(dt)), 0.0, 1.0))
-            self._steer_applied += a * (steer_cmd - self._steer_applied)
-        else:
-            self._steer_applied = steer_cmd
-        if self.steer_rate_limit > 0.0:
-            step = self.steer_rate_limit * float(dt)
-            self._steer_applied = float(np.clip(
-                self._steer_applied, self._steer_prev - step, self._steer_prev + step))
-        self._steer_prev = self._steer_applied
-        steer = self._steer_applied
+        # the shared preprocessing has already applied the actuator
+        steer = (float(np.clip(cmd[0] / MAX_ROAD_WHEEL_RAD, -1.0, 1.0))
+                 * MAX_STEER_SW_DEG)
         throttle = float(np.clip(cmd[1], 0.0, 1.0))
         brake = float(np.clip(cmd[2], 0.0, 1.0)) * MAX_BRAKE_MPA
         imp = [steer, throttle, brake]
@@ -287,7 +270,6 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self._stall_anchor.copy_(self.s[:, :2])
         self.car.sim.reset()
         self.s.copy_(self.car.sim.s.to(self.s.device))
-        self.car._steer_applied = 0.0
         self.car._steer_prev = 0.0
         self.car._r_prev = float(self.s[0, 5])
         self.car._rdot = 0.0

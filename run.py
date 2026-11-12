@@ -170,7 +170,7 @@ parser.add_argument("--learning-rate", type=float, default=None,
                     help="override the PPO learning rate (default 3e-4)")
 parser.add_argument("--steer-actuator-tau", type=float, default=0.08,
                     help="first order steering lag in seconds (0 disables)")
-parser.add_argument("--steer-rate-limit", type=float, default=6.0,
+parser.add_argument("--steer-rate-limit", type=float, default=1.5,
                     help="max road-wheel slew rate, rad/s (0 disables)")
 args = parser.parse_args()
 

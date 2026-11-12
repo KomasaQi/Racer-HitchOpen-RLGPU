@@ -236,6 +236,8 @@ class GPUVectorizedCarEnv:
 
     # -------------------------------------------------------------- lifecycle
     def reset(self):
+        self._steer_state.zero_()
+        self._steer_prev.zero_()
         self.randomize()
         if self.initial_state is not None:
             self.s[:, :6] = torch.as_tensor(self.initial_state, device=self.device, dtype=torch.float32)
@@ -267,25 +269,23 @@ class GPUVectorizedCarEnv:
         if self.plant_name != "fast":
             return action
         u = action.clone()
-        if self.steer_actuator_tau > 0.0 and hasattr(self, "_steer_state"):
-            # Steering actuator: a real wheel cannot jump to a new target every
-            # 50 ms.  Without it the policy learns bang-bang steering and then
-            # chatters (and fails) on any plant that has inertia.
-            target = torch.clamp(u[:, 0], -self.max_steer, self.max_steer)
-            a = self.dt / (self.steer_actuator_tau + self.dt)
-            self._steer_state = self._steer_state + a * (target - self._steer_state)
+        target = torch.clamp(u[:, 0], -self.max_steer, self.max_steer)
+        if self.steer_actuator_tau > 0.0:
+            # Saturated first order servovalve: the rate is limited BEFORE it is
+            # integrated, so a step cannot cross the target and the actuator can
+            # never be faster than the slew limit.
+            rate = (target - self._steer_state) / self.steer_actuator_tau
             if self.steer_rate_limit > 0.0:
-                step = self.steer_rate_limit * self.dt
-                self._steer_state = torch.clamp(
-                    self._steer_state,
-                    self._steer_prev - step, self._steer_prev + step)
+                rate = torch.clamp(rate, -self.steer_rate_limit, self.steer_rate_limit)
+            nxt = self._steer_state + self.dt * rate
+            nxt = torch.where(target >= self._steer_prev,
+                              torch.minimum(nxt, target),
+                              torch.maximum(nxt, target))
+            self._steer_state = nxt
             self._steer_prev = self._steer_state.clone()
             u[:, 0] = self._steer_state
-            if self.control_mode == "pedals":
-                u[:, 1] = torch.clamp(u[:, 1], 0.0, 1.0)
-                u[:, 2] = torch.clamp(u[:, 2], 0.0, 1.0)
-            return u
-        u[:, 0] = torch.clamp(u[:, 0], -self.max_steer, self.max_steer)
+        else:
+            u[:, 0] = target
         if self.control_mode == "pedals":
             u[:, 1] = torch.clamp(u[:, 1], 0.0, 1.0)
             u[:, 2] = torch.clamp(u[:, 2], 0.0, 1.0)
