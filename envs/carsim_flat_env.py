@@ -72,6 +72,20 @@ MAX_STEER_SW_DEG = 345.0
 # rear-left channels, so the "front" speed estimate silently includes a driven rear
 # wheel.
 CARSIM_WHEEL_SUFFIXES = ("L1", "R1", "L2", "R2")
+
+# the policy commands ROAD-WHEEL radians, bounded by the GPU plant max_steer
+MAX_ROAD_WHEEL_RAD = 0.45
+
+
+def road_wheel_rad_to_steering_wheel_deg(angle):
+    """Convert the policy road-wheel angle to the CarSim steering import.
+
+    Measured map: 13.9:1 near centre falling to 12.0:1 at full lock, so
+    MAX_STEER_SW_DEG corresponds to the 0.45 rad the GPU plant trains with.
+    Every bridge site must call this instead of scaling the angle itself.
+    """
+    return float(np.clip(float(angle) / MAX_ROAD_WHEEL_RAD, -1.0, 1.0)
+                 * MAX_STEER_SW_DEG)
 MAX_BRAKE_MPA = 6.0           # agreed with the owner: 6 MPa is the working ceiling
 
 
