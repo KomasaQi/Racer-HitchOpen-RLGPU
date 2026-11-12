@@ -52,7 +52,7 @@ def rollout(a, grip, seed, policy):
               stall_speed=a.stall_speed, stall_window=a.stall_window,
               stall_move=a.stall_move, grip_scale=grip,
               disturbance_param=((0.97, 0.03) if a.disturbed else None),
-              randomize_param=(({"B": [8.0, 12.0], "C": [1.7, 2.1], "D": [grip, grip]})
+              randomize_param=(({"B": [4.8, 7.2], "C": [1.7, 2.1], "D": [grip, grip]})
                                if a.disturbed else None),
               alive_bonus=a.alive_bonus, yaw_weight=a.yaw_weight,
               beta_weight=a.beta_weight, dir_weight=a.dir_weight,

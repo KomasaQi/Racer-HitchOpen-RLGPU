@@ -799,7 +799,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # the gate is optional: with the geometry-derived reference the reward
         # should target exactly beta_ref, so the gate is disabled when its scale is 0
         beta_target = self.beta_ref * beta_gate if self.beta_gate_scale > 0 else self.beta_ref
-        rew_beta = - (beta - beta_target) ** 2
+        # cap the shaping term: an uncapped quadratic lets a single spin dominate the
+        # return with hundreds of negative reward in one step, which swamps the critic
+        rew_beta = -torch.clamp((beta - beta_target) ** 2, max=self.beta_max ** 2)
         # Potential based recovery term: reward REDUCING the lateral error, not
         # just having a small one.  The static quadratic gives no direction at the
         # operating point and the car never learns to come back to the line.
@@ -837,9 +839,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # the episodes by running out of the corridor.
             # TWO-SIDED: exceeding the limit target is as wrong as falling short,
             # otherwise the policy over-drives at high grip and leaves the corridor
-            rew_speed = - ((v - v_tgt) / v_tgt) ** 2
+            rew_speed = -torch.clamp(((v - v_tgt) / v_tgt) ** 2, max=1.0)
         else:
-            rew_speed = - ((v - v_tgt) / v_tgt) ** 2
+            rew_speed = -torch.clamp(((v - v_tgt) / v_tgt) ** 2, max=1.0)
 
         # progress is capped at the waypoints the reference speed covers in one
         # step, exactly as the original XCAR reward caps it: going faster than the

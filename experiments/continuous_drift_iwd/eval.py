@@ -183,7 +183,7 @@ def main():
                                 # matching the training DR; the env forces tyre_scale
                                 # to 1.0 whenever the disturbance is on, so a fixed
                                 # --grip-scale cannot be applied in that mode
-                                randomize_param=(({"B": [8.0, 12.0], "C": [1.7, 2.1],
+                                randomize_param=(({"B": [4.8, 7.2], "C": [1.7, 2.1],
                                                    "D": [float(args.grip_scale), float(args.grip_scale)]})
                                                   if args.disturbed else None),
                                 curv_smooth=args.curv_smooth, preview_scale=args.preview_scale,
