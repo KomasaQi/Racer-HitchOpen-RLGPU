@@ -272,10 +272,17 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         # left the anchor 1.8 m off the line
         dx = bank[:, :, 0] - bank[:, 0, 0:1]
         dy = bank[:, :, 1] - bank[:, 0, 1:2]
-        c, sn = torch.cos(-psi0), torch.sin(-psi0)
+        # The path must pass through the car's position heading along the CAR's
+        # direction, so the rigid transform is: rotate the whole path by the angle
+        # that brings its start heading onto psi0, then translate the start onto the
+        # car.  The previous version rotated the positions by -psi0 but left the
+        # headings at the path's own value, so the reference ran off at an angle to
+        # the car and the policy inherited a heading error it never created.
+        dtheta = psi0 - bank[:, 0, 2:3]
+        c, sn = torch.cos(dtheta), torch.sin(dtheta)
         bank[:, :, 0] = c * dx - sn * dy + x0
         bank[:, :, 1] = sn * dx + c * dy + y0
-        bank[:, :, 2] = bank[:, :, 2] - bank[:, 0, 2:3]
+        bank[:, :, 2] = bank[:, :, 2] + dtheta
         self.step_count.zero_()
         self.travel.zero_()
         self.no_progress_count.zero_()
@@ -285,6 +292,19 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self._prev = None
         self._track_pending = True
         self._physics_advanced = False
+        # trim baseline at the takeover point, computed the same way as the training
+        # spawn: sideslip from the local reference, steer 2.5x that, 2 % throttle
+        _k = self.path_bank[self.path_generation, self.path_id, self.progress, 3]
+        _v = self.es[:, 6]
+        _beta = self._reference_beta(_k.unsqueeze(1), _v).squeeze(1)
+        if getattr(self, "u_trim", None) is None:
+            self.u_trim = torch.zeros_like(self.u_cmd)
+        self.u_trim.zero_()
+        self.u_trim[:, 0] = (2.5 * _beta).clamp(-self.max_steer, self.max_steer)
+        self.u_trim[:, 1] = 0.02
+        self.u_cmd.copy_(self.u_trim)
+        self._steer_state.copy_(self.u_trim[:, 0])
+        self._steer_prev.copy_(self.u_trim[:, 0])
         return self.obs()
 
     def reset(self):
@@ -296,6 +316,12 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self.no_progress_count.zero_()
         self.is_done.zero_()
         self.u_cmd.zero_()
+        # the actor emits a correction around the trim, so the CarSim path needs the
+        # same baseline the training spawn installs; without it every action here is
+        # interpreted against a different reference and the transfer is not comparable
+        if getattr(self, "u_trim", None) is None:
+            self.u_trim = torch.zeros_like(self.u_cmd)
+        self.u_trim.zero_()
         self._stall_anchor.copy_(self.s[:, :2])
         self.car.sim.reset()
         self.s.copy_(self.car.sim.s.to(self.s.device))
