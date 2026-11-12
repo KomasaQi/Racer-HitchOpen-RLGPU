@@ -5,6 +5,7 @@ own reference roads, and the shared task logic scores it.
 """
 import json
 import os
+import re
 import sys
 
 import numpy as np
@@ -22,10 +23,14 @@ from experiments.carsim_bridge.steer_metrics import steering_metrics, format_met
 CKPT = os.path.join(ROOT, "experiments", "continuous_drift_iwd", "runs",
                 os.environ.get("CARSIM_RUN", "drift_ev_v17"), "nn")
 RUN_DIR = os.path.dirname(CKPT)
-CKPT_FILE = None
-for f in os.listdir(CKPT):
-    if f.startswith("last_") and f.endswith(".pth"):
-        CKPT_FILE = os.path.join(CKPT, f)
+# select by the EPOCH NUMBER, not the filename: "ep_90" sorts after "ep_290"
+# alphabetically, so the old loop silently evaluated the wrong checkpoint
+_cands = [os.path.join(CKPT, f) for f in os.listdir(CKPT)
+          if f.startswith("last_") and f.endswith(".pth")]
+if not _cands:
+    raise FileNotFoundError("no last_*.pth in " + CKPT)
+CKPT_FILE = max(_cands, key=lambda p: int(re.search(r"ep_(\d+)", p).group(1))
+                if re.search(r"ep_(\d+)", p) else -1)
 
 
 def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
