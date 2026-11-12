@@ -770,3 +770,33 @@ Deliverable: `experiments/continuous_drift_iwd/runs/drift_ev_v17` (epoch 260).
 | mu 0.5-1.00 + OU disturbance, 131072 envs, 20 Hz / 100 Hz, horizon 32, gamma 0.99, tau 0.95 | yes |
 | time-headway previews | 0.5 / 1.0 / 1.6 s |
 | same seeded roads across all grips | `grid_same_roads_across_grip.png` and `..._with_OU.png` |
+## State at round 15: nine defects fixed, one gap left
+
+The sim-to-sim bridge now matches the CarSim vehicle on the things that can be read
+from its own files:
+
+| quantity | was | now | source |
+|---|---|---|---|
+| total mass | 1320 kg | **1514.8 kg** | 1200 sprung + 314.8 unsprung |
+| yaw inertia | 1350 | **1605.3** | IZZ_SU 1065.2 + unsprung terms |
+| wheel spin inertia | 1.9 / 2.2 | **0.17** | CarSim IW |
+| front track | 1.650 m | **1.720 m** | steering par |
+| rolling radius | 0.3236 / 0.3328 | **0.332** | measured, speed / wheel spin |
+| steering | +/-1 = 720 deg | **+/-1 = 345 deg** | measured map, 13.9:1 -> 12.0:1 |
+| Ackermann | 80-120 % random | **112-120 % measured** | inside the trained range |
+| tyre | B 10, rear 1.05 | **B 6, rear 1.40** | throttle-to-speed map |
+
+The CarSim transfer, one episode per scenario with a 4.5 m/s rolling entry and no
+disturbance:
+
+| checkpoint | mu 0.50 | mu 0.75 | mu 1.00 | speed | p95 rate | TV | mean step |
+|---|---|---|---|---|---|---|---|
+| drift_ev_v17 | 15.6 s | 5.8 s | 30.0 s | 5.9-6.3 | 2.2-2.6 | 1.6-3.2 | 0.08-0.16 |
+| drift_ev_v27 e100 | **29.3 s** | **26.6 s** | **29.6 s** | 4.4-4.6 | 0.73-0.81 | 1.05 | 0.053 |
+| drift_ev_v31 e340 | 5.6 s | 1.6 s | 1.3 s | 7.6-8.1 | 1.10-1.51 | 0.50-0.92 | 0.025-0.046 |
+
+The two local optima are the same policy family: v27 survives but steers more
+coarsely, v31 steers best (three of five metrics inside target at mu 1.0, high
+frequency energy 0.062 against 0.05) but runs at 8 m/s where the in-domain band is
+4.0-5.4.  The split is longitudinal, not lateral: lateral grip now agrees to 1.3 %
+between the plants.
