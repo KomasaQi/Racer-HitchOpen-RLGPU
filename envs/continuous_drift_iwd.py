@@ -119,6 +119,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.drift_throttle_gate = float(kwargs.get("drift_throttle_gate", 0.30))
         self.drift_throttle_weight = float(kwargs.get("drift_throttle_weight", 4.0))
         self.drift_counter_weight = float(kwargs.get("drift_counter_weight", 8.0))
+        # The faded kinematic reference was correct for path tracking but it is the wrong
+        # target for a drift: measured with the drift slip reward active, the car reached
+        # throttle 0.18-0.29 and a positive rear slip of 0.03-0.36 (both good) while its
+        # sideslip stayed at 0.003-0.017 rad, i.e. a fast forward slide.  A power slide needs
+        # an explicit large sideslip, so when drift_mode is on the reference becomes a
+        # constant magnitude of this many radians with the sign of the local curvature.
+        self.drift_mode = bool(kwargs.get("drift_mode", False))
+        self.drift_beta_target = float(kwargs.get("drift_beta_target", 0.40))
 
         n_ctrl = 3 if self.pedals else 4
         if not self.pedals:
@@ -534,6 +542,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # brake, and the car never launched -- which is why every CarSim episode ended at
         # 1.1 s under the corrected action mapping.
         speed_fade = (speed / 3.0).clamp(0.0, 1.0)
+        if self.drift_mode:
+            # explicit drift target: a large sideslip, faded in only at very low speed and
+            # faded out above the point where the car cannot hold it any more
+            _tgt = torch.full_like(kappa, self.drift_beta_target)
+            return -torch.sign(kappa) * _tgt * (speed / 2.0).clamp(0.0, 1.0)
         return -torch.sign(kappa) * beta_geo * factor * speed_fade
 
     def obs(self):
