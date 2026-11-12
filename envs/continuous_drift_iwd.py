@@ -1200,7 +1200,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # region, so the gradient exists from the first step and the policy's job is
                 # to hold the state rather than to discover it.
                 _v = torch.hypot(self.s[is_done, 3], self.s[is_done, 4])
-                _rad = self.plant.geometry()[2][is_done]      # (k, 4) per wheel
+                _rad = self.plant.geometry()[2]
+                # the GPU plant returns (n, 4); the CarSim plant returns (4,)
+                if _rad.dim() == 1:
+                    _rad = _rad.unsqueeze(0)
+                _rad = _rad[is_done]
                 _spin = 1.0 + self.drift_kappa_target
                 self.s[is_done, 8] = (_v * _spin / _rad[:, 2]).clamp(min=0.0)
                 self.s[is_done, 9] = (_v * _spin / _rad[:, 3]).clamp(min=0.0)
