@@ -1,4 +1,4 @@
-﻿"""Steady-drift trim solver (v2), following TRIM_SPEC.md.
+"""Steady-drift trim solver (v2), following TRIM_SPEC.md.
 
     z = [beta, delta, kx_FL, kx_FR, kx_RL, kx_RR]
     R = [ dvxb/g, dvyb/g, Mz/(m g L), N_FL/Ts, N_FR/Ts, (N_RL-N_RR)/(2 Ts) ]
@@ -91,10 +91,16 @@ class Trim:
         L = float(self.plant.col("lF") + self.plant.col("lR"))
         lo = np.array([-0.65, -0.449, -0.08, -0.08, -0.02, -0.02])
         hi = np.array([0.65, 0.449, 0.05, 0.05, 0.35, 0.35])
-        zs = [[0.00, sgn * np.arctan(L * abs(kappa)), -0.003, -0.003, 0.01, 0.01],
-              [0.20 * sgn, -0.10 * sgn, -0.003, -0.003, 0.08, 0.08],
-              [0.40 * sgn, -0.25 * sgn, -0.003, -0.003, 0.15, 0.15]]
-        best, be = None, np.inf
+        # The trim has more than one branch.  Normal cornering has beta and delta of
+        # the SAME sign; a drift has beta large and delta OPPOSITE (countersteer).
+        # Picking the lowest residual always lands on the normal branch, so converge
+        # from countersteer starts and keep the solution with the LARGEST |beta| among
+        # those that meet the residual tolerance.
+        zs = [[0.00, sgn * np.arctan(L * abs(kappa)), -0.003, -0.003, 0.01, 0.01]]
+        for b0 in (0.15, 0.25, 0.35, 0.45):
+            for d0 in (-0.10, -0.20, -0.30):
+                zs.append([b0 * sgn, d0 * sgn, -0.004, -0.004, 0.06, 0.06])
+        cands = []
         for z0 in zs:
             try:
                 r = least_squares(lambda z: self.residual(z, kappa, V),
@@ -105,9 +111,18 @@ class Trim:
             except Exception:
                 continue
             e = float(np.abs(r.fun).max())
-            if e < be:
-                best, be = r.x, e
-        return best, be
+            cands.append((e, r.x))
+        if not cands:
+            return None, np.inf
+        ok = [c for c in cands if c[0] < 1e-3]
+        if ok:
+            # drift branch: the countersteer solution with the largest sideslip
+            drift = [c for c in ok if c[1][0] * c[1][1] < 0.0]
+            pool = drift if drift else ok
+            pool.sort(key=lambda c: -abs(c[1][0]))
+            return pool[0][1], pool[0][0]
+        cands.sort(key=lambda c: c[0])
+        return cands[0][1], cands[0][0]
 
 
 def main():
