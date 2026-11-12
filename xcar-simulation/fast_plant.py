@@ -115,7 +115,11 @@ DEFAULT_PARAMS = {
     # Trapezoidal weight of the semi-implicit wheel update.  1.0 = backward
     # Euler (most damping, first order), 0.5 = trapezoidal (less bias while
     # accelerating/braking, still A-stable).
-    "wheel_implicit_weight": 0.5,
+    # 0.5 made the implicit denominator more than 100x J at low speed (the secant
+    # to the zero-force point is huge there), so the driven wheel could only creep
+    # and the >=0 clamp then pinned it locked.  0.15 is enough damping to stop the
+    # step overshooting without suppressing the spin-up.
+    "wheel_implicit_weight": 0.15,
 }
 
 #: tensor parameter order of ``FastRacerPlant.p`` (per environment row)
@@ -703,7 +707,9 @@ class FastRacerPlant:
             s[:, 6:10] = s[:, 6:10] + h * extras["wheel_net_torque"] / j_eff
             if keep_wheel_sign:
                 # a wheel may not reverse through zero within one physics step
-                s[:, 6:10] = torch.clamp(s[:, 6:10], min=0.0, max=2500.0)
+                # a wheel may not reverse through zero within one physics step; a
+                # small negative allowance keeps it from being pinned by the clamp
+                s[:, 6:10] = torch.clamp(s[:, 6:10], min=-2.0, max=2500.0)
             s[:, 2] = torch.atan2(torch.sin(s[:, 2]), torch.cos(s[:, 2]))
         extras["ax"] = ax_sum / n_sub
         extras["ay"] = ay_sum / n_sub
