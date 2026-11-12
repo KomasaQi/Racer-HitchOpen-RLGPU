@@ -923,8 +923,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
         self._prev = None
-        # super().reset() already called obs() with stale task counters
+        # super().reset() puts every car at the plant's zero state, so without this the
+        # FIRST episode of every environment started from rest instead of from the
+        # equilibrium spawn the task advertises.  reset_done_envs() does the spawning,
+        # so mark everything done and let it do its job.
+        self.is_done.fill_(1)
         self._track_pending = True
+        self.reset_done_envs()
         return self.obs()
 
     def info(self):
