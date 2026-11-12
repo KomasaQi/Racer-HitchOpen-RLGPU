@@ -1162,6 +1162,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # instead of memorising one value.
             _lo = float(getattr(self, "trim_throttle_lo", 0.0))
             _hi = float(getattr(self, "trim_throttle_hi", 0.25))
+            if self.drift_mode:
+                # a drift spawn must satisfy the joint gate's throttle condition from the
+                # first step, otherwise the state is inside the drift region geometrically
+                # but still scores zero and the policy gets no gradient
+                _lo, _hi = 0.35, 0.70
             self.u_cmd[_di, 1] = _lo + (_hi - _lo) * torch.rand(
                 len(_di), device=self.device, dtype=self.u_cmd.dtype)
         # the actor emits a CORRECTION on top of this trim, so store it
@@ -1176,6 +1181,20 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self._steer_prev[is_done] = self.u_cmd[is_done, 0]
         if self.plant_name == "fast":
             self.plant.init_wheels_mask(self.s, is_done)
+            if self.drift_mode:
+                # DRIFT SPAWN.  The joint drift gate pays 12 per step only when the rear is
+                # already overslipping AND the sideslip is large AND correctly signed.  The
+                # gates need |beta| > 0.18 while the policy was measured at 0.003-0.022, so
+                # the gate was unreachable by gradient: to collect it the policy would first
+                # have to do a destabilising transition it never takes.  Seeding the rear
+                # axle with the target slip means the episode STARTS inside the drift
+                # region, so the gradient exists from the first step and the policy's job is
+                # to hold the state rather than to discover it.
+                _v = torch.hypot(self.s[is_done, 3], self.s[is_done, 4])
+                _rad = self.plant.geometry()[2][is_done]      # (k, 4) per wheel
+                _spin = 1.0 + self.drift_kappa_target
+                self.s[is_done, 8] = (_v * _spin / _rad[:, 2]).clamp(min=0.0)
+                self.s[is_done, 9] = (_v * _spin / _rad[:, 3]).clamp(min=0.0)
             self.plant.reset_guess(is_done)
             if self.disturbance_param is not None:
                 self.tyre_scale[is_done] = 1.0
