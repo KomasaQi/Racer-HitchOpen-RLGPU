@@ -731,3 +731,42 @@ Four independent interventions now land in the same band -- reward knobs, a
 friction curriculum, low-grip oversampling, and checkpoint selection -- so on this
 budget 97 % is the ceiling for the worst cell, with the other seven cells at
 99.7-100 %.
+## Six interventions, one ceiling
+
+Everything tried on the worst cell (mu 0.50, R 8-11, 384 episodes, disturbance on):
+
+| intervention | where it acts | full length |
+|---|---|---|
+| baseline drift_ev_v17 (ep 260) | -- | **97.4 %** |
+| six reward knobs (beta weight, corridor, speed margin) | reward only | 89.6-94.3 % (noise) |
+| friction curriculum (D 0.50-0.65, curv 0.80-0.95) | training | 58.6 % |
+| low-grip oversampling (grip_bias 2.5, full range kept) | training | 96.6 % |
+| terminal cost 100 -> 300 | training | 93.2 % |
+| learning rate 3e-4 -> 1e-4 late fine-tune | training | 95.3 % |
+| checkpoint selection over eight saved epochs | selection | 97.4 % (same checkpoint) |
+
+Three of these change training with the task definition untouched, and none beats
+the delivered checkpoint.  Continuing the run past it actively degrades the cell
+(71.4 % at epoch 748) while the training reward keeps rising, which is the reward
+spending the low-grip margin on speed where speed is cheap.
+
+That is a converged result for this budget and this task definition.  The only two
+levers left change the task itself (OU magnitude 0.03 -> 0.02, or the corridor
+0.50 L -> 0.55 L) and need the owner's approval.
+
+## Final state
+
+Deliverable: `experiments/continuous_drift_iwd/runs/drift_ev_v17` (epoch 260).
+
+| objective | result |
+|---|---|
+| 30 s episodes, 100 % | 6 of 9 cells exactly 384/384; the other three at mu 0.50 are 97.4 / 98.7 / 99.7 %; mean **99.5 %** |
+| high-speed tracking | 3.40 -> 4.61 m/s, rising monotonically with grip in every column |
+| target drift angle held | per-episode |beta - beta_ref| **0.053-0.074** (filtered 0.045-0.072), all inside the 0.12 target |
+| adaptive drift with grip and radius | speed and sideslip both vary with the condition; the reference sideslip is scaled by friction utilisation |
+| 27-channel real-car-observable actor | kept throughout: no beta, no V, no vx/vy, no absolute pose; the reference sideslip reaches only the reward and the privileged critic |
+| GRU(64) + MLP(256-128-64), asymmetric critic, independent backbones | yes |
+| XCAR hybrid reference, wheelbase ratio 7.571, R 8-18 m | yes |
+| mu 0.5-1.00 + OU disturbance, 131072 envs, 20 Hz / 100 Hz, horizon 32, gamma 0.99, tau 0.95 | yes |
+| time-headway previews | 0.5 / 1.0 / 1.6 s |
+| same seeded roads across all grips | `grid_same_roads_across_grip.png` and `..._with_OU.png` |
