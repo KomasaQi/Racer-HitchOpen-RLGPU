@@ -706,3 +706,28 @@ every column (3.40 -> 4.61 m/s), which is the adaptive-drift requirement.
 Two attempts to close the last low-grip percentage failed and are recorded above:
 six single-knob evaluation experiments (all inside the +-2.5 % sample noise) and a
 friction curriculum (which collapsed the policy to 58.6 %).
+## Checkpoint selection confirms the plateau
+
+Continuing the proven configuration past epoch 260 made the hard cells worse, not
+better, even though the training reward kept rising: at epoch 748 the worst cell
+reads 71.4 % against 97.4 % at epoch 260.  Scanning the saved checkpoints of that
+run on the two hardest cells (96 episodes each, disturbance on) gives:
+
+| checkpoint | mean over the two hard cells |
+|---|---|
+| ep 100 | 96.9 % |
+| ep 260 | **97.4 %** (the archived deliverable) |
+| ep 310 | 96.4 % |
+| ep 370-420 | 96.3 % |
+| ep 480 | 95.3 % |
+
+So the policy family plateaus at 96-97 % on the hardest cells while the training
+reward keeps climbing: the reward keeps buying speed where speed is cheap (high
+grip) and slowly spends the low-grip margin.  Selecting the checkpoint on the hard
+cells (not on the training reward) recovers the best one, which is the checkpoint
+already archived.
+
+Four independent interventions now land in the same band -- reward knobs, a
+friction curriculum, low-grip oversampling, and checkpoint selection -- so on this
+budget 97 % is the ceiling for the worst cell, with the other seven cells at
+99.7-100 %.
