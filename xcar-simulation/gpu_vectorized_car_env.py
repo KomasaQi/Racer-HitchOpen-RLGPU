@@ -275,6 +275,13 @@ class GPUVectorizedCarEnv:
         if self.plant_name != "fast":
             return action
         u = action.clone()
+        # RESIDUAL action around the trim: a drift is an unstable equilibrium, so an
+        # actor near zero output removes the trim on its first step and the car
+        # departs.  action = correction on top of the per-environment trim.
+        if getattr(self, "u_trim", None) is not None:
+            u[:, 0] = 2.0 * u[:, 0] + self.u_trim[:, 0]
+            u[:, 1] = u[:, 1] + self.u_trim[:, 1]
+            u[:, 2] = u[:, 2] + self.u_trim[:, 2]
         target = torch.clamp(u[:, 0], -self.max_steer, self.max_steer)
         if self.steer_actuator_tau > 0.0:
             # Saturated first order servovalve: the rate is limited BEFORE it is

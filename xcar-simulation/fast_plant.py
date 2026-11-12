@@ -310,17 +310,21 @@ class FastRacerPlant:
         heading (or a large sideslip) those differ a lot and a reset that used
         the world component would start with completely wrong wheel speeds.
         """
-        _, _, radius, _ = self.geometry()
+        _, y_pos, radius, _ = self.geometry()
         psi = s[:, 2]
         vx_body = torch.cos(psi) * s[:, 3] + torch.sin(psi) * s[:, 4]
-        s[:, 6:10] = (1.0 + slip) * vx_body.unsqueeze(1) / radius
+        # a wheel at lateral offset y has contact velocity vx_body - r*y: the yaw term
+        # is about +/-0.36 m/s at r = 0.42 rad/s and cannot be neglected
+        vx_contact = vx_body.unsqueeze(1) - s[:, 5:6] * y_pos
+        s[:, 6:10] = (1.0 + slip) * vx_contact / radius
         return s
 
     def init_wheels_mask(self, s: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-        _, _, radius, _ = self.geometry()
+        _, y_pos, radius, _ = self.geometry()
         psi = s[mask, 2]
         vx_body = torch.cos(psi) * s[mask, 3] + torch.sin(psi) * s[mask, 4]
-        s[mask, 6:10] = vx_body.unsqueeze(1) / radius[mask]
+        vx_contact = vx_body.unsqueeze(1) - s[mask, 5:6] * y_pos[mask]
+        s[mask, 6:10] = vx_contact / radius[mask]
         return s
 
     def settle_wheels(self, s: torch.Tensor) -> torch.Tensor:
