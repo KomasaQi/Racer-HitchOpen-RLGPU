@@ -709,23 +709,60 @@ class FastRacerPlant:
                 ax_sum += extras["ax"]
                 ay_sum += extras["ay"]
             s[:, :6] = s[:, :6] + h * deriv[:, :6]
-            # semi-implicit wheel spin: backward Euler linearised on the tire
-            # longitudinal stiffness, stable at low speed where the slip ratio
-            # denominator makes the wheel mode very stiff
-            j_eff = (extras["wheel_inertia"]
-                     + self.wheel_implicit_weight * h * extras["wheel_radius"] * extras["dFx_domega"])
-            s[:, 6:10] = s[:, 6:10] + h * extras["wheel_net_torque"] / j_eff
-            if keep_wheel_sign:
-                # a wheel may not reverse through zero within one physics step
-                # a wheel may not reverse through zero within one physics step; a
-                # small negative allowance keeps it from being pinned by the clamp
-                # a wheel may not run backwards: if the step would take it negative,
-                # project it onto the rolling speed instead of zero.  Clamping at zero
-                # (or at a small negative) pins the wheel while the tyre keeps braking
-                # it, which is what made the car crawl at low pedal.
-                v_roll = torch.hypot(s[:, 3], s[:, 4]).unsqueeze(1) / extras["wheel_radius"]
-                s[:, 6:10] = torch.where(s[:, 6:10] < 0.0, v_roll,
-                                         torch.clamp(s[:, 6:10], max=2500.0))
+            # Constrained backward-Euler solve for the four wheel speeds.
+            #
+            # The previous update was a linearised one-step formula with a clamp, which
+            # cannot represent a locked wheel: a 240 Nm brake against 0.17 kg m^2 removes
+            # 14 rad/s in one 10 ms substep, so the wheel always overshoots negative, and
+            # whatever projection ran afterwards either restored it to rolling speed (and
+            # thereby erased all braking slip and force) or let it run away.  Measured
+            # consequence: every pedal above 0.10 gave an identical -0.01 m/s per second
+            # while CarSim removes 2.27 m/s at 0.20.
+            #
+            # Solve, per wheel and per substep, with body, loads, steering and drivetrain
+            # torque frozen:
+            #
+            #   G(w) = J (w - w_old) - h [ T_d - T_b - T_rr - R Fx(w) ]  = 0
+            #
+            # G is monotone once the tyre force is clamped at its FIRST peak, so a bracket
+            # and a bisection are enough.  G(0) >= 0 means even the maximum brake cannot
+            # hold a positive wheel speed: the wheel locks at zero, which is exactly what
+            # a brake produces, and Fx is then evaluated on the sliding plateau.
+            w_old = s[:, 6:10].clone()
+            delta_w = extras["delta"]
+            fz_w = extras["fz"]
+            geom = self.geometry()
+            radius_w = geom[2]
+            j_w = extras["wheel_inertia"]
+            # roll_torque is not exported, so recover it from the net torque the
+            # derivative already assembled: net = drive - brake - roll - R*fx
+            # net = drive - brake - roll - R*fx  =>  drive - brake - roll = net + R*fx
+            tau = (extras["wheel_net_torque"] + radius_w * extras["fx_wheel"])
+
+            def g_of(omega):
+                trial = s.clone()
+                trial[:, 6:10] = omega
+                f = self._wheel_forces(trial, delta_w, fz_w, geom)
+                # G = J(w - w_old) - h [drive - brake - roll - R*fx(w)]
+                return j_w * (omega - w_old) - h * (tau - radius_w * f["fx_wheel"])
+
+            g_lo = g_of(torch.zeros_like(w_old))
+            locked = g_lo >= 0.0
+            lo = torch.zeros_like(w_old)
+            hi = (2.0 * w_old + 10.0).clamp(min=10.0)
+            for _ in range(8):
+                g_hi = g_of(hi)
+                need = g_hi < 0.0
+                if not bool(need.any()):
+                    break
+                hi = torch.where(need, 2.0 * hi + 10.0, hi)
+            for _ in range(16):
+                mid = 0.5 * (lo + hi)
+                go_right = g_of(mid) < 0.0
+                lo = torch.where(go_right, mid, lo)
+                hi = torch.where(go_right, hi, mid)
+            omega_new = torch.where(locked, torch.zeros_like(w_old), 0.5 * (lo + hi))
+            s[:, 6:10] = omega_new.clamp(0.0, 2500.0)
             s[:, 2] = torch.atan2(torch.sin(s[:, 2]), torch.cos(s[:, 2]))
         extras["ax"] = ax_sum / n_sub
         extras["ay"] = ay_sum / n_sub
