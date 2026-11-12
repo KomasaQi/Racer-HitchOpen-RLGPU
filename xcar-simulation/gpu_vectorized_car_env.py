@@ -86,6 +86,10 @@ class GPUVectorizedCarEnv:
         self.train = kwargs.get("train", False)
         self.randomize_param = randomize_param or {}
         self.disturbance_param = disturbance_param
+        self.steer_actuator_tau = float(kwargs.get("steer_actuator_tau", 0.0))
+        self.steer_rate_limit = float(kwargs.get("steer_rate_limit", 0.0))
+        self._steer_state = torch.zeros((self.n,), device=self.device)
+        self._steer_prev = torch.zeros((self.n,), device=self.device)
         self.initial_state = initial_state
 
         # ------------------------------------------------------------- timing
@@ -263,6 +267,24 @@ class GPUVectorizedCarEnv:
         if self.plant_name != "fast":
             return action
         u = action.clone()
+        if self.steer_actuator_tau > 0.0 and hasattr(self, "_steer_state"):
+            # Steering actuator: a real wheel cannot jump to a new target every
+            # 50 ms.  Without it the policy learns bang-bang steering and then
+            # chatters (and fails) on any plant that has inertia.
+            target = torch.clamp(u[:, 0], -self.max_steer, self.max_steer)
+            a = self.dt / (self.steer_actuator_tau + self.dt)
+            self._steer_state = self._steer_state + a * (target - self._steer_state)
+            if self.steer_rate_limit > 0.0:
+                step = self.steer_rate_limit * self.dt
+                self._steer_state = torch.clamp(
+                    self._steer_state,
+                    self._steer_prev - step, self._steer_prev + step)
+            self._steer_prev = self._steer_state.clone()
+            u[:, 0] = self._steer_state
+            if self.control_mode == "pedals":
+                u[:, 1] = torch.clamp(u[:, 1], 0.0, 1.0)
+                u[:, 2] = torch.clamp(u[:, 2], 0.0, 1.0)
+            return u
         u[:, 0] = torch.clamp(u[:, 0], -self.max_steer, self.max_steer)
         if self.control_mode == "pedals":
             u[:, 1] = torch.clamp(u[:, 1], 0.0, 1.0)

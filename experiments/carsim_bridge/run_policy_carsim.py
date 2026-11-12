@@ -57,10 +57,20 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     pol = Policy(policy_path, torch.device("cuda:0"))
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device="cuda:0"))
     speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
+    dsteer, prev_steer, sign_flips, prev_dsign = 0.0, None, 0, None
     done_step = steps
     for k in range(steps):
         actor_obs = obs["obs"] if isinstance(obs, dict) else obs
         a = pol.act(actor_obs.float())
+        s_now = float(a[0, 0])
+        if prev_steer is not None:
+            d = s_now - prev_steer
+            dsteer += abs(d)
+            sg = 1 if d > 0 else -1
+            if prev_dsign is not None and sg != prev_dsign and abs(d) > 0.01:
+                sign_flips += 1
+            prev_dsign = sg
+        prev_steer = s_now
         obs, rew, done, info = env.step(a)
         if k % 5 == 0:
             es = env.es.reshape(1, -1)
@@ -75,6 +85,7 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
                 break
     env.close()
     return {"scenario": scenario, "steps": done_step,
+            "dsteer": dsteer / max(n, 1), "flips": sign_flips,
             "seconds": done_step * env.dt,
             "speed": speed / max(n, 1),
             "beta_err": beta_err / max(n, 1),

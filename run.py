@@ -168,6 +168,10 @@ parser.add_argument("--grip-bias", type=float, default=1.0,
                     help=">1 oversamples low friction while keeping the full D range")
 parser.add_argument("--learning-rate", type=float, default=None,
                     help="override the PPO learning rate (default 3e-4)")
+parser.add_argument("--steer-actuator-tau", type=float, default=0.08,
+                    help="first order steering lag in seconds (0 disables)")
+parser.add_argument("--steer-rate-limit", type=float, default=6.0,
+                    help="max road-wheel slew rate, rad/s (0 disables)")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -302,6 +306,8 @@ default_env_config = {
     "random_seed": args.seed,
     "quiet": args.quiet,
     "grip_bias": args.grip_bias,
+    "steer_actuator_tau": args.steer_actuator_tau,
+    "steer_rate_limit": args.steer_rate_limit,
     "aux_reward_decay_steps": args.aux_reward_decay_steps,
     "aux_reward_coef": args.aux_reward_coef,
     "gamma": args.gamma,
