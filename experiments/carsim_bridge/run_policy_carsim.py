@@ -27,7 +27,7 @@ for f in os.listdir(CKPT):
         CKPT_FILE = os.path.join(CKPT, f)
 
 
-def run(scenario, policy_path, steps=600, seed=0):
+def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     torch.manual_seed(seed)
     # reconstruct the trained task configuration, otherwise the actor sees a
     # different preview geometry from the one it was trained with
@@ -43,6 +43,17 @@ def run(scenario, policy_path, steps=600, seed=0):
     env.train = False
     obs = env.reset()
     env.asymmetric = True
+    # rolling entry: training spawned at 4.5 m/s on a drift equilibrium, so let
+    # the car reach that speed in a straight line before the policy takes over.
+    # This is evaluation-only and tests whether the rest start is what breaks it.
+    if entry_speed > 0.0:
+        launch = torch.zeros((1, 3), device="cuda:0")
+        launch[0, 1] = 0.35
+        for _ in range(200):
+            obs, _, done, _ = env.step(launch)
+            v_now = float(env.es.reshape(1, -1)[0, 6])
+            if v_now >= entry_speed:
+                break
     pol = Policy(policy_path, torch.device("cuda:0"))
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device="cuda:0"))
     speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
@@ -70,11 +81,13 @@ def run(scenario, policy_path, steps=600, seed=0):
             "epos": epos / max(n, 1)}
 
 
+ENTRY = float(os.environ.get("CARSIM_ENTRY_SPEED", "0"))
+
 if __name__ == "__main__":
     print("checkpoint:", os.path.basename(CKPT_FILE))
     rows = []
     for sc in ("flat_mu050", "flat_mu075", "flat_mu100"):
-        r = run(sc, CKPT_FILE)
+        r = run(sc, CKPT_FILE, entry_speed=ENTRY)
         rows.append(r)
         print("%-12s %6.1f s  v %5.2f m/s  |dbeta| %.3f  |e_pos| %.2f m"
               % (r["scenario"], r["seconds"], r["speed"], r["beta_err"], r["epos"]))
