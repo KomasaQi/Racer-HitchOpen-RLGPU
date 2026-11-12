@@ -208,9 +208,12 @@ def main():
                                 # loaded from env_config.json but previously dropped:
                                 beta_weight=args.beta_weight,
                                 yaw_weight=args.yaw_weight, yaw_scale=args.yaw_scale,
-                                spawn_beta_frac=args.spawn_beta_frac,
-                                terminal_cost=args.terminal_cost,
-                                smooth_weight=args.smooth_weight,
+                                # these three come from env_config.json rather than
+                                # argparse, so they are read with a default instead of
+                                # attribute access (which crashed the evaluator)
+                                spawn_beta_frac=getattr(args, "spawn_beta_frac", 1.0),
+                                terminal_cost=getattr(args, "terminal_cost", 100.0),
+                                smooth_weight=getattr(args, "smooth_weight", 0.015),
                                 speed_weight=args.speed_weight,
                                 speed_target=(args.speed_target if args.speed_target is not None else args.spawn_speed),
                                 speed_hinge=args.speed_hinge,
