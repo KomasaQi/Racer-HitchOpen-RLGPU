@@ -111,6 +111,7 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
         obs = env.begin_policy_episode()
     pol = Policy(policy_path, torch.device("cuda:0"))
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device="cuda:0"))
+    _solver_t0 = float(env.car.sim._t)
     speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
     trace = []
     dsteer, prev_steer, sign_flips, prev_dsign = 0.0, None, 0, None
@@ -175,7 +176,11 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
         fh.write("t,v,beta,beta_ref,dbeta,epos,steer,thr,brk,wRL,wRR,kx_rear\n")
         for row in trace:
             fh.write(",".join("%.6f" % float(x) for x in row) + "\n")
+    # the task clock and the solver clock are not the same thing: env.dt is the
+    # control period and env.car.sim._t is what CarSim actually integrated.  Report both
+    # so the two can be compared instead of assuming they agree.
     return {"scenario": scenario, "steps": done_step, "reason": _reason,
+            "solver_seconds": float(env.car.sim._t) - _solver_t0,
             "dsteer": dsteer / max(n, 1), "flips": sign_flips,
             "metrics": steering_metrics(applied, dt=env.dt),
             "seconds": done_step * env.dt,
@@ -195,4 +200,6 @@ if __name__ == "__main__":
         print("%-12s %6.1f s  v %5.2f m/s  |dbeta| %.3f  |e_pos| %.2f m  reason %s"
               % (r["scenario"], r["seconds"], r["speed"], r["beta_err"], r["epos"],
                  r.get("reason", "?")))
+        print("             clocks: task %.2f s   solver %.2f s   (%d control steps)"
+              % (r["seconds"], r["solver_seconds"], r["steps"]))
         print("             steer: " + format_metrics(r["metrics"]))
