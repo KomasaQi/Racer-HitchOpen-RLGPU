@@ -3,7 +3,8 @@ import sys
 file_path = os.path.dirname(__file__)
 from rl_games.common import env_configurations, vecenv
 from rl_games.torch_runner import Runner
-from utils.rlgame_utils import RLGPUEnv, RLGPUAlgoObserver
+from utils.rlgame_utils import (RLGPUEnv, RLGPUAlgoObserver,
+                                resume_compatible_checkpoint)
 from envs.fixed_circle_iwd import FixedCircleIWDEnv
 from envs.eight_drift_iwd import EightDriftIWDEnv
 from envs.state_tracker_iwd import StateTrackerIWDEnv
@@ -71,6 +72,10 @@ parser.add_argument("--spawn-speed", type=float, default=6.5,
                     help="drift speed used by the equilibrium spawn [m/s]")
 parser.add_argument("--spawn-beta-frac", type=float, default=1.0,
                     help="fraction of the reference sideslip at spawn (curriculum)")
+parser.add_argument("--spawn-beta-mag", type=float, default=0.15,
+                    help="maximum |beta| for legacy/XCAR-style broad state randomization")
+parser.add_argument("--legacy-zero-prob", type=float, default=0.0,
+                    help="fraction of legacy spawns placed at path start from rest (XCAR used 0.2)")
 parser.add_argument("--speed-weight", type=float, default=0.0,
                     help="weight of the speed regulation term around --speed-target")
 parser.add_argument("--speed-target", type=float, default=None,
@@ -94,6 +99,9 @@ parser.add_argument("--drift-kappa-weight", type=float, default=60.0)
 parser.add_argument("--drift-throttle-gate", type=float, default=0.30)
 parser.add_argument("--drift-throttle-weight", type=float, default=4.0)
 parser.add_argument("--drift-counter-weight", type=float, default=8.0)
+parser.add_argument("--drift-joint-weight", type=float, default=12.0)
+parser.add_argument("--drift-corridor-deadband", type=float, default=0.6,
+                    help="fraction of the failure corridor with no lateral penalty")
 parser.add_argument("--yaw-weight", type=float, default=1.0,
                     help="reward weight of the yaw rate tracking term")
 parser.add_argument("--yaw-scale", type=float, default=0.5, help="normalisation of the yaw error [rad/s]")
@@ -103,6 +111,8 @@ parser.add_argument("--asymmetric", action="store_true",
                     help="privileged critic on a separate network (no shared backbone)")
 parser.add_argument("--resume", type=str, default=None,
                     help="checkpoint to warm start training from (curriculum continuation)")
+parser.add_argument("--warm-start", type=str, default=None,
+                    help="load model/normalizer weights but start a fresh optimizer and epoch count")
 parser.add_argument("--stall-speed", type=float, default=2.0,
                     help="speed below which a car counts as stalled (episode failed)")
 parser.add_argument("--offpath-scale", type=float, default=1.0,
@@ -139,6 +149,8 @@ parser.add_argument("--seq-length", type=int, default=8,
                     help="recurrent chunk length for BPTT; must divide --horizon")
 parser.add_argument("--num-paths", type=int, default=256,
                     help="how many reference geometries the bank holds")
+parser.add_argument("--closed-random-radius", type=float, default=1.0,
+                    help="base radius in XCAR units for the continuing closed-random family")
 parser.add_argument("--curv-smooth", type=int, default=0,
                     help="moving average width (waypoints) applied to the reference curvature")
 parser.add_argument("--preview-scale", type=float, default=1.0,
@@ -174,6 +186,12 @@ parser.add_argument("--alpha-peak", type=float, default=0.12,
 parser.add_argument("--path-refresh-every", type=int, default=8,
                     help="request a fresh path generation every N PPO epochs (0 disables)")
 parser.add_argument("--beta-ref-mode", type=str, default="physics")
+parser.add_argument("--drift-util-lo", type=float, default=0.55)
+parser.add_argument("--drift-util-hi", type=float, default=0.90)
+parser.add_argument("--drift-curve-lo", type=float, default=0.02)
+parser.add_argument("--drift-curve-hi", type=float, default=0.10)
+parser.add_argument("--drift-mu-lo", type=float, default=1.0623)
+parser.add_argument("--drift-mu-hi", type=float, default=2.1246)
 parser.add_argument("--prog-weight", type=float, default=0.2,
                     help="weight on raw path progress; 0 removes the incentive to over-speed")
 parser.add_argument("--grip-range", type=str, default=None,
@@ -190,8 +208,30 @@ parser.add_argument("--steer-deadband", type=float, default=0.0,
                     help="hold the wheel while the target error is below this [rad]")
 parser.add_argument("--brake-margin", type=float, default=0.0,
                     help="brake engages only when it exceeds throttle by this much")
+parser.add_argument("--actuator-dr", action="store_true",
+                    help="per-episode steering/pedal lag, gain, deadband, rate and delay DR")
+parser.add_argument("--pedal-actuator-tau", type=float, default=0.0,
+                    help="nominal first-order throttle/brake lag [s]")
+parser.add_argument("--action-delay-max", type=int, default=2,
+                    help="maximum discrete command-delay steps when actuator DR is enabled")
+parser.add_argument("--sensor-dr", action="store_true",
+                    help="actor-only sensor noise, bias/random-walk, latency and packet dropout")
+parser.add_argument("--sensor-delay-max", type=int, default=2,
+                    help="maximum actor sensor-packet latency in control steps")
+parser.add_argument("--sensor-dropout-prob", type=float, default=0.002,
+                    help="per-step probability of holding the previous sensor packet")
 parser.add_argument("--smooth-weight", type=float, default=0.015,
                     help="weight on the steering/step smoothness term")
+parser.add_argument("--continuing-task", action="store_true",
+                    help="no time-limit success/reset; PPO horizons bootstrap and state continues")
+parser.add_argument("--reward-mode", choices=["legacy", "bounded_joint", "adaptive_envelope"], default="legacy",
+                    help="adaptive_envelope prioritises tracking/speed and rewards drift only when beneficial")
+parser.add_argument("--adaptive-guidance-weight", type=float, default=0.0,
+                    help="A0-only actor-observable pure-pursuit guidance; anneal to zero")
+parser.add_argument("--drift-spawn-spin-frac", type=float, default=1.0,
+                    help="curriculum rear pre-spin fraction; final physical task/eval must use 0")
+parser.add_argument("--drift-spawn-trim-frac", type=float, default=1.0,
+                    help="curriculum installed countersteer/throttle fraction; final entry task uses 0")
 args = parser.parse_args()
 
 if args.train_or_test == "test":
@@ -232,6 +272,8 @@ default_env_config = {
     "drift_throttle_gate": args.drift_throttle_gate,
     "drift_throttle_weight": args.drift_throttle_weight,
     "drift_counter_weight": args.drift_counter_weight,
+    "drift_joint_weight": args.drift_joint_weight,
+    "drift_corridor_deadband": args.drift_corridor_deadband,
     "alive_bonus": args.alive_bonus,
     "stall_speed": args.stall_speed,
     "offpath_scale": args.offpath_scale,
@@ -249,6 +291,7 @@ default_env_config = {
     "obs_privileged": args.obs_privileged,
     "seq_length": args.seq_length,
     "num_paths": args.num_paths,
+    "closed_random_radius": args.closed_random_radius,
     "curv_smooth": args.curv_smooth,
     "preview_scale": args.preview_scale,
     "preview_time": args.preview_time,
@@ -262,6 +305,8 @@ default_env_config = {
     "spawn_mode": args.spawn_mode,
     "spawn_speed": args.spawn_speed,
     "spawn_beta_frac": args.spawn_beta_frac,
+    "spawn_beta_mag": args.spawn_beta_mag,
+    "legacy_zero_prob": args.legacy_zero_prob,
     "spawn_speed_min": (args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
     "spawn_deficit_frac": args.spawn_deficit_frac,
     "speed_target_mode": args.speed_target_mode,
@@ -269,6 +314,12 @@ default_env_config = {
     "ackermann_lo": args.ackermann_lo,
     "ackermann_hi": args.ackermann_hi,
     "beta_ref_mode": args.beta_ref_mode,
+    "drift_util_lo": args.drift_util_lo,
+    "drift_util_hi": args.drift_util_hi,
+    "drift_curve_lo": args.drift_curve_lo,
+    "drift_curve_hi": args.drift_curve_hi,
+    "drift_mu_lo": args.drift_mu_lo,
+    "drift_mu_hi": args.drift_mu_hi,
     "beta_max": args.beta_max,
     "alpha_peak": args.alpha_peak,
     "prog_weight": args.prog_weight,
@@ -316,26 +367,39 @@ default_env_config = {
         # 1.0, so 1.25 is dropped.  B and C keep the shape spread but are not
         # widened further (an uncalibrated tyre does not need more shape spread).
         "ev_drift": {
-            # Nominal B is 6.0 after the traction calibration.  The old [8, 12] range
-            # silently restored the pre-calibration tyre on every reset, which is
-            # why v31/v32 were not training on the corrected plant at all.
-            "B": [4.8, 7.2],
-            "C": [1.7, 2.1],
+            # CarSim-table calibrated centre with model uncertainty.  These are
+            # tensorised parameters: unlike the former B/C ranges, they actually
+            # change each environment's tire forces.
+            "bx": [26.8, 32.8], "cx": [1.78, 1.94], "ex": [0.94, 1.02],
+            "by": [15.6, 19.0], "cy": [1.76, 1.92], "ey": [0.91, 1.00],
             # The vehicle itself must be randomised around the calibrated values,
-            # otherwise the policy fits 1514.8 kg / Iz 1605.3 / 0.332 m exactly and
+            # otherwise the policy fits 1461.4 kg / Iz 1693.47 / nominal radii exactly and
             # cannot transfer to a real car that differs by a few percent.
-            "m": [1470.0, 1560.0],        # +/-3 % about 1514.8
-            "Iz": [1480.0, 1730.0],       # +/-8 % about 1605.3
-            "IwF": [0.15, 0.19],          # +/-12 % about 0.17
-            "IwR": [0.15, 0.19],
+            "m": [1417.0, 1505.0],        # +/-3 % about 1461.4
+            "Iz": [1558.0, 1829.0],       # +/-8 % about 1693.47
+            "IwF": [1.55, 1.99],          # +/-12 % about ISPIN front 1.77
+            "IwR": [2.00, 2.54],          # +/-12 % about ISPIN rear 2.27
             "Tf": [1.700, 1.740],
             "Tr": [1.580, 1.620],
             "rF": [0.3290, 0.3350],       # +/-1 % about 0.332
-            "rR": [0.3290, 0.3350],
-            "load_sensitivity": [0.0, 0.25],
-            "drive_efficiency": [0.88, 0.95],
+            "rR": [0.3435, 0.3505],       # +/-1 % about rear RRE 0.347
+            "load_sensitivity": [0.12, 0.19],
+            "combined_slip_blend": [0.35, 0.65],
+            "tire_stiffness_grip_exponent_x": [0.10, 0.30],
+            "tire_stiffness_grip_exponent_y": [0.30, 0.50],
+            # CarSim's 31-point LSD carpet collapses to
+            # |dT|=90.09*(|dn|/60 rpm)^0.5.  Randomise the identifiable
+            # physical law, not individual lookup-table cells.
+            "lsd_torque_ref": [72.0, 108.0],
+            "lsd_exponent": [0.40, 0.60],
+            "lsd_tau_max": [240.0, 360.0],
+            "drive_efficiency": [0.975, 0.995],
+            "motor_efficiency": [0.90, 1.10],
             "max_power_w": [345600.0, 422400.0],  # +/-10 % about 384 kW
-            "D": [0.50, 1.00],
+            # Three calibrated road anchors are 1.0623 / 1.59345 / 2.1246.
+            # Keep 10 % margin outside their envelope; the earlier exact-endpoint
+            # range did not test extrapolation beyond flat_mu050/100.
+            "D": [0.95607, 2.33706],
         },
         "ev_wide": {
             "B": [7., 13.],
@@ -355,8 +419,19 @@ default_env_config = {
     "steer_actuator_tau": args.steer_actuator_tau,
     "steer_rate_limit": args.steer_rate_limit,
     "smooth_weight": args.smooth_weight,
+    "continuing_task": args.continuing_task,
+    "reward_mode": args.reward_mode,
+    "adaptive_guidance": args.adaptive_guidance_weight,
+    "drift_spawn_spin_frac": args.drift_spawn_spin_frac,
+    "drift_spawn_trim_frac": args.drift_spawn_trim_frac,
     "steer_deadband": args.steer_deadband,
     "brake_margin": args.brake_margin,
+    "actuator_dr": args.actuator_dr,
+    "pedal_actuator_tau": args.pedal_actuator_tau,
+    "action_delay_max": args.action_delay_max,
+    "sensor_dr": args.sensor_dr,
+    "sensor_delay_max": args.sensor_delay_max,
+    "sensor_dropout_prob": args.sensor_dropout_prob,
     "aux_reward_decay_steps": args.aux_reward_decay_steps,
     "aux_reward_coef": args.aux_reward_coef,
     "gamma": args.gamma,
@@ -416,8 +491,8 @@ if args.sigma_per_dim:
         runner restores the checkpoint afterwards, which overwrites them on resume.
         """
 
-        def __init__(self, std, path_refresh_every=8):
-            super().__init__(path_refresh_every=path_refresh_every)
+        def __init__(self, std, path_refresh_every=8, warm_start=None):
+            super().__init__(path_refresh_every=path_refresh_every, warm_start=warm_start)
             self.std = std
 
         def after_init(self, algo):
@@ -436,9 +511,13 @@ if args.sigma_per_dim:
 else:
     PerDimSigmaObserver = None
 
-observer = (PerDimSigmaObserver(_std, path_refresh_every=args.path_refresh_every)
+if args.resume is not None and args.warm_start is not None:
+    parser.error("--resume and --warm-start are mutually exclusive")
+observer = (PerDimSigmaObserver(_std, path_refresh_every=args.path_refresh_every,
+                                warm_start=args.warm_start)
             if args.sigma_per_dim
-            else RLGPUAlgoObserver(path_refresh_every=args.path_refresh_every))
+            else RLGPUAlgoObserver(path_refresh_every=args.path_refresh_every,
+                                   warm_start=args.warm_start))
 runner = Runner(observer)
 file_path = os.path.dirname(__file__)
 with open(os.path.join(file_path, "runner_config.yaml")) as f:
@@ -528,7 +607,7 @@ if __name__ == "__main__":
     if args.train_or_test == "train":
         run_args = {'train': True}
         if args.resume is not None:
-            run_args['checkpoint'] = args.resume
+            run_args['checkpoint'] = resume_compatible_checkpoint(args.resume)
         runner.run(run_args)
     elif args.train_or_test == "test":
         checkpoint_dir = f"runs/{full_experiment_name}/nn"

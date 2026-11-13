@@ -90,6 +90,10 @@ class GPUVectorizedCarEnv:
         self.brake_margin = float(kwargs.get("brake_margin", 0.0))
         self.steer_actuator_tau = float(kwargs.get("steer_actuator_tau", 0.0))
         self.steer_rate_limit = float(kwargs.get("steer_rate_limit", 0.0))
+        self.pedal_actuator_tau = float(kwargs.get("pedal_actuator_tau", 0.0))
+        self.actuator_dr = bool(kwargs.get("actuator_dr", False))
+        self.action_delay_max = int(kwargs.get("action_delay_max", 2 if self.actuator_dr else 0))
+        self.action_delay_max = max(self.action_delay_max, 0)
         self._steer_state = torch.zeros((self.n,), device=self.device)
         self._steer_prev = torch.zeros((self.n,), device=self.device)
         self.initial_state = initial_state
@@ -105,15 +109,12 @@ class GPUVectorizedCarEnv:
         if plant == "iwd":
             self.substeps = 1
         else:
-            # The wheel/tyre/brake solve is backward Euler and unconditionally stable, so
-            # one substep reproduces the five-substep brake response to within 3 %
-            # (-0.51 / -0.90 / -1.68 against -0.53 / -0.93 / -1.74 m/s per second at
-            # 0.05 / 0.10 / 0.20 pedal) for one eighth of the cost: 49 ms instead of
-            # 387 ms per control step at 2048 environments.
-            self.substeps = 1
-            # one substep means the physics step IS the control step; the wheel solve is
-            # implicit so this is stable, and it is 8x cheaper than five substeps
-            self.physics_dt = self.dt
+            # The wheel root is implicit, but motor torque/power and body/load
+            # transfer are frozen within each root solve.  At one 50 ms step the
+            # rear wheel alternated between ~100 m/s and rolling speed on adjacent
+            # control ticks.  Keep the advertised 100 Hz plant integration.
+            ratio = self.dt / self.physics_dt
+            self.substeps = max(int(round(ratio)), 1)
             if abs(self.substeps * self.physics_dt - self.dt) > 1e-9:
                 raise ValueError("dt must be an integer multiple of physics_dt")
 
@@ -156,6 +157,19 @@ class GPUVectorizedCarEnv:
             self.s[:, :6] = torch.as_tensor(initial_state, device=self.device, dtype=torch.float32)
         self.u = torch.zeros((self.n, self.num_actions), device=self.device)
         self.u_cmd = self.u.clone()
+        # Per-environment actuator parameters.  With actuator_dr disabled these
+        # are exact broadcasts of the legacy scalar configuration.
+        self._steer_tau_env = torch.full((self.n,), self.steer_actuator_tau, device=self.device)
+        self._steer_rate_env = torch.full((self.n,), self.steer_rate_limit, device=self.device)
+        self._steer_deadband_env = torch.full((self.n,), self.steer_deadband, device=self.device)
+        self._pedal_tau_env = torch.full((self.n,), self.pedal_actuator_tau, device=self.device)
+        self._steer_gain_env = torch.ones(self.n, device=self.device)
+        self._throttle_gain_env = torch.ones(self.n, device=self.device)
+        self._brake_gain_env = torch.ones(self.n, device=self.device)
+        self._action_delay_steps = torch.zeros(self.n, dtype=torch.long, device=self.device)
+        self._action_delay_buffer = torch.zeros(
+            (self.action_delay_max + 1, self.n, self.num_actions), device=self.device)
+        self._pedal_state = torch.zeros((self.n, 2), device=self.device)
         self.es = None
         self.extras = None
         self.current_obs = None
@@ -217,11 +231,38 @@ class GPUVectorizedCarEnv:
             # exactly what makes a policy impossible to transfer.
             ranges = dict(self.randomize_param)
             self.plant.randomize(env_mask, override=override, ranges=ranges)
+            self._randomize_actuators(env_mask)
         else:
             rand_item_ = lambda key, target: self.randomize_item_(env_mask, override, key, target)
             rand_item_("B", self.p_tyre[:, 0])
             rand_item_("C", self.p_tyre[:, 1])
             rand_item_("D", self.p_tyre[:, 2])
+
+    def _randomize_actuators(self, env_mask):
+        """Draw bounded physical actuator uncertainty for selected episodes."""
+        n = int(env_mask.sum().item())
+        if n == 0:
+            return
+        if not self.actuator_dr:
+            self._steer_tau_env[env_mask] = self.steer_actuator_tau
+            self._steer_rate_env[env_mask] = self.steer_rate_limit
+            self._steer_deadband_env[env_mask] = self.steer_deadband
+            self._pedal_tau_env[env_mask] = self.pedal_actuator_tau
+            self._steer_gain_env[env_mask] = 1.0
+            self._throttle_gain_env[env_mask] = 1.0
+            self._brake_gain_env[env_mask] = 1.0
+            self._action_delay_steps[env_mask] = 0
+            return
+        rand = lambda lo, hi: lo + (hi - lo) * torch.rand(n, device=self.device)
+        self._steer_tau_env[env_mask] = rand(0.05, 0.15)
+        self._steer_rate_env[env_mask] = rand(0.8, 2.5)
+        self._steer_deadband_env[env_mask] = rand(0.0, 0.010)
+        self._pedal_tau_env[env_mask] = rand(0.04, 0.15)
+        self._steer_gain_env[env_mask] = rand(0.95, 1.05)
+        self._throttle_gain_env[env_mask] = rand(0.90, 1.10)
+        self._brake_gain_env[env_mask] = rand(0.90, 1.10)
+        self._action_delay_steps[env_mask] = torch.randint(
+            0, self.action_delay_max + 1, (n,), device=self.device)
 
     # ------------------------------------------------------------------ hooks
     def obs(self):
@@ -259,6 +300,8 @@ class GPUVectorizedCarEnv:
             self.s.zero_()
         self.u.zero_()
         self.u_cmd.zero_()
+        self._pedal_state.zero_()
+        self._action_delay_buffer.zero_()
         if self.plant_name == "fast":
             self.plant.init_wheels(self.s)
             self.plant.reset_guess()
@@ -285,13 +328,38 @@ class GPUVectorizedCarEnv:
         u = action.clone()
         # RESIDUAL action around the trim: a drift is an unstable equilibrium, so an
         # actor near zero output removes the trim on its first step and the car
-        # departs.  action = correction on top of the per-environment trim.
+        # departs.  During the seeded curriculum action is a correction on top of
+        # the per-environment trim.  The action has ALREADY been affinely mapped by
+        # rl_games into the declared physical action space, so steering must not be
+        # scaled again here.  With trim=0 (deployment/final curriculum), the actor's
+        # steering channel is exactly road-wheel angle in radians.
         if getattr(self, "u_trim", None) is not None:
-            u[:, 0] = 2.0 * u[:, 0] + self.u_trim[:, 0]
+            u[:, 0] = u[:, 0] + self.u_trim[:, 0]
             u[:, 1] = u[:, 1] + self.u_trim[:, 1]
             u[:, 2] = u[:, 2] + self.u_trim[:, 2]
-        target = torch.clamp(u[:, 0], -self.max_steer, self.max_steer)
-        if self.steer_actuator_tau > 0.0:
+        target = torch.clamp(u[:, 0] * self._steer_gain_env,
+                             -self.max_steer, self.max_steer)
+        if self.control_mode == "pedals":
+            q = torch.clamp(u[:, 1] * self._throttle_gain_env, 0.0, 1.0)
+            b = torch.clamp(u[:, 2] * self._brake_gain_env, 0.0, 1.0)
+            longitudinal = q - b
+            u[:, 1] = torch.clamp(longitudinal, min=0.0)
+            u[:, 2] = torch.clamp(-longitudinal - self.brake_margin, min=0.0)
+        else:
+            u[:, 1:] = torch.clamp(u[:, 1:], 0.0, 7.0)
+        u[:, 0] = target
+
+        # Command transport delay is sampled per episode.  Fill the buffer with
+        # the installed trim on reset so delay never injects an artificial zero.
+        if self.action_delay_max > 0:
+            self._action_delay_buffer[1:] = self._action_delay_buffer[:-1].clone()
+        self._action_delay_buffer[0] = u
+        env_i = torch.arange(self.n, device=self.device)
+        u = self._action_delay_buffer[self._action_delay_steps, env_i].clone()
+        target = u[:, 0]
+
+        active_steer = self._steer_tau_env > 0.0
+        if bool(active_steer.any()):
             # Saturated first order servovalve: the rate is limited BEFORE it is
             # integrated, so a step cannot cross the target and the actuator can
             # never be faster than the slew limit.
@@ -299,33 +367,31 @@ class GPUVectorizedCarEnv:
             # driver does and what removes sub-limit dither without touching real
             # countersteer
             error = target - self._steer_state
-            error = torch.where(error.abs() <= self.steer_deadband,
+            error = torch.where(error.abs() <= self._steer_deadband_env,
                                 torch.zeros_like(error), error)
             effective_target = self._steer_state + error
-            rate = error / self.steer_actuator_tau
-            if self.steer_rate_limit > 0.0:
-                rate = torch.clamp(rate, -self.steer_rate_limit, self.steer_rate_limit)
+            rate = error / self._steer_tau_env.clamp(min=1e-6)
+            limit = self._steer_rate_env
+            rate = torch.where(limit > 0.0, torch.maximum(torch.minimum(rate, limit), -limit), rate)
             nxt = self._steer_state + self.dt * rate
             nxt = torch.where(effective_target >= self._steer_state,
                               torch.minimum(nxt, effective_target),
                               torch.maximum(nxt, effective_target))
-            self._steer_state = nxt
+            self._steer_state = torch.where(active_steer, nxt, target)
             self._steer_prev = self._steer_state.clone()
             u[:, 0] = self._steer_state
         else:
             u[:, 0] = target
         if self.control_mode == "pedals":
-            u[:, 1] = torch.clamp(u[:, 1], 0.0, 1.0)
-            u[:, 2] = torch.clamp(u[:, 2], 0.0, 1.0)
-            q, b = u[:, 1].clone(), u[:, 2].clone()
-            # only the difference is physical, so (q, b) and (q+c, b+c) are the
-            # same command and small taps are free.  A margin means the brake only
-            # engages once it clearly exceeds the throttle, killing the taps.
-            longitudinal = q - b
-            u[:, 1] = torch.clamp(longitudinal, min=0.0)
-            u[:, 2] = torch.clamp(-longitudinal - self.brake_margin, min=0.0)
-        else:
-            u[:, 1:] = torch.clamp(u[:, 1:], 0.0, 7.0)
+            target_pedal = u[:, 1:3]
+            active_pedal = self._pedal_tau_env > 0.0
+            alpha = (self.dt / self._pedal_tau_env.clamp(min=self.dt)).clamp(max=1.0)
+            nxt = self._pedal_state + alpha.unsqueeze(1) * (target_pedal - self._pedal_state)
+            self._pedal_state = torch.where(active_pedal.unsqueeze(1), nxt, target_pedal)
+            # Apply the same exclusive net-demand contract after actuator lag.
+            longitudinal = self._pedal_state[:, 0] - self._pedal_state[:, 1]
+            u[:, 1] = torch.clamp(longitudinal, min=0.0, max=1.0)
+            u[:, 2] = torch.clamp(-longitudinal - self.brake_margin, min=0.0, max=1.0)
         return u
 
     def step(self, u, override_s=None):

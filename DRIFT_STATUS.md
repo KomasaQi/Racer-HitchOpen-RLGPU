@@ -1,5 +1,11 @@
 ﻿# DRIFT: current status after 51 rounds
 
+> **2026-11-13 审计更正：本文件以下“flat_mu 的速度控制器拥有油门”结论已被推翻。**
+> `INSTALL_SPEED_CONTROLLER` 只表示模块存在；三个原始 `flat_mu*` 的 `OPT_SC 0` 表示控制器关闭。
+> 官方求解器开环实测油门 0 与 0.5 的响应显著不同，转向/制动也有权。旧 `rl_rest`
+> 失败来自生成器路径缺少尾反斜杠及误删 Control 参数块，不是必须删除驾驶员控制器。
+> 当前权威状态和原始 CSV 见 `../Codex_Drift_Audit_2026-11-13/`；以下正文仅保留为历史记录。
+
 ## The blocker, found at round 46-50 and still open
 
 **The CarSim vehicle has its own speed controller and it owns the throttle.**

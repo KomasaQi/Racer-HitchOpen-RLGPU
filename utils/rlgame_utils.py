@@ -33,9 +33,36 @@ Original source: https://github.com/isaac-sim/IsaacGymEnvs
 """
 
 import torch
+from collections import OrderedDict
+from pathlib import Path
 from rl_games.common import env_configurations, vecenv
 from rl_games.common.algo_observer import AlgoObserver
 from rl_games.algos_torch import torch_ext
+
+
+def normalise_compiled_central_state(state):
+    """Remove the torch.compile wrapper segment from central-value keys only.
+
+    rl_games restores the actor after compiling it (so actor ``_orig_mod`` keys
+    are correct) but restores the asymmetric central-value model before its
+    compile wrapper exists.  Its saved ``model._orig_mod.*`` keys must therefore
+    become ``model.*``.  Parameter values and optimizer state are untouched.
+    """
+    return OrderedDict((key.replace("model._orig_mod.", "model."), value)
+                       for key, value in state.items())
+
+
+def resume_compatible_checkpoint(path):
+    """Return a checkpoint path loadable by asymmetric rl_games + torch.compile."""
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    state = payload.get("assymetric_vf_nets")
+    if not state or not any("model._orig_mod." in key for key in state):
+        return path
+    payload["assymetric_vf_nets"] = normalise_compiled_central_state(state)
+    source = Path(path)
+    output = source.with_name(source.stem + ".resume_compat" + source.suffix)
+    torch.save(payload, output)
+    return str(output)
 
 class RLGPUEnv(vecenv.IVecEnv):
     def __init__(self, config_name, num_actors, **kwargs):
@@ -71,8 +98,9 @@ class RLGPUEnv(vecenv.IVecEnv):
 class RLGPUAlgoObserver(AlgoObserver):
     """Allows us to log stats from the env along with the algorithm running stats. """
 
-    def __init__(self, path_refresh_every=8):
+    def __init__(self, path_refresh_every=8, warm_start=None):
         self.path_refresh_every = int(path_refresh_every)
+        self.warm_start = warm_start
 
     def after_init(self, algo):
         self.algo = algo
@@ -80,6 +108,18 @@ class RLGPUAlgoObserver(AlgoObserver):
         self.ep_infos = []
         self.direct_info = {}
         self.writer = self.algo.writer
+        if self.warm_start:
+            payload = torch.load(self.warm_start, map_location=self.algo.ppo_device,
+                                 weights_only=False)
+            model_state = OrderedDict(
+                (key.replace("_orig_mod.", ""), value)
+                for key, value in payload["model"].items())
+            self.algo.model.load_state_dict(model_state, strict=True)
+            central = payload.get("assymetric_vf_nets")
+            if central is not None and getattr(self.algo, "central_value_net", None) is not None:
+                self.algo.central_value_net.load_state_dict(
+                    normalise_compiled_central_state(central), strict=True)
+            print("warm-started model weights (fresh optimizer) from", self.warm_start)
 
     def process_infos(self, infos, done_indices):
         assert isinstance(infos, dict), "RLGPUAlgoObserver expects dict info"

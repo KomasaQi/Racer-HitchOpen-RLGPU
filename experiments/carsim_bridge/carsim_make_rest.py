@@ -1,13 +1,13 @@
-"""Build a CarSim scenario that starts from REST with no driver model.
+"""Build an optional self-contained CarSim scenario that starts from rest.
 
-CarSim's stock flat procedures initialise the car at 200 km/h and let a closed-loop
-speed controller drive it.  For RL we need the car standing still with only the
-three import channels acting on it, so this script:
+The project's normal ``flat_mu*`` scenarios already have ``OPT_SC 0`` and give
+the three imports full authority.  This utility is kept only for reproducible
+experiments that need a stable local copy of the expanded run.
 
   1. copies the expanded Run_all.par of a stock scenario,
-  2. removes the closed-loop steering driver model and the speed controller,
+  2. preserves all parameter blocks (some control blocks also define units/macros),
   3. forces a zero initial speed,
-  4. writes a simfile that points at the patched par.
+  4. writes a simfile that points at the copied par.
 
 Everything stays inside D:\\carsim_wm_py so the stock database is untouched.
 """
@@ -28,10 +28,8 @@ SCENARIOS = {
 
 # procedure par that carries the driver model / speed controller links
 CONTROL_LINK = re.compile(r"^(ENTER_PARSFILE|PARSFILE)\s+Control[\\/]", re.I)
-# INSTALL_SPEED_CONTROLLER was MISSING from this block list, so the generated run kept
-# CarSim's own speed controller installed.  It then owned the throttle: applying 0.2, 0.6, 20
-# or 60 through the second import produced an identical trajectory (v 4.05) because the
-# controller, not the pedal, was driving.  That is why no drift ever transferred to CarSim.
+# INSTALL_SPEED_CONTROLLER may be removed for a minimal run, although OPT_SC 0
+# already disables it in the source flat scenarios.
 CONTROL_BLOCK = re.compile(r"^(INSTALL_DM_PATH_FOLLOWER|INSTALL_DM_IMPORTS|"
                            r"INSTALL_SPEED_CONTROLLER|OPT_DM|LTARG_|CREATE_PATH_OBJ|"
                            r"OPT_STR_BY_TRQ|OPT_SPEED_CONTROLLER)\b")
@@ -47,10 +45,10 @@ def patch_par(src_par, dst_par):
         if not s or s.startswith("#") or s.startswith("*"):
             out.append(line)
             continue
-        if CONTROL_LINK.match(s) or CONTROL_BLOCK.match(s):
-            out.append("! removed for RL: " + line)
-            skipped += 1
-            continue
+        # Do not remove Control blocks.  OPT_SC 0 / OPT_DM 0 already disable the
+        # active controllers, while those parsfiles also define units such as
+        # S/M.  Removing the whole block produced a run that parsed the simfile
+        # but stopped at T=0 with an undefined-unit error.
         out.append(line)
     text = "".join(out)
     # zero initial speed, short minimum stop time
@@ -69,8 +67,8 @@ def patch_par(src_par, dst_par):
 SIM_TEMPLATE = """SIMFILE
 
 SET_MACRO $(ROOT_FILE_NAME)$ {root}
-SET_MACRO $(OUTPUT_PATH)$ {outdir}
-SET_MACRO $(WORK_DIR)$ {outdir}
+SET_MACRO $(OUTPUT_PATH)$ {outdir}\\
+SET_MACRO $(WORK_DIR)$ {outdir}\\
 SET_MACRO $(OUTPUT_FILE_PREFIX)$ $(WORK_DIR)$Results\\$(ROOT_FILE_NAME)$\\LastRun
 
 FILEBASE $(OUTPUT_FILE_PREFIX)$

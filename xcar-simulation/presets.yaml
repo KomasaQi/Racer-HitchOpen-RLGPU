@@ -169,51 +169,93 @@ xcar:
 # ---------------------------------------------------------------------------
 fullsize_racecar_ev:
   parameters:
-    lF: 1.455
-    lR: 1.195
-    # Matched to the CarSim vehicle ("Exotic Racecar, Mid-Engine"), read from its
-    # own pars: sprung mass 1200 kg, unsprung 65.7 kg front and 91.7 kg rear per
-    # corner, so the total is 1514.8 kg.  Iz is the sprung 1065.2 plus the unsprung
-    # contributions about the CG (2*65.7*1.455^2 + 2*91.7*1.195^2) = 1605.3 kg m^2.
-    # The earlier 1987 kg figure came from summing Fz at 200 km/h, which includes
-    # aerodynamic downforce -- that was wrong.
+    # CarSim LastRun_echo computed TOTAL-LADEN quantities.  Use these directly
+    # because FastPlant has no sprung/unsprung bodies.  The old 1514.8 kg value
+    # counted M_US as a per-corner mass although it is an axle subtotal, and also
+    # missed that tire masses are added separately by CarSim.
+    lF: 1.46257356
+    lR: 1.18742644
     Tf: 1.720
     Tr: 1.600
-    m: 1514.8
-    h: 0.375
+    m: 1461.4
+    h: 0.373483988
     g: 9.81
-    Iz: 1605.3
+    Iz: 1693.469182
+    # CarSim LastRun_echo: front RRE=332 mm, rear RRE=347 mm.  The previous
+    # shared 332 mm radius inverted low-slip rear kappa at ordinary speeds.
     rF: 0.33200
-    rR: 0.33200
-    # CarSim wheel spin inertia is IW = 0.17 kg m^2 for every wheel; the previous
-    # 1.9 / 2.2 were 11x too high, which changes wheel-spin transients, i.e. exactly
-    # the four wheel-speed channels the actor sees.
-    IwF: 0.17
-    IwR: 0.17
-    # isotropic XCAR tire, peak at ~0.11 combined slip
-    # throttle-map evidence: with B 10 the GPU car peaks at 15.0 m/s at 0.45 throttle
-    # and then gets SLOWER (13.9 at 0.60, 12.4 at 1.00) because the rear axle spins;
-    # CarSim rises monotonically to 21.8 m/s.  B 6, i.e. a later force peak, plus a
-    # stronger rear axle reproduces the monotonic rise: 17.5 / 22.0 / 23.4 / 23.8.
-    B: 6.0
-    C: 1.90
-    D: 1.00
-    E: 0.97
+    rR: 0.34700
+    # IW=0.17 is the bare wheel only.  CarSim's computed ISPIN includes wheel+tire
+    # and is the correct lumped inertia for FastPlant, which has no separate tire
+    # rotational body: 1.77 front, 2.27 rear kg m^2.
+    IwF: 1.77
+    IwR: 2.27
+    # Compact fit to the expanded CarSim pure-slip carpets.  Longitudinal peak
+    # kappa ~= 0.0675; lateral peak alpha ~= 6.62 deg.
+    B: 29.7734
+    C: 1.85901
+    D: 2.12460
+    E: 0.980398
+    bx: 29.7734
+    cx: 1.85901
+    ex: 0.980398
+    by: 17.2982
+    cy: 1.84047
+    ey: 0.955634
     tyre_scale_front: 1.00
-    tyre_scale_rear: 1.40
+    tyre_scale_rear: 1.00
     slip_v_floor: 1.0
     slip_alpha_v_floor: 1.0
-    load_sensitivity: 0.0
+    # Final measured CarSim longitudinal-slip carpet point; CarSim uses flat
+    # extrapolation beyond it.  This is deliberately not the first peak (~0.068).
+    slip_force_plateau: 0.51
+    # The lateral carpet likewise ends/flat-extrapolates at 25.5 degrees.
+    slip_alpha_force_plateau_rad: 0.4450589593
+    kappa_peak: 0.067524
+    alpha_peak_rad: 0.115537
+    # Fitted on true CarSim power-drift data.  The old shared ellipse had 0.268
+    # normalized force RMSE; the documented normalized/theoretical transition
+    # reduces it to 0.099 and improves all 36 held-out SI signal groups.
+    # Compact analytic B/C/E curves plus one combined-slip blend.  CarSim
+    # tables are used offline for calibration only, never queried at runtime.
+    combined_slip_model: compact_transition
+    combined_slip_blend: 0.49
+    # Road friction lowers peak force more than origin stiffness.  These two
+    # compact exponents passed force, local-flow and full-maneuver A/B gates.
+    tire_mu_reference: 2.12460
+    tire_stiffness_grip_exponent_x: 0.20
+    tire_stiffness_grip_exponent_y: 0.40
+    load_sensitivity: 0.15358
+    load_sensitivity_model: power
+    fz_ref_front: 3460.843
+    fz_ref_rear: 5537.353
     roll_share_front: 0.55
     drivetrain: rwd
     gear_ratio: 3.44
-    drive_efficiency: 0.92
+    drive_efficiency: 0.99
+    motor_efficiency: 1.00
+    throttle_power_gain: 1.00
+    throttle_power_rolloff: 0.00
+    # Expanded CarSim pars: IMOTOR/I_MOTOR=0.0226, IDS=0.013,
+    # IHS_LR=IHS_RR=0.009 kg m^2.
+    motor_inertia: 0.0226
+    diff_input_inertia: 0.013
+    halfshaft_inertia: 0.009
+    # Expanded HEV/battery pars at reset SOC=.8: 120 series packs,
+    # VOC=7.8078 V/cell, Vmin=6 V/cell, Rdischarge=1 mOhm/cell.
+    battery_voc_v: 936.936
+    battery_min_voltage_v: 720.0
+    battery_resistance_ohm: 0.12
+    battery_power_limit_scale: 1.0
+    use_battery_torque_envelope: true
     # A rear-drive car that can hold 20-40 degrees of sideslip needs its rear axle to
     # saturate laterally well before the front, and enough power to keep spinning it.
     # Measured: with mu_y_rear 0.85 the sustained sideslip was pinned at 0.14-0.16 rad
     # across every speed, tyre model and reward weight tried.
-    mu_y_ratio_rear: 0.65
-    max_power_w: 500000.
+    mu_y_ratio: 1.00
+    mu_y_ratio_rear: 1.00
+    # CarSim PWR_HEV_DRV_MAX / PWR_EV_MODE / driver-demand table: 384 kW.
+    max_power_w: 384000.
     motor: [[0., 2400.], [250., 2400.], [500., 2400.], [750., 2400.],
             [1000., 2400.], [1250., 2400.], [1500., 2400.], [1600., 2293.62],
             [1800., 2038.77], [2000., 1834.89], [2500., 1467.91], [3000., 1223.26],
@@ -223,7 +265,14 @@ fullsize_racecar_ev:
             [9200., 398.89]]
     coast_torque_nm: 0.0
     wheel_speed_kp: 600.
-    lsd_kd: 20.0
+    # CarSim M_DIFF_VISC_TABLE is an odd generalized-viscous law:
+    # |T_L-T_R| = 90.09*(|n_L-n_R|/60 rpm)^0.5 N m.  The 31-point carpet is
+    # used only to identify these two compact physical parameters.
+    lsd_model: power_law
+    lsd_ref_rpm: 60.0
+    lsd_torque_ref: 90.09
+    lsd_exponent: 0.50
+    lsd_kd: 20.0  # legacy linear model only
     lsd_tau_max: 300.0
     brake_pressure_max_mpa: 6.0
     # Calibrated against CarSim (measured -0.39 / -1.02 / -2.27 m/s per second at
@@ -246,3 +295,6 @@ fullsize_racecar_ev:
     aero_zp: 0.0
     rolling_resistance: 0.012
     max_steer_rad: 0.45
+    # Complete micro/macro CarSim gate: <0.3% aggregate NRMSE change versus
+    # 16 iterations, while improving 20k-env throughput by about 24%.
+    wheel_solver_bisection_iters: 12

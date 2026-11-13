@@ -94,6 +94,39 @@ class TrajGen:
         waypoints = torch.stack((x, y, vel_dir, kappa), dim=2)
 
         return waypoints
+
+    def generate_closed_random_waypoints(self, n: int, radius: float = 1.0) -> torch.Tensor:
+        """Smooth periodic route family for genuinely continuing rollouts.
+
+        Low-amplitude Fourier modes perturb a circle while retaining exact
+        positional/tangent/curvature continuity at the seam.  Coefficients are
+        bounded to avoid self intersections.  Clockwise and counter-clockwise
+        routes are both represented.
+        """
+        theta = torch.arange(self.num_waypoints, device=self.device,
+                             dtype=torch.float32) * (2.0 * math.pi / self.num_waypoints)
+        t = theta.unsqueeze(0)
+        coeff = 2.0 * torch.rand((n, 4), device=self.device) - 1.0
+        # Third derivatives amplify high harmonics quickly; these bounds keep
+        # the resulting full-size curvature inside the steerable drift envelope.
+        a2 = 0.04 * radius * coeff[:, 0:1]
+        a3 = 0.01 * radius * coeff[:, 1:2]
+        b2 = 0.04 * radius * coeff[:, 2:3]
+        b3 = 0.01 * radius * coeff[:, 3:4]
+        direction = torch.where(torch.rand((n, 1), device=self.device) < 0.5,
+                                -torch.ones((n, 1), device=self.device),
+                                torch.ones((n, 1), device=self.device))
+
+        x = radius * torch.cos(t) + a2 * torch.cos(2.0 * t) + a3 * torch.sin(3.0 * t)
+        y0 = radius * torch.sin(t) + b2 * torch.sin(2.0 * t) + b3 * torch.cos(3.0 * t)
+        dx = -radius * torch.sin(t) - 2.0 * a2 * torch.sin(2.0 * t) + 3.0 * a3 * torch.cos(3.0 * t)
+        dy0 = radius * torch.cos(t) + 2.0 * b2 * torch.cos(2.0 * t) - 3.0 * b3 * torch.sin(3.0 * t)
+        ddx = -radius * torch.cos(t) - 4.0 * a2 * torch.cos(2.0 * t) - 9.0 * a3 * torch.sin(3.0 * t)
+        ddy0 = -radius * torch.sin(t) - 4.0 * b2 * torch.sin(2.0 * t) - 9.0 * b3 * torch.cos(3.0 * t)
+        y, dy, ddy = direction * y0, direction * dy0, direction * ddy0
+        heading = torch.atan2(dy, dx)
+        curvature = (dx * ddy - dy * ddx) / torch.clamp(dx * dx + dy * dy, min=1e-6).pow(1.5)
+        return torch.stack((x, y, heading, curvature), dim=2)
     def generate_custom_waypoints(self, segment_length: torch.Tensor, curvature: torch.Tensor, theta0: float = 0.) -> torch.Tensor:
         assert segment_length.shape[0] == curvature.shape[0], "segment_length and curvature must have the same number of scenes"
 

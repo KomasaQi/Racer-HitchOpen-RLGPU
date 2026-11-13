@@ -102,6 +102,12 @@ def main():
     ap.add_argument("--steer-rate-limit", type=float, default=0.0)
     ap.add_argument("--steer-deadband", type=float, default=0.0)
     ap.add_argument("--brake-margin", type=float, default=0.0)
+    ap.add_argument("--actuator-dr", action="store_true")
+    ap.add_argument("--pedal-actuator-tau", type=float, default=0.0)
+    ap.add_argument("--action-delay-max", type=int, default=2)
+    ap.add_argument("--sensor-dr", action="store_true")
+    ap.add_argument("--sensor-delay-max", type=int, default=2)
+    ap.add_argument("--sensor-dropout-prob", type=float, default=0.002)
     ap.add_argument("--alpha-peak", type=float, default=0.12)
     ap.add_argument("--beta-max", type=float, default=0.32)
     ap.add_argument("--ackermann-lo", type=float, default=0.8)
@@ -143,10 +149,63 @@ def main():
     ap.add_argument("--speed-hinge", action="store_true")
     ap.add_argument("--spawn-mode", default="equilibrium")
     ap.add_argument("--spawn-speed", type=float, default=6.5)
+    ap.add_argument("--spawn-beta-mag", type=float, default=None,
+                    help="legacy reset beta range; loaded from env_config when omitted")
+    ap.add_argument("--legacy-zero-prob", type=float, default=None,
+                    help="force the legacy reset mixture (0 dynamic only, 1 true rest)")
     ap.add_argument("--grip-scale", type=float, default=1.0,
                     help="global friction multiplier (evaluate on different surfaces)")
     ap.add_argument("--disturbed", action="store_true",
                     help="apply the OU disturbance the policy was trained with")
+    ap.add_argument("--dt", type=float, default=0.05)
+    ap.add_argument("--physics-dt", type=float, default=0.01)
+    ap.add_argument("--plant", default="fast")
+    ap.add_argument("--asymmetric", action="store_true")
+    ap.add_argument("--beta-gate-scale", type=float, default=0.0)
+    ap.add_argument("--beta-ref-mode", default="physics")
+    ap.add_argument("--drift-util-lo", type=float, default=0.55)
+    ap.add_argument("--drift-util-hi", type=float, default=0.90)
+    ap.add_argument("--drift-curve-lo", type=float, default=0.02)
+    ap.add_argument("--drift-curve-hi", type=float, default=0.10)
+    ap.add_argument("--drift-mu-lo", type=float, default=1.0623)
+    ap.add_argument("--drift-mu-hi", type=float, default=2.1246)
+    ap.add_argument("--recover-weight", type=float, default=0.0)
+    ap.add_argument("--kappa-weight", type=float, default=0.15)
+    ap.add_argument("--kappa-cap", type=float, default=4.0)
+    ap.add_argument("--pos-cap", type=float, default=1.0)
+    ap.add_argument("--pp-weight", type=float, default=0.0)
+    ap.add_argument("--yaw-cap", type=float, default=4.0)
+    ap.add_argument("--num-paths", type=int, default=256)
+    ap.add_argument("--closed-random-radius", type=float, default=1.0)
+    ap.add_argument("--grip-bias", type=float, default=1.0)
+    ap.add_argument("--drift-mode", action="store_true")
+    ap.add_argument("--drift-beta-target", type=float, default=0.40)
+    ap.add_argument("--drift-kappa-target", type=float, default=0.55)
+    ap.add_argument("--drift-kappa-weight", type=float, default=60.0)
+    ap.add_argument("--drift-throttle-gate", type=float, default=0.30)
+    ap.add_argument("--drift-throttle-weight", type=float, default=4.0)
+    ap.add_argument("--drift-counter-weight", type=float, default=8.0)
+    ap.add_argument("--drift-joint-weight", type=float, default=12.0)
+    ap.add_argument("--drift-corridor-deadband", type=float, default=0.6)
+    ap.add_argument("--throttle-weight", type=float, default=0.0)
+    ap.add_argument("--throttle-gate", type=float, default=0.25)
+    ap.add_argument("--smooth-weight", type=float, default=0.015)
+    ap.add_argument("--terminal-cost", type=float, default=100.0)
+    ap.add_argument("--spawn-beta-frac", type=float, default=1.0)
+    ap.add_argument("--drift-spawn-spin-frac", type=float, default=1.0)
+    ap.add_argument("--drift-spawn-trim-frac", type=float, default=1.0)
+    ap.add_argument("--continuing-task", action="store_true")
+    ap.add_argument("--reward-mode", choices=("legacy", "bounded_joint", "adaptive_envelope"), default="legacy")
+    ap.add_argument("--adaptive-guidance", type=float, default=0.0)
+    # Strict per-step powered-drift contract.  These are evaluation thresholds,
+    # not reward knobs; a mean can no longer hide a long non-drift interval.
+    ap.add_argument("--metric-throttle-min", type=float, default=0.35)
+    ap.add_argument("--metric-kappa-min", type=float, default=0.25)
+    ap.add_argument("--metric-beta-min", type=float, default=0.20)
+    ap.add_argument("--metric-wheel-ratio-min", type=float, default=1.15)
+    ap.add_argument("--metric-util-min", type=float, default=0.70)
+    ap.add_argument("--metric-util-max", type=float, default=1.10)
+    ap.add_argument("--metric-epos-max", type=float, default=1.50)
     args = ap.parse_args()
 
     # reconstruct the training environment from the run directory when asked:
@@ -167,8 +226,13 @@ def main():
                     setattr(args, _k, _v)
                     _applied[_k] = _v
             print("env_config loaded:", len(_applied), "parameters")
+            # Training-only stochastic settings are deliberately fixed for the
+            # nominal deterministic evaluation.  --disturbed is the explicit
+            # opt-in for the time-varying tyre disturbance.
             _skip = {"seq_length", "gamma", "aux_reward_decay_steps",
-                     "aux_reward_coef", "train", "ref_mode_cli"}
+                     "aux_reward_coef", "train", "ref_mode_cli",
+                     "disturbance_param", "randomize_param", "random_seed",
+                     "quiet", "obs_privileged"}
             _unsupported = sorted(k for k in _cfg
                                   if not hasattr(args, k) and k not in _skip)
             if _unsupported:
@@ -183,8 +247,13 @@ def main():
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     env = ContinuousDriftIWDEnv(args.car_preset, args.n, args.device, ref_mode=args.ref_mode,
+                                dt=args.dt, physics_dt=args.physics_dt, plant=args.plant,
                                 control_mode=args.control_mode, beta_scale=args.beta_scale,
                                 spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
+                                spawn_beta_mag=(args.spawn_beta_mag
+                                                if args.spawn_beta_mag is not None else 0.15),
+                                legacy_zero_prob=(args.legacy_zero_prob
+                                                  if args.legacy_zero_prob is not None else 0.0),
                                 offpath_scale=args.offpath_scale, course_fail=args.course_fail,
                                 stall_speed=args.stall_speed, alive_bonus=args.alive_bonus,
                                 curv_scale=args.curv_scale, seg_scale=args.seg_scale,
@@ -205,6 +274,10 @@ def main():
                                 spawn_speed_min=(args.spawn_speed_min if args.spawn_speed_min is not None else args.spawn_speed),
                                 spawn_deficit_frac=args.spawn_deficit_frac,
                                 dir_weight=args.dir_weight, pos_weight=args.pos_weight,
+                                 pos_cap=args.pos_cap, beta_gate_scale=args.beta_gate_scale,
+                                 recover_weight=args.recover_weight,
+                                 kappa_weight=args.kappa_weight, kappa_cap=args.kappa_cap,
+                                 pp_weight=args.pp_weight, yaw_cap=args.yaw_cap,
                                 # loaded from env_config.json but previously dropped:
                                 beta_weight=args.beta_weight,
                                 yaw_weight=args.yaw_weight, yaw_scale=args.yaw_scale,
@@ -212,6 +285,11 @@ def main():
                                 # argparse, so they are read with a default instead of
                                 # attribute access (which crashed the evaluator)
                                 spawn_beta_frac=getattr(args, "spawn_beta_frac", 1.0),
+                                drift_spawn_spin_frac=args.drift_spawn_spin_frac,
+                                drift_spawn_trim_frac=args.drift_spawn_trim_frac,
+                                continuing_task=args.continuing_task,
+                                reward_mode=args.reward_mode,
+                                 adaptive_guidance=args.adaptive_guidance,
                                 terminal_cost=getattr(args, "terminal_cost", 100.0),
                                 smooth_weight=getattr(args, "smooth_weight", 0.015),
                                 speed_weight=args.speed_weight,
@@ -224,7 +302,39 @@ def main():
                                 alpha_peak=args.alpha_peak,
                                 beta_max=args.beta_max,
                                 ackermann_lo=args.ackermann_lo,
-                                ackermann_hi=args.ackermann_hi, train=True)
+                                 ackermann_hi=args.ackermann_hi,
+                                 beta_ref_mode=args.beta_ref_mode,
+                                 drift_util_lo=args.drift_util_lo,
+                                 drift_util_hi=args.drift_util_hi,
+                                 drift_curve_lo=args.drift_curve_lo,
+                                 drift_curve_hi=args.drift_curve_hi,
+                                 drift_mu_lo=args.drift_mu_lo,
+                                 drift_mu_hi=args.drift_mu_hi,
+                                 asymmetric=args.asymmetric, num_paths=args.num_paths,
+                                 closed_random_radius=args.closed_random_radius,
+                                 grip_bias=args.grip_bias,
+                                 drift_mode=args.drift_mode,
+                                 drift_beta_target=args.drift_beta_target,
+                                 drift_kappa_target=args.drift_kappa_target,
+                                 drift_kappa_weight=args.drift_kappa_weight,
+                                 drift_throttle_gate=args.drift_throttle_gate,
+                                 drift_throttle_weight=args.drift_throttle_weight,
+                                 drift_counter_weight=args.drift_counter_weight,
+                                 drift_joint_weight=args.drift_joint_weight,
+                                 drift_corridor_deadband=args.drift_corridor_deadband,
+                                 throttle_weight=args.throttle_weight,
+                                 throttle_gate=args.throttle_gate,
+                                 steer_actuator_tau=args.steer_actuator_tau,
+                                 steer_rate_limit=args.steer_rate_limit,
+                                 steer_deadband=args.steer_deadband,
+                                 brake_margin=args.brake_margin,
+                                 actuator_dr=args.actuator_dr,
+                                 pedal_actuator_tau=args.pedal_actuator_tau,
+                                 action_delay_max=args.action_delay_max,
+                                 sensor_dr=args.sensor_dr,
+                                 sensor_delay_max=args.sensor_delay_max,
+                                 sensor_dropout_prob=args.sensor_dropout_prob,
+                                 train=True)
     # optional immutable held-out road bank: never regenerated, never used in
     # training, so checkpoint comparisons are paired across runs
     if args.load_path_bank:
@@ -244,6 +354,10 @@ def main():
         # the spawn above invalidated the observation, which still carried the
         # pre-spawn tracking errors
         obs = env.obs()
+    # Evaluation is one physical episode.  Leaving train=True makes step()
+    # respawn terminal environments before metrics are read, contaminating the
+    # terminal sample with a synthetic new spawn.
+    env.train = False
     if args.load_scenario:
         _sc = np.load(args.load_scenario)
         obs = env.apply_scenario(_sc)
@@ -285,8 +399,28 @@ def main():
     end_step = torch.full((args.n,), -1, device=dev)
     end_succ = torch.zeros(args.n, dtype=torch.bool, device=dev)
     end_reason = torch.zeros((args.n, 3), dtype=torch.bool, device=dev)
+    strict_sum = torch.zeros(args.n, device=dev)
+    strict_n = torch.zeros(args.n, device=dev)
+    throttle_sum = torch.zeros(args.n, device=dev)
+    kappa_sum = torch.zeros(args.n, device=dev)
+    beta_abs_sum = torch.zeros(args.n, device=dev)
+    wheel_ratio_sum = torch.zeros(args.n, device=dev)
+    util_sum = torch.zeros(args.n, device=dev)
+    tracking_sum = torch.zeros(args.n, device=dev)
+    performance_sum = torch.zeros(args.n, device=dev)
+    drift_active_sum = torch.zeros(args.n, device=dev)
+    drift_quality_sum = torch.zeros(args.n, device=dev)
+    # Keep the actual error distribution as well as thresholded duty cycles.
+    # A policy sitting just inside the tracking gate must not look identical to
+    # one that follows the centreline tightly.  At the default 256 x 600 this is
+    # only about 1.2 MB per scalar metric on the CPU.
+    epos_samples = []
+    eyaw_samples = []
+    prev_steer = None
+    steer_step = []
     for step in range(args.steps):
-        a = physical_action(policy.act(obs), env)
+        actor_obs = obs["obs"] if isinstance(obs, dict) else obs
+        a = physical_action(policy.act(actor_obs), env)
         done_prev = env.is_done.clone()
         obs, reward, done, info = env.step(a)
         # the environment respawns inside step(), so ``env.is_done`` is already
@@ -294,6 +428,7 @@ def main():
         newly = (done_prev == 0) & (done != 0)
         term = done.clone()
         policy.reset_hidden(newly)
+        sample_mask = ~ended
         if not args.renewal_eval:
             first = newly & ~ended
             if first.any():
@@ -305,6 +440,55 @@ def main():
             live = ~ended
         else:
             live = torch.ones(args.n, dtype=torch.bool, device=dev)
+            sample_mask = live
+        # Per-step joint criterion, sampled from the same post-physics state.
+        # Positive kappa_power always means driven-wheel overspeed on both plants.
+        kp = env.extras["kappa_power"][:, 2:4].mean(dim=1)
+        v_now = env.es[:, 6]
+        beta_now = env.es[:, 7].abs()
+        wheel_v = env.s[:, 6:10] * env.wheel_radius
+        wheel_ratio = wheel_v[:, 2:4].abs().mean(dim=1) / wheel_v[:, :2].abs().mean(dim=1).clamp_min(0.5)
+        mu_now = (env.plant.col("D") * env.plant.tyre_scale.squeeze(1)).clamp_min(0.05)
+        util = v_now.square() * env.kappa_ref.abs() / (mu_now * 9.81)
+        counter = (env.u_cmd[:, 0] * env.kappa_ref < 0.0) & (env.u_cmd[:, 0].abs() >= 0.03)
+        tracking = ((env.signed_pos_diff.abs() <= args.metric_epos_max) &
+                    (env.angle_diff.abs() <= 0.35))
+        kap_limit = torch.maximum(env.kappa_ref.abs(),
+                                  env.kappa_preview.abs().amax(dim=1)).clamp_min(1e-2)
+        speed_target = (args.speed_margin * torch.sqrt(mu_now * 9.81 / kap_limit))
+        if args.speed_cap is not None:
+            speed_target = speed_target.clamp(max=args.speed_cap)
+        speed_ratio = v_now / speed_target.clamp_min(0.5)
+        performance = tracking & (speed_ratio >= 0.70) & (speed_ratio <= 1.20)
+        drift_active = ((env.u_cmd[:, 1] >= args.metric_throttle_min)
+                        & (kp >= args.metric_kappa_min)
+                        & (beta_now >= args.metric_beta_min)
+                        & (wheel_ratio >= args.metric_wheel_ratio_min))
+        drift_quality = drift_active & counter & tracking & performance
+        strict = ((env.u_cmd[:, 1] >= args.metric_throttle_min)
+                  & (kp >= args.metric_kappa_min)
+                  & (beta_now >= args.metric_beta_min)
+                  & (wheel_ratio >= args.metric_wheel_ratio_min)
+                  & counter
+                  & (util >= args.metric_util_min) & (util <= args.metric_util_max)
+                  & (env.signed_pos_diff.abs() <= args.metric_epos_max))
+        strict_sum[sample_mask] += strict[sample_mask].float()
+        strict_n[sample_mask] += 1.0
+        throttle_sum[sample_mask] += env.u_cmd[sample_mask, 1]
+        kappa_sum[sample_mask] += kp[sample_mask]
+        beta_abs_sum[sample_mask] += beta_now[sample_mask]
+        wheel_ratio_sum[sample_mask] += wheel_ratio[sample_mask]
+        util_sum[sample_mask] += util[sample_mask]
+        tracking_sum[sample_mask] += tracking[sample_mask].float()
+        performance_sum[sample_mask] += performance[sample_mask].float()
+        drift_active_sum[sample_mask] += drift_active[sample_mask].float()
+        drift_quality_sum[sample_mask] += drift_quality[sample_mask].float()
+        epos_samples.append(env.signed_pos_diff[sample_mask].abs().detach().cpu())
+        eyaw_samples.append(env.angle_diff[sample_mask].abs().detach().cpu())
+        steer_now = env.u_cmd[:, 0].detach()
+        if prev_steer is not None:
+            steer_step.append((steer_now - prev_steer).abs()[sample_mask].detach().cpu())
+        prev_steer = steer_now.clone()
         if live.any():
             beta_sum[live] += (env.es[live, 7] - env.beta_ref[live]).abs()
             _a = float(np.exp(-env.dt / 0.5))
@@ -338,15 +522,20 @@ def main():
             print("  no episode terminated")
             return
         q = torch.quantile(lengths, torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9], device=dev))
-        succ_rate = float(end_succ.float().mean())
+        # A continuing task deliberately never emits a success terminal.  Reaching
+        # the evaluation cap is therefore a full-window pass (censored in survival
+        # terminology), not a success flag.  Using end_succ here made every
+        # continuing checkpoint print 0 % even when many vehicles ran all 30 s.
+        full_rate = (float(censored.float().mean()) if env.continuing_task
+                     else float(end_succ.float().mean()))
         # Wilson 95 % interval
         z = 1.96
         denom = 1 + z * z / n_ep
-        centre = (succ_rate + z * z / (2 * n_ep)) / denom
-        half = z * ((succ_rate * (1 - succ_rate) / n_ep + z * z / (4 * n_ep * n_ep)) ** 0.5) / denom
+        centre = (full_rate + z * z / (2 * n_ep)) / denom
+        half = z * ((full_rate * (1 - full_rate) / n_ep + z * z / (4 * n_ep * n_ep)) ** 0.5) / denom
         print(f"  mean {lengths.mean():.2f} s  median {q[2]:.2f} s  "
               f"p10/p25/p75/p90 {q[0]:.2f}/{q[1]:.2f}/{q[3]:.2f}/{q[4]:.2f}")
-        print(f"  full length rate {succ_rate * 100:.1f} % (95 % CI "
+        print(f"  full length rate {full_rate * 100:.1f} % (95 % CI "
               f"{max(0.0, centre - half) * 100:.1f}-{min(1.0, centre + half) * 100:.1f})")
         exc = end_reason[done_mask]
         first_reason = torch.where(exc[:, 0], 0, torch.where(exc[:, 1], 1, torch.where(exc[:, 2], 2, 3)))
@@ -357,6 +546,28 @@ def main():
         print(f"  per-episode |beta - beta_ref| {(beta_sum / _n).mean():.3f} rad  "
               f"filtered (tau 0.5 s) {(beta_f_sum / _n).mean():.3f} rad  "
               f"per-episode speed {(v_sum / _n).mean():.2f} m/s")
+        _sn = strict_n.clamp_min(1.0)
+        duty = strict_sum / _sn
+        print(f"  STRICT powered-drift duty {duty.mean() * 100:.2f} %  "
+              f"all-step pass {float((duty >= 1.0 - 1e-9).float().mean()) * 100:.1f} %")
+        print(f"  adaptive duties: tracking {(tracking_sum/_sn).mean()*100:.2f} %  "
+              f"near-envelope {(performance_sum/_sn).mean()*100:.2f} %  "
+              f"powered-slide-active {(drift_active_sum/_sn).mean()*100:.2f} %  "
+              f"tracked-quality-drift {(drift_quality_sum/_sn).mean()*100:.2f} %")
+        if epos_samples:
+            ep = torch.cat(epos_samples)
+            ey = torch.cat(eyaw_samples)
+            print(f"  tracking errors: |e_pos| mean {ep.mean():.3f} m  "
+                  f"p95 {torch.quantile(ep, 0.95):.3f} m  p99 {torch.quantile(ep, 0.99):.3f} m;  "
+                  f"|e_yaw| mean {ey.mean():.3f} rad  "
+                  f"p95 {torch.quantile(ey, 0.95):.3f} rad  p99 {torch.quantile(ey, 0.99):.3f} rad")
+        print(f"  means: throttle {(throttle_sum/_sn).mean():.3f}  "
+              f"kappa_rear {(kappa_sum/_sn).mean():.3f}  |beta| {(beta_abs_sum/_sn).mean():.3f}  "
+              f"rear/front {(wheel_ratio_sum/_sn).mean():.3f}  friction_util {(util_sum/_sn).mean():.3f}")
+        if steer_step:
+            ds = torch.cat(steer_step)
+            print(f"  steering |step| mean {ds.mean():.5f} rad  p95 {torch.quantile(ds, 0.95):.5f} rad  "
+                  f"max {ds.max():.5f} rad")
 
         return
 

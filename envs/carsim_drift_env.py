@@ -32,6 +32,7 @@ from envs.continuous_drift_iwd import ContinuousDriftIWDEnv  # noqa: E402
 
 G = 9.81
 R_EFF = 0.332
+NOMINAL_EFFECTIVE_MU = 2.1246
 # ContinuousDriftIWDEnv does not command a normalised steering value: the action's
 # first component is already a ROAD WHEEL angle in radians, bounded by the plant's
 # max_steer (0.45 rad).  Treating it as [-1, 1] under-commands the steering by
@@ -39,6 +40,22 @@ R_EFF = 0.332
 MAX_ROAD_WHEEL_RAD = 0.45
 # steering actuator model (per control period): first order lag and slew limit
 STEER_RATE_LIMIT = 6.0    # rad of steering wheel per second
+
+
+def effective_mu_from_road_scale(scale):
+    return NOMINAL_EFFECTIVE_MU * float(scale)
+
+
+def policy_takeover_trim(kappa, beta, speed, drift_mode, trim_frac, max_steer):
+    """Deterministic CarSim takeover trim matching the FastPlant curriculum."""
+    fade = (speed / 3.0).clamp(0.0, 1.0)
+    if drift_mode:
+        steer = -0.25 * torch.sign(kappa) * fade * float(trim_frac)
+        throttle = torch.full_like(steer, 0.50 * float(trim_frac))
+    else:
+        steer = 2.5 * beta * fade
+        throttle = torch.full_like(steer, 0.02)
+    return steer.clamp(-max_steer, max_steer), throttle
 
 
 class CarSimPlant:
@@ -49,7 +66,12 @@ class CarSimPlant:
         self.n = int(n)
         self.sim = CarSimFlatEnv.__new__(CarSimFlatEnv)   # no torch state needed
         CarSimFlatEnv.__init__(self.sim, simfile=simfile, device="cpu")
-        self.grip = float(grip)
+        # ``flat_mu050`` is a ROAD multiplier, not the tyre's effective peak
+        # coefficient.  FastPlant D, the trim solver and every speed envelope
+        # use the effective value (nominal peak 2.1246 x road multiplier).
+        self.road_grip_scale = float(grip)
+        self.effective_mu = effective_mu_from_road_scale(self.road_grip_scale)
+        self.grip = self.effective_mu
         self.dtype = torch.float32
         self._last = None
         self._rdot = 0.0
@@ -60,7 +82,7 @@ class CarSimPlant:
             "lF": torch.full((self.n,), 1.455, device=self.device, dtype=self.dtype),
             "g": torch.full((self.n,), G, device=self.device, dtype=self.dtype),
             "m": torch.full((self.n,), 1514.8, device=self.device, dtype=self.dtype),
-            "D": torch.full((self.n,), self.grip, device=self.device, dtype=self.dtype),
+            "D": torch.full((self.n,), self.effective_mu, device=self.device, dtype=self.dtype),
         }
         self.tyre_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
         self.ackermann_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
@@ -117,6 +139,7 @@ class CarSimPlant:
         imp = [steer, throttle, brake]
         acc = []
         n_sub = max(int(substeps), 1)
+        h = float(dt) / n_sub
         for _ in range(n_sub):
             status = 0
             # The step must advance dt seconds of physics.  With dt = 0.05 and a 0.5 ms solver
@@ -125,8 +148,8 @@ class CarSimPlant:
             # factor of five.  Every episode was therefore one fifth as long in solver time as
             # it claimed, and every speed, slip and survival figure from this path was measured
             # on a five-times shorter horizon.
-            _n = max(int(round(float(dt) / 0.0005)), 1)
-            for _ in range(_n):                    # dt / 0.5 ms solver steps
+            _n = max(int(round(h / 0.0005)), 1)
+            for _ in range(_n):                    # h / 0.5 ms solver steps
                 self.sim._t += 0.0005
                 status, self.sim._exp = self.sim._vs.integrate_io(
                     self.sim._t, imp, self.sim._exp)
@@ -173,12 +196,18 @@ class CarSimPlant:
         nan4 = torch.zeros((1, 4), device=dev)
         return {
             "vx_wheel": vx_w, "vy_wheel": nan4,
-            "sx": kappa.unsqueeze(0), "sy": torch.tan(alpha).unsqueeze(0),
+            # FastPlant's legacy sx is (Vx-Rw)/denom, whereas CarSim Kappa is
+            # positive for driven-wheel overspeed.  Keep sx compatible with the
+            # training critic and expose an explicit canonical channel for reward
+            # and metrics.
+            "sx": (-kappa).unsqueeze(0),
+            "kappa_power": kappa.unsqueeze(0),
+            "sy": torch.tan(alpha).unsqueeze(0),
             "slip": torch.hypot(kappa, torch.tan(alpha)).unsqueeze(0),
-            "mu": torch.full((1, 4), self.grip, device=dev),
+            "mu": torch.full((1, 4), self.effective_mu, device=dev),
             "alpha": alpha.unsqueeze(0),
-            "mux": torch.full((1, 4), self.grip, device=dev),
-            "muy": torch.full((1, 4), self.grip, device=dev),
+            "mux": torch.full((1, 4), self.effective_mu, device=dev),
+            "muy": torch.full((1, 4), self.effective_mu, device=dev),
             "fz": fz.unsqueeze(0), "fx_body": fx.unsqueeze(0), "fy_Body": fy.unsqueeze(0),
             "fy_body": fy.unsqueeze(0),
         }
@@ -232,6 +261,7 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
     """``ContinuousDriftIWDEnv`` with CarSim as the plant, n = 1."""
 
     def __init__(self, scenario="flat_mu050", simfile=None, device="cuda:0",
+                 ref_mode="hybrid",
                  # A CarSim episode starts from REST, and building 4.5 m/s takes about
                  # two seconds, so a one-second stall window fires on every legitimate
                  # launch: measured, no_progress_count hit exactly 20 at t = 1.00 s with
@@ -249,14 +279,15 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
             simfile = DEFAULT_SCENARIOS[grip]
         else:
             grip = 1.0
-        super().__init__("fullsize_racecar_ev", 1, device, ref_mode="hybrid",
+        super().__init__("fullsize_racecar_ev", 1, device, ref_mode=ref_mode,
                          control_mode="pedals", train=True, **kwargs)
         self.car = CarSimPlant(simfile, device=device, grip=grip, n=1)
         self.plant_name = "fast"
         self.plant = self.car
         # the base class cached the GPU plant's radii before the swap
         self.wheel_radius = self.car.geometry()[2]
-        self.grip = grip
+        self.road_grip_scale = grip
+        self.grip = self.car.effective_mu
         self.scenario = scenario
         self._normalise_paths()
         self._startup_speed = 2.0
@@ -314,42 +345,28 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self._prev = None
         self._track_pending = True
         self._physics_advanced = False
-        # trim baseline at the takeover point, computed the same way as the training
-        # spawn: sideslip from the local reference, steer 2.5x that, 2 % throttle
+        # Trim baseline at takeover must obey the same curriculum fractions as
+        # the FastPlant spawn.  In particular, A0 uses drift_mode for optional
+        # reward bookkeeping but has trim_frac=0; installing the historical
+        # -0.25 rad / 50% throttle drift trim here would evaluate a different MDP.
         _k = self.path_bank[self.path_generation, self.path_id, self.progress, 3]
         _v = self.es[:, 6]
         _beta = self._reference_beta(_k.unsqueeze(1), _v).squeeze(1)
         if getattr(self, "u_trim", None) is None:
             self.u_trim = torch.zeros_like(self.u_cmd)
         self.u_trim.zero_()
-        # In drift mode training installs -0.25*sign(kappa) as the trim steer, but this path still
-        # installed 2.5*beta = -1.0*sign(kappa), i.e. saturated full lock.  The policy's correction
-        # baseline was therefore inconsistent at takeover.
-        if getattr(self, "drift_mode", False):
-            _kap = getattr(self, "kappa_ref", None)
-            if _kap is not None:
-                self.u_trim[:, 0] = (-0.25 * torch.sign(_kap)).clamp(
-                    -self.max_steer, self.max_steer)
-            else:
-                self.u_trim[:, 0] = (2.5 * _beta).clamp(-self.max_steer, self.max_steer)
-        else:
-            self.u_trim[:, 0] = (2.5 * _beta).clamp(-self.max_steer, self.max_steer)
-        if getattr(self, "drift_mode", False):
-            # The drift policy is trained from a drift SPAWN: |beta| 0.40, the rear axle
-            # pre-spun at (1 + drift_kappa_target) x rolling, and a trim throttle of
-            # 0.35-0.70.  The evaluation path used to install the old trim (throttle 0.02)
-            # from rest, so the policy saw a state it had never been trained on and stalled
-            # at 0.6 s with the car stationary.  Reproduce the spawn here.
-            self.u_trim[:, 1] = 0.50
-            _v = torch.hypot(self.s[:, 3], self.s[:, 4])
-            _rad = self.car.radius if hasattr(self.car, "radius") else None
-            if _rad is None:
-                _rad = torch.full_like(_v, 0.332)
-            _spin = 1.0 + float(getattr(self, "drift_kappa_target", 0.55))
-            self.s[:, 8] = (_v * _spin / _rad).clamp(min=0.0)
-            self.s[:, 9] = (_v * _spin / _rad).clamp(min=0.0)
-        else:
-            self.u_trim[:, 1] = 0.02
+        _kap = getattr(self, "kappa_ref", None)
+        if _kap is None:
+            _kap = torch.zeros_like(_beta)
+        _steer, _throttle = policy_takeover_trim(
+            _kap, _beta, _v, bool(getattr(self, "drift_mode", False)),
+            float(getattr(self, "drift_spawn_trim_frac", 1.0)), self.max_steer)
+        self.u_trim[:, 0] = _steer
+        self.u_trim[:, 1] = _throttle
+        # Do not fake a pre-spun rear axle by editing the bridge state.  That
+        # changes only the actor observation; CarSim's internal wheel states
+        # remain untouched and overwrite it on the next solver step.  A real
+        # evaluation must enter wheelspin through physical throttle/steering.
         self.u_cmd.copy_(self.u_trim)
         self._steer_state.copy_(self.u_trim[:, 0])
         self._steer_prev.copy_(self.u_trim[:, 0])

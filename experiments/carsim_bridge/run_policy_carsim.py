@@ -3,6 +3,7 @@
 One episode per scenario: the car starts from rest at the origin, follows one of our
 own reference roads, and the shared task logic scores it.
 """
+import argparse
 import json
 import os
 import re
@@ -20,28 +21,42 @@ from envs.carsim_drift_env import CarSimDriftEnv  # noqa: E402
 from experiments.continuous_drift_iwd.eval import Policy, physical_action  # noqa: E402
 from experiments.carsim_bridge.steer_metrics import steering_metrics, format_metrics  # noqa: E402
 
-CKPT = os.path.join(ROOT, "experiments", "continuous_drift_iwd", "runs",
-                os.environ.get("CARSIM_RUN", "drift_ev_v17"), "nn")
-RUN_DIR = os.path.dirname(CKPT)
-# select by the EPOCH NUMBER, not the filename: "ep_90" sorts after "ep_290"
-# alphabetically, so the old loop silently evaluated the wrong checkpoint
-_cands = [os.path.join(CKPT, f) for f in os.listdir(CKPT)
-          if f.startswith("last_") and f.endswith(".pth")]
-if not _cands:
-    raise FileNotFoundError("no last_*.pth in " + CKPT)
-CKPT_FILE = max(_cands, key=lambda p: int(re.search(r"ep_(\d+)", p).group(1))
-                if re.search(r"ep_(\d+)", p) else -1)
+def resolve_checkpoint(path):
+    """Resolve a checkpoint file or an nn directory without import-time I/O."""
+    if os.path.isfile(path):
+        return os.path.abspath(path)
+    if not os.path.isdir(path):
+        raise FileNotFoundError(path)
+    cands = [os.path.join(path, f) for f in os.listdir(path)
+             if f.startswith("last_") and f.endswith(".pth")]
+    if not cands:
+        fallback = os.path.join(path, "continuous_drift_iwd.pth")
+        if os.path.isfile(fallback):
+            return fallback
+        raise FileNotFoundError("no checkpoint in " + path)
+    # Select by epoch number: ep_90 sorts lexically after ep_290.
+    return max(cands, key=lambda p: int(re.search(r"ep_(\d+)", p).group(1))
+               if re.search(r"ep_(\d+)", p) else -1)
 
 
-def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
-    torch.manual_seed(seed)
-    # reconstruct the trained task configuration, otherwise the actor sees a
-    # different preview geometry from the one it was trained with
-    with open(os.path.join(RUN_DIR, "env_config.json"), encoding="utf-8") as f:
-        cfg = json.load(f)
+def prepare_task_config(raw):
+    """Strip training-only fields while preserving the trained reference task."""
+    cfg = dict(raw)
+    ref_mode = cfg.get("ref_mode_cli", cfg.get("ref_mode", "hybrid"))
     for key in ("plant", "control_mode", "train", "ref_mode_cli",
                 "disturbance_param", "randomize_param", "quiet", "num_paths"):
         cfg.pop(key, None)
+    cfg["ref_mode"] = ref_mode
+    return cfg
+
+
+def run(scenario, policy_path, config_path, steps=600, seed=0, entry_speed=0.0,
+        output_dir="."):
+    torch.manual_seed(seed)
+    # reconstruct the trained task configuration, otherwise the actor sees a
+    # different preview geometry from the one it was trained with
+    with open(config_path, encoding="utf-8") as f:
+        cfg = prepare_task_config(json.load(f))
     cfg.pop("curv_scale", None)      # a list here, the env wants the tuple marker
     cfg["curv_scale"] = float(os.environ.get("CARSIM_CURV", "0.7"))
     # FEASIBILITY: a drifting car can hold at most about eta*mu*g/V^2 of curvature.  At
@@ -112,8 +127,14 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
     pol = Policy(policy_path, torch.device("cuda:0"))
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device="cuda:0"))
     _solver_t0 = float(env.car.sim._t)
-    speed, beta_err, epos, n = 0.0, 0.0, 0.0, 0
+    speed, beta_err, epos, eyaw, n = 0.0, 0.0, 0.0, 0.0, 0
+    tracking_hits = 0
+    envelope_hits = 0
+    drift_active_hits = 0
+    drift_quality_hits = 0
     trace = []
+    strict_hits = 0
+    strict_samples = 0
     dsteer, prev_steer, sign_flips, prev_dsign = 0.0, None, 0, None
     applied = []
     done_step = steps
@@ -142,6 +163,41 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
             br = env.beta_ref.reshape(1, -1)
             sp = env.signed_pos_diff.reshape(1, -1)
             _db = float(es[0, 7] - br[0, 0])
+            _wheel = env.s[0, 6:10] * 0.332
+            _kp = float(env.extras["kappa_power"][0, 2:4].mean())
+            _util = float(es[0, 6] ** 2 * env.kappa_ref[0].abs()
+                          / max(env.grip * 9.81, 1e-6))
+            _ratio = float(_wheel[2:4].abs().mean()
+                           / _wheel[:2].abs().mean().clamp_min(0.5))
+            _counter = bool(float(env.u_cmd[0, 0] * env.kappa_ref[0]) < 0.0
+                            and abs(float(env.u_cmd[0, 0])) >= 0.03)
+            _track = (abs(float(sp[0, 0])) <= 1.50
+                      and abs(float(env.angle_diff.reshape(-1)[0])) <= 0.35)
+            # The CarSim flat_muNNN road multiplier scales the nominal tyre
+            # peak.  2.1246 is the production fullsize tyre's measured nominal
+            # peak used by the FastPlant trim/speed-envelope contract.
+            _surface_scale = float(scenario.split("mu")[-1]) / 100.0
+            _mu_eff = 2.1246 * _surface_scale
+            _kap_limit = max(abs(float(env.kappa_ref[0])),
+                             float(env.kappa_preview[0].abs().max()), 1e-2)
+            _speed_target = min(float(cfg.get("speed_cap", 1e9)),
+                                float(cfg.get("speed_margin", 0.9))
+                                * (_mu_eff * 9.81 / _kap_limit) ** 0.5)
+            _speed_ratio = float(es[0, 6]) / max(_speed_target, 0.5)
+            _envelope = _track and 0.70 <= _speed_ratio <= 1.20
+            _drift_active = (float(env.u_cmd[0, 1]) >= 0.35 and _kp >= 0.25
+                             and abs(float(es[0, 7])) >= 0.20 and _ratio >= 1.15)
+            _drift_quality = _drift_active and _counter and _envelope
+            _strict = (float(env.u_cmd[0, 1]) >= 0.35 and _kp >= 0.25
+                       and abs(float(es[0, 7])) >= 0.20 and _ratio >= 1.15
+                       and _counter and 0.70 <= _util <= 1.10
+                       and abs(float(sp[0, 0])) <= 1.50)
+            strict_hits += int(_strict)
+            strict_samples += 1
+            tracking_hits += int(_track)
+            envelope_hits += int(_envelope)
+            drift_active_hits += int(_drift_active)
+            drift_quality_hits += int(_drift_quality)
             trace.append(((k + 1) * float(env.dt),
                           float(torch.hypot(env.s[0, 3], env.s[0, 4])),
                           float(es[0, 7]), float(br[0, 0]), _db,
@@ -150,16 +206,16 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
                           # rear wheel surface speeds and the rear longitudinal slip, so a
                           # drift can be judged directly instead of inferred: a spin gives a
                           # large |beta| but no rear overslip, and a coasting car gives neither
-                          float(env.s[0, 8]) * 0.332, float(env.s[0, 9]) * 0.332,
-                          float(((env.s[0, 8] + env.s[0, 9]) * 0.5 * 0.332
-                                 - max(float(torch.hypot(env.s[0, 3], env.s[0, 4])), 1.0))
-                                / max(float(torch.hypot(env.s[0, 3], env.s[0, 4])), 1.0))))
+                          float(_wheel[0]), float(_wheel[1]),
+                          float(_wheel[2]), float(_wheel[3]), _kp, _ratio,
+                          _util, float(_counter), float(_strict)))
             # the extended state is not refreshed by begin_policy_episode() until the
             # first step, which is why this used to print 0.00; the world velocity is
             # always current
             speed += float(torch.hypot(env.s[0, 3], env.s[0, 4]))
             beta_err += float((es[0, 7] - br[0, 0]).abs())
             epos += float(sp[0, 0].abs())
+            eyaw += abs(float(env.angle_diff.reshape(-1)[0]))
             n += 1
             if torch.is_tensor(done) and int(done.sum()) != 0:
                 done_step = k + 1
@@ -171,9 +227,11 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
             _reason = str(int(env._term_reason.reshape(-1)[0]))
     except Exception:
         _reason = "?"
-    _out = os.environ.get("CARSIM_OUT", ".")
+    _out = output_dir
+    os.makedirs(_out, exist_ok=True)
     with open(os.path.join(_out, "trace_%s.csv" % scenario), "w") as fh:
-        fh.write("t,v,beta,beta_ref,dbeta,epos,steer,thr,brk,wRL,wRR,kx_rear\n")
+        fh.write("t,v,beta,beta_ref,dbeta,epos,steer,thr,brk,"
+                 "wFL,wFR,wRL,wRR,kappa_rear,wheel_ratio,friction_util,counter,strict\n")
         for row in trace:
             fh.write(",".join("%.6f" % float(x) for x in row) + "\n")
     # the task clock and the solver clock are not the same thing: env.dt is the
@@ -186,16 +244,39 @@ def run(scenario, policy_path, steps=600, seed=0, entry_speed=0.0):
             "seconds": done_step * env.dt,
             "speed": speed / max(n, 1),
             "beta_err": beta_err / max(n, 1),
-            "epos": epos / max(n, 1)}
+            "epos": epos / max(n, 1),
+            "eyaw": eyaw / max(n, 1),
+            "tracking_duty": tracking_hits / max(strict_samples, 1),
+            "envelope_duty": envelope_hits / max(strict_samples, 1),
+            "drift_active_duty": drift_active_hits / max(strict_samples, 1),
+            "drift_quality_duty": drift_quality_hits / max(strict_samples, 1),
+            "strict_duty": strict_hits / max(strict_samples, 1)}
 
 
-ENTRY = float(os.environ.get("CARSIM_ENTRY_SPEED", "0"))
-
-if __name__ == "__main__":
-    print("checkpoint:", os.path.basename(CKPT_FILE))
+def main():
+    ap = argparse.ArgumentParser(description="Evaluate one explicit policy/config in CarSim")
+    ap.add_argument("checkpoint", help="checkpoint file or nn directory")
+    ap.add_argument("--config", required=True, help="matching env_config.json")
+    ap.add_argument("--scenarios", default="flat_mu050,flat_mu075,flat_mu100")
+    ap.add_argument("--steps", type=int, default=600)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--entry-speed", type=float, default=0.0)
+    ap.add_argument("--output-dir", default=".")
+    args = ap.parse_args()
+    ckpt = resolve_checkpoint(args.checkpoint)
+    config = os.path.abspath(args.config)
+    if not os.path.isfile(config):
+        raise FileNotFoundError(config)
+    scenarios = [x.strip() for x in args.scenarios.split(",") if x.strip()]
+    print("checkpoint:", ckpt)
+    print("config:", config)
     rows = []
-    for sc in ("flat_mu050", "flat_mu075", "flat_mu100"):
-        r = run(sc, CKPT_FILE, entry_speed=ENTRY)
+    for sc in scenarios:
+        # Fair surface A/B: every CarSim scenario receives the same random path
+        # and actor initial state.  Incrementing the seed by scenario silently
+        # confounded grip with road geometry in the former evaluator.
+        r = run(sc, ckpt, config, steps=args.steps, seed=args.seed,
+                entry_speed=args.entry_speed, output_dir=args.output_dir)
         rows.append(r)
         print("%-12s %6.1f s  v %5.2f m/s  |dbeta| %.3f  |e_pos| %.2f m  reason %s"
               % (r["scenario"], r["seconds"], r["speed"], r["beta_err"], r["epos"],
@@ -203,3 +284,14 @@ if __name__ == "__main__":
         print("             clocks: task %.2f s   solver %.2f s   (%d control steps)"
               % (r["seconds"], r["solver_seconds"], r["steps"]))
         print("             steer: " + format_metrics(r["metrics"]))
+        print("             adaptive: tracking %.2f %%  near-envelope %.2f %%  "
+              "powered-slide %.2f %%  tracked-quality-drift %.2f %%"
+              % (100.0 * r["tracking_duty"], 100.0 * r["envelope_duty"],
+                 100.0 * r["drift_active_duty"], 100.0 * r["drift_quality_duty"]))
+        print("             strict powered-drift duty: %.2f %%" % (100.0 * r["strict_duty"]))
+    with open(os.path.join(args.output_dir, "summary.json"), "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
+
+
+if __name__ == "__main__":
+    main()
