@@ -277,7 +277,7 @@ class FastRacerPlant:
         # 50 ms step under 65 % throttle, because 7600 Nm against 0.17 kg m^2 has its root at
         # about 2000 rad/s.  CarSim, with a real driveline, reaches 1.20 m/s in the same second.
         _i_motor = 0.30
-        _i_dl = _i_motor * self.col("gear_ratio") ** 2
+        _i_dl = (_i_motor * self.col("gear_ratio") ** 2).reshape(-1, 1)
         if self.drivetrain in ("rwd", "iwd"):
             inertia = inertia.clone()
             inertia[:, 2:] = inertia[:, 2:] + _i_dl
