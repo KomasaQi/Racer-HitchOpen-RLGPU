@@ -125,6 +125,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # entirely and minimised the slip penalty instead.  12 is the measured optimum
         # so far and is restored.
         self.drift_joint_weight = float(kwargs.get("drift_joint_weight", 12.0))
+        # Standalone "hold the pedal open" reward, DEFAULT 0 so nothing changes unless it
+        # is explicitly requested.  The v56 configuration survives a real 30 s in CarSim
+        # with a half-metre line and smooth steering but its throttle mean is 0.006, i.e.
+        # it coasts; this is the single increment to add on top of it, and the weight is
+        # deliberately small against the pos_weight 8 and beta_weight 100 already there.
+        self.throttle_weight = float(kwargs.get("throttle_weight", 0.0))
+        self.throttle_gate = float(kwargs.get("throttle_gate", 0.25))
         # The faded kinematic reference was correct for path tracking but it is the wrong
         # target for a drift: measured with the drift slip reward active, the car reached
         # throttle 0.18-0.29 and a positive rear slip of 0.03-0.36 (both good) while its
@@ -973,6 +980,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         _g_turn = torch.clamp((_kap.abs() - 0.02) / 0.02, 0.0, 1.0)
         rew_drift_joint = (_g_slip * _g_beta * _sign_ok * _g_delta * _g_thr * _g_turn)
 
+        _rew_thr = torch.clamp(self.u_cmd[:, 1] - self.throttle_gate, min=0.0)
+
         terms = {
             "pos": self.pos_weight * rew_pos,
             "recover": self.recover_weight * rew_recover,
@@ -985,6 +994,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # steering chatter is smooth-band energy; the weight is a knob because
             # the default was far too small to compete with the alive bonus
             "smooth": self.smooth_weight * rew_smooth,
+            "throttle": self.throttle_weight * _rew_thr,
             "drift_kappa": self.drift_kappa_weight * rew_drift_kappa,
             # throttle and countersteer are ELIGIBILITY gates in the joint term now, not
             # standalone rewards: a positive standalone throttle reward pays full throttle

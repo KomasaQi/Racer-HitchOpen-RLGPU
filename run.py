@@ -83,6 +83,9 @@ parser.add_argument("--dir-weight", type=float, default=0.5,
 # MEASURED (round 46): at 6.0 the yaw term alone was -9.09 per step against +2.0 for all
 # other terms combined, so every return was negative and PPO learned nothing.  At 1.0
 # with yaw_scale 1.0 the same trim-holding state scores +2.38 per step.
+parser.add_argument("--throttle-weight", type=float, default=0.0,
+                    help="standalone reward for holding the pedal open")
+parser.add_argument("--throttle-gate", type=float, default=0.25)
 parser.add_argument("--drift-mode", action="store_true",
                     help="explicit large sideslip target for a power slide")
 parser.add_argument("--drift-beta-target", type=float, default=0.40)
@@ -220,7 +223,9 @@ default_env_config = {
     "pos_weight": args.pos_weight,
     "dir_weight": args.dir_weight,
     "yaw_weight": args.yaw_weight,
-    "drift_mode": args.drift_mode,
+    "throttle_weight": args.throttle_weight,
+    "throttle_gate": args.throttle_gate,
+"drift_mode": args.drift_mode,
     "drift_beta_target": args.drift_beta_target,
     "drift_kappa_target": args.drift_kappa_target,
     "drift_kappa_weight": args.drift_kappa_weight,
