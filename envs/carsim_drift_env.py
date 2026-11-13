@@ -119,7 +119,14 @@ class CarSimPlant:
         n_sub = max(int(substeps), 1)
         for _ in range(n_sub):
             status = 0
-            for _ in range(20):                    # 20 x 0.5 ms = 0.01 s physics
+            # The step must advance dt seconds of physics.  With dt = 0.05 and a 0.5 ms solver
+            # step that is 100 integrations, but this loop was hard-coded to 20 -- so every
+            # drift-env step advanced 0.01 s while the task bookkeeping advanced 0.05 s, a
+            # factor of five.  Every episode was therefore one fifth as long in solver time as
+            # it claimed, and every speed, slip and survival figure from this path was measured
+            # on a five-times shorter horizon.
+            _n = max(int(round(float(dt) / 0.0005)), 1)
+            for _ in range(_n):                    # dt / 0.5 ms solver steps
                 self.sim._t += 0.0005
                 status, self.sim._exp = self.sim._vs.integrate_io(
                     self.sim._t, imp, self.sim._exp)
