@@ -165,12 +165,12 @@ renders/
 experiments/**/runs/
 experiments/**/data/
 experiments/**/scenarios/*.npz
-
+experiments/**/*.png
 # Learned/generated binary artifacts live outside the source repository; see
 # ARTIFACTS.md.  Keep code/config/contract fixtures in Git, not checkpoints.
 *.pth
 *.gif
 
-*.png
+# *.png
 
 .history/

@@ -1,6 +1,17 @@
 # GPU Accelerated RL Race Car for HitchOpen World AI Championship 🏎️
+<div style="display: flex; gap: 10px; align-items: stretch;">
+  <!-- 左侧：单张图，40% -->
+  <div style="width: 60%;">
+    <img src="./assets/fig/drift_car.png" alt="Overview" style="width: 100%;">
+  </div>
+  <!-- 右侧：60%，两张上下叠放，间距 -->
+  <div style="width: 47%; display: flex; flex-direction: column; gap: 10px;">
+    <img src="./assets/fig/circle_mu075.png" alt="Circular Path" style="width: 100%;">
+    <img src="./assets/fig/figure_8_mu050.png" alt="Figure 8: Drift Control Performance on a Variable-Curvature Track" style="width: 100%;">
+  </div>
+</div>
 
-<img width="962" alt="Image" src="https://github.com/user-attachments/assets/55ce48ad-ee49-40f6-8071-91fe5aa969e7" />
+
 
 A PyTorch-based framework for training autonomous drifting policies for vehicles using reinforcement learning. This framework provides high-performance vectorized environments for drift control tasks and several baseline implementations.
 
