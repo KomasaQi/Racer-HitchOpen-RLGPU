@@ -33,6 +33,10 @@ Notes learned the hard way:
 import ctypes
 import os
 import sys
+import tempfile
+import shutil
+import json
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -110,6 +114,23 @@ class CarSimFlatEnv:
                 if "mu" in str(scenario) else 1.0
             simfile = DEFAULT_SCENARIOS.get(round(key, 2), DEFAULT_SCENARIOS[1.00])
         self.simfile = simfile
+        # Preserve the authoritative input, but never share LastRun output files
+        # with the GUI or another evaluator. Solver output is disposable here.
+        self._run_directory = tempfile.TemporaryDirectory(prefix="carsim_bridge_", ignore_cleanup_errors=True)
+        original_simfile = Path(simfile).read_text(encoding="utf-8")
+        output_prefix = str(Path(self._run_directory.name) / "run")
+        output_keys = {"FILEBASE": output_prefix,
+                       "INPUTARCHIVE": output_prefix + "_all.par",
+                       "ECHO": output_prefix + "_echo.par",
+                       "FINAL": output_prefix + "_end.par",
+                       "LOGFILE": output_prefix + "_log.txt",
+                       "ERDFILE": output_prefix + ".vs"}
+        lines = []
+        for line in original_simfile.splitlines():
+            key = line.strip().split(maxsplit=1)[0] if line.strip() else ""
+            lines.append(key + " " + output_keys[key] if key in output_keys else line)
+        self._runtime_simfile = str(Path(self._run_directory.name) / "simfile.sim")
+        Path(self._runtime_simfile).write_text("\n".join(lines) + "\n", encoding="utf-8")
         if seed is not None:
             np.random.seed(seed)
 
@@ -124,30 +145,56 @@ class CarSimFlatEnv:
         self._cfg = None
         self._t = 0.0
         self._exp = None
+        self._run_open = False
         self._open()
 
         self.s = torch.zeros((1, 10), device=self.device)
         self.step_count = 0
         self.is_done = torch.zeros(1, dtype=torch.uint8, device=self.device)
-        self.n_physics = max(int(round(self.dt / 0.0005)), 1)
+        self.solver_dt = float(self._cfg["t_step"])
+        self.n_physics = int(round(self.dt / self.solver_dt))
+        if self.n_physics < 1 or abs(self.n_physics*self.solver_dt-self.dt) > 1e-9:
+            raise ValueError("control period must be an integer multiple of CarSim solver step")
         self._raw = np.zeros(len(CHANNELS))
 
     # ------------------------------------------------------------------ solver
     def _open(self):
         """Read the run configuration, which also initialises the solver."""
-        self._cfg = self._vs.read_configuration(self.simfile)
+        self._cfg = self._vs.read_configuration(self._runtime_simfile)
+        self._run_open = True
+        if self._cfg["t_stop"] - self._cfg["t_start"] < self.dt:
+            message = self._solver_error()
+            self.close()
+            raise RuntimeError(f"CarSim run duration is shorter than one control period: {self._cfg}; {message}")
         if self._cfg["n_export"] != len(CHANNELS):
             raise RuntimeError(
                 "scenario exports %d channels, the bridge knows %d; regenerate the "
                 "simfile or update CHANNELS" % (self._cfg["n_export"], len(CHANNELS)))
         self._exp = self._vs.copy_export_vars(self._cfg["n_export"])
         self._t = self._cfg["t_start"]
+        # Xo/Yo locate the vehicle origin; Vx/Vy refer to the instantaneous
+        # TOTAL-vehicle CG. Mixing them creates an r*1.4626 m kinematic error.
+        # Read the matching CG coordinates through the official read-only API.
+        get_ptr = self._dll.vs_get_var_ptr
+        get_ptr.argtypes = [ctypes.c_char_p]
+        get_ptr.restype = ctypes.POINTER(ctypes.c_double)
+        self._cg_ptrs = tuple(get_ptr(key) for key in (b"XCG_TM", b"YCG_TM"))
+        if not all(bool(ptr) for ptr in self._cg_ptrs):
+            raise RuntimeError("CarSim must expose instantaneous total-CG coordinates")
+        self._time_ptr = get_ptr(b"T")
+        if not self._time_ptr:
+            raise RuntimeError("CarSim must expose its actual integration time")
+
+    def _solver_error(self):
+        error = self._dll.vs_get_error_message
+        error.argtypes = []
+        error.restype = ctypes.c_char_p
+        return (error() or b"").decode("utf-8", errors="replace")
 
     def close(self):
-        try:
+        if self._run_open:
             self._vs.terminate_run(self._t)
-        except Exception:
-            pass
+            self._run_open = False
 
     # ------------------------------------------------------------------ episodes
     def reset(self):
@@ -173,10 +220,16 @@ class CarSimFlatEnv:
         imp = self._imports(action)
         status = 0
         for _ in range(self.n_physics):
-            self._t += 0.0005
+            self._t += self.solver_dt
             status, self._exp = self._vs.integrate_io(self._t, imp, self._exp)
             if status != 0:
-                break
+                raise RuntimeError(
+                    f"CarSim stopped (status={status}) at requested t={self._t:.6f}, "
+                    f"actual t={self._time_ptr[0]:.6f}; {self._solver_error()}; "
+                    f"log={self._run_directory.name}")
+        actual_t = float(self._time_ptr[0])
+        if abs(actual_t-self._t) > self.solver_dt * 1.1:
+            raise RuntimeError(f"CarSim time mismatch: requested={self._t}, actual={actual_t}")
         self.step_count += 1
         self._raw = np.asarray(self._exp, dtype=np.float64).copy()
         self._update_state(self._raw)
@@ -185,9 +238,26 @@ class CarSimFlatEnv:
         reward = torch.zeros(1, device=self.device)
         return self.s, reward, self.is_done.clone(), {"status": status}
 
+    def save_native_results(self, destination):
+        """Preserve the closed solver run for native VehicleSim postprocessing."""
+        if self._run_open:
+            raise RuntimeError("Close the CarSim run before preserving native results")
+        source = Path(self._run_directory.name)
+        destination = Path(destination).resolve()
+        destination.mkdir(parents=True, exist_ok=True)
+        for item in source.iterdir():
+            if item.is_file():
+                shutil.copy2(item, destination / item.name)
+        # The binary companion uses the same basename as the .vs metadata.
+        metadata = destination / "run.vs"
+        if metadata.exists():
+            data = json.loads(metadata.read_text(encoding="utf-8-sig"))
+            data["VsChannelGroup"]["Input File"] = str(metadata)
+            metadata.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return str(destination)
+
     def _update_state(self, raw):
-        x = raw[IDX["Xo"]]
-        y = raw[IDX["Yo"]]
+        x, y = (float(ptr[0]) for ptr in self._cg_ptrs)
         psi = np.deg2rad(raw[IDX["Yaw"]])
         vx_b = raw[IDX["Vx"]] / 3.6          # km/h -> m/s, body frame
         vy_b = raw[IDX["Vy"]] / 3.6
@@ -212,7 +282,9 @@ class CarSimFlatEnv:
 
     def raw(self):
         """The 36 exported channels as a dict in CarSim units."""
-        return {k: float(self._raw[i]) for k, i in IDX.items()}
+        values = {k: float(self._raw[i]) for k, i in IDX.items()}
+        values.update(Xcg_TM=float(self._cg_ptrs[0][0]), Ycg_TM=float(self._cg_ptrs[1][0]))
+        return values
 
     def beta(self):
         """Sideslip in rad, or 0 when the car is too slow for it to mean anything."""
@@ -223,10 +295,12 @@ class CarSimFlatEnv:
 
     def geometry(self):
         """Wheel positions and radius for compatibility with the GPU plant."""
-        x = torch.tensor([1.455, 1.455, -1.195, -1.195])   # l_f 1.455, l_r 1.195
-        x = torch.tensor([1.455, 1.455, -1.195, -1.195])
-        y = torch.tensor([0.8, -0.8, 0.8, -0.8])
-        # measured: ground speed / front wheel spin gave 0.3319-0.3321 m flat
-        # across 0.10-0.30 throttle, so the effective rolling radius is 0.332
-        rad = torch.full((4,), 0.332)
+        import yaml
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                            "xcar-simulation", "presets.yaml")
+        with open(path, encoding="utf-8") as f:
+            p = yaml.safe_load(f)["fullsize_racecar_ev"]["parameters"]
+        x = torch.tensor([p["lF"], p["lF"], -p["lR"], -p["lR"]])
+        y = torch.tensor([p["Tf"]/2, -p["Tf"]/2, p["Tr"]/2, -p["Tr"]/2])
+        rad = torch.tensor([p["rF"], p["rF"], p["rR"], p["rR"]])
         return x, y, rad, torch.zeros(4)

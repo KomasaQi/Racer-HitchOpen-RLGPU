@@ -37,10 +37,16 @@ parser.add_argument("--dt", type=float, default=None,
                     help="control period; default 0.05 s (20 Hz) for the fast plant, 0.01 s for iwd")
 parser.add_argument("--physics-dt", type=float, default=0.01, help="physics step of the fast plant (100 Hz)")
 parser.add_argument("--rnn", action='store_true')
+parser.add_argument("--observable-gru", action="store_true",
+                    help="GRU128 + observation bypass + 256/124/64 actor and beta auxiliary loss")
+parser.add_argument("--beta-aux-weight", type=float, default=0.1)
 parser.add_argument("--disturbed", action='store_true')
 parser.add_argument("--randomize-tyre", nargs='?', const='big', default=None, type=str)
 parser.add_argument("--seed", type=int, default=2025)
 parser.add_argument("--exp-name", type=str, default="default")
+parser.add_argument("--run-root", type=str, default="runs",
+                    help="artifact directory for checkpoints, summaries and resolved configs; "
+                         "use a path outside the repository for formal runs")
 parser.add_argument("--epochs", type=int, default=1000)
 parser.add_argument("--num-parallel", type=int, default=16384)
 parser.add_argument("--minibatch", type=int, default=65536,
@@ -68,6 +74,8 @@ parser.add_argument("--pos-weight", type=float, default=2.4,
                     help="reward weight of the lateral tracking error")
 parser.add_argument("--spawn-mode", type=str, default="equilibrium",
                     choices=["equilibrium", "legacy"])
+parser.add_argument("--equilibrium-reset-prob", type=float, default=None,
+                    help="per-respawn equilibrium-state probability; default follows --spawn-mode")
 parser.add_argument("--spawn-speed", type=float, default=6.5,
                     help="drift speed used by the equilibrium spawn [m/s]")
 parser.add_argument("--spawn-beta-frac", type=float, default=1.0,
@@ -107,10 +115,12 @@ parser.add_argument("--yaw-weight", type=float, default=1.0,
 parser.add_argument("--yaw-scale", type=float, default=0.5, help="normalisation of the yaw error [rad/s]")
 parser.add_argument("--alive-bonus", type=float, default=0.0,
                     help="constant reward per surviving control step")
+parser.add_argument("--mirror-policy", action="store_true",
+                    help="exact shared-call mirror actor and independent invariant critic")
 parser.add_argument("--asymmetric", action="store_true",
                     help="privileged critic on a separate network (no shared backbone)")
 parser.add_argument("--resume", type=str, default=None,
-                    help="checkpoint to warm start training from (curriculum continuation)")
+                    help="validated checkpoint to resume model, critic, normalizers, optimizers and counters")
 parser.add_argument("--warm-start", type=str, default=None,
                     help="load model/normalizer weights but start a fresh optimizer and epoch count")
 parser.add_argument("--stall-speed", type=float, default=2.0,
@@ -151,6 +161,10 @@ parser.add_argument("--num-paths", type=int, default=256,
                     help="how many reference geometries the bank holds")
 parser.add_argument("--closed-random-radius", type=float, default=1.0,
                     help="base radius in XCAR units for the continuing closed-random family")
+parser.add_argument("--closed-switch-fraction", type=float, default=0.0,
+                    help="fraction of smooth figure-eight paths in the closed family")
+parser.add_argument("--closed-curvature-cap", type=float, default=None,
+                    help="enlarge cyclic paths to this curvature cap in 1/m; not a dynamic feasibility guarantee")
 parser.add_argument("--curv-smooth", type=int, default=0,
                     help="moving average width (waypoints) applied to the reference curvature")
 parser.add_argument("--preview-scale", type=float, default=1.0,
@@ -174,10 +188,18 @@ parser.add_argument("--speed-margin", type=float, default=0.9,
                     help="fraction of the friction-limit speed used as the target")
 parser.add_argument("--speed-cap", type=float, default=None,
                     help="upper clamp on the friction-limit speed target")
+parser.add_argument("--reference-segments", type=int, default=2,
+                    help="curvature transitions per120m streaming chunk")
+parser.add_argument("--reference-transition-min-m", type=float, default=None,
+                    help="optional minimum transition span; bound each curvature change by its span")
 parser.add_argument("--preview-time", type=str, default=None,
                     help="comma separated preview headways in seconds, e.g. 0.5,1.0,1.6")
+parser.add_argument("--preview-distances-m", type=str, default=None,
+                    help="three increasing physical preview distances in metres; excludes preview-time")
 parser.add_argument("--sigma-per-dim", type=str, default=None,
                     help="initial action std per dimension, e.g. 0.6,0.25,0.25")
+parser.add_argument("--initial-action-mean", type=str, default=None,
+                    help="fresh observable-GRU output bias in normalized action coordinates: steer,throttle,brake")
 parser.add_argument("--ackermann-lo", type=float, default=0.8)
 parser.add_argument("--ackermann-hi", type=float, default=1.2)
 parser.add_argument("--beta-max", type=float, default=0.32)
@@ -189,7 +211,11 @@ parser.add_argument("--beta-ref-mode", type=str, default="physics")
 parser.add_argument("--drift-util-lo", type=float, default=0.55)
 parser.add_argument("--drift-util-hi", type=float, default=0.90)
 parser.add_argument("--drift-curve-lo", type=float, default=0.02)
-parser.add_argument("--drift-curve-hi", type=float, default=0.10)
+parser.add_argument("--drift-curve-hi", type=float, default=0.06)
+parser.add_argument("--drift-curve-fade-lo", type=float, default=0.10,
+                    help="lR*|kappa| where the attainable drift window starts fading")
+parser.add_argument("--drift-curve-fade-hi", type=float, default=0.15,
+                    help="lR*|kappa| where large-angle drift demand reaches zero")
 parser.add_argument("--drift-mu-lo", type=float, default=1.0623)
 parser.add_argument("--drift-mu-hi", type=float, default=2.1246)
 parser.add_argument("--prog-weight", type=float, default=0.2,
@@ -200,6 +226,7 @@ parser.add_argument("--grip-bias", type=float, default=1.0,
                     help=">1 oversamples low friction while keeping the full D range")
 parser.add_argument("--learning-rate", type=float, default=None,
                     help="override the PPO learning rate (default 3e-4)")
+parser.add_argument("--steer-actuator-profile", choices=["legacy", "responsive"], default="legacy")
 parser.add_argument("--steer-actuator-tau", type=float, default=0.08,
                     help="first order steering lag in seconds (0 disables)")
 parser.add_argument("--steer-rate-limit", type=float, default=1.5,
@@ -216,9 +243,9 @@ parser.add_argument("--action-delay-max", type=int, default=2,
                     help="maximum discrete command-delay steps when actuator DR is enabled")
 parser.add_argument("--sensor-dr", action="store_true",
                     help="actor-only sensor noise, bias/random-walk, latency and packet dropout")
-parser.add_argument("--sensor-delay-max", type=int, default=2,
+parser.add_argument("--sensor-delay-max", type=int, default=1,
                     help="maximum actor sensor-packet latency in control steps")
-parser.add_argument("--sensor-dropout-prob", type=float, default=0.002,
+parser.add_argument("--sensor-dropout-prob", type=float, default=0.0,
                     help="per-step probability of holding the previous sensor packet")
 parser.add_argument("--smooth-weight", type=float, default=0.015,
                     help="weight on the steering/step smoothness term")
@@ -226,6 +253,16 @@ parser.add_argument("--continuing-task", action="store_true",
                     help="no time-limit success/reset; PPO horizons bootstrap and state continues")
 parser.add_argument("--reward-mode", choices=["legacy", "bounded_joint", "adaptive_envelope"], default="legacy",
                     help="adaptive_envelope prioritises tracking/speed and rewards drift only when beneficial")
+parser.add_argument("--adaptive-alive-weight", type=float, default=0.10)
+parser.add_argument("--adaptive-tracking-weight", type=float, default=1.0)
+parser.add_argument("--adaptive-performance-weight", type=float, default=3.0)
+parser.add_argument("--adaptive-shape", choices=["legacy", "smooth_v1", "smooth_task_v2"], default="legacy")
+parser.add_argument("--adaptive-speed-penalty", choices=["target", "envelope", "none"], default="target")
+parser.add_argument("--adaptive-speed-coupling", choices=["precision", "corridor", "independent_position"], default="precision")
+parser.add_argument("--adaptive-path-scale-m", type=float, default=None,
+                    help="Optional tracking precision half-score distance, independent of failure boundary")
+parser.add_argument("--adaptive-drift-weight", type=float, default=1.0)
+parser.add_argument("--adaptive-smooth-weight", type=float, default=0.10)
 parser.add_argument("--adaptive-guidance-weight", type=float, default=0.0,
                     help="A0-only actor-observable pure-pursuit guidance; anneal to zero")
 parser.add_argument("--drift-spawn-spin-frac", type=float, default=1.0,
@@ -292,17 +329,27 @@ default_env_config = {
     "seq_length": args.seq_length,
     "num_paths": args.num_paths,
     "closed_random_radius": args.closed_random_radius,
+    "closed_switch_fraction": args.closed_switch_fraction,
+    "closed_curvature_cap": args.closed_curvature_cap,
     "curv_smooth": args.curv_smooth,
     "preview_scale": args.preview_scale,
+    "reference_segments": args.reference_segments,
+    "reference_transition_min_m": args.reference_transition_min_m,
     "preview_time": args.preview_time,
+    "preview_distances_m": args.preview_distances_m,
     "flip_prob": args.flip_prob,
     "terminal_cost": args.terminal_cost,
     "stall_window": (args.stall_window if args.stall_window is not None else max(int(round(0.2 * (2.65 / 0.35) ** 0.5 / 0.05)), 2)),
     "stall_move": args.stall_move,
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
+    "mirror_policy": args.mirror_policy,
+    "critic_velocity_frame": "body" if args.mirror_policy else "world",
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
+    "equilibrium_reset_prob": (args.equilibrium_reset_prob
+                               if args.equilibrium_reset_prob is not None
+                               else (1.0 if args.spawn_mode == "equilibrium" else 0.0)),
     "spawn_speed": args.spawn_speed,
     "spawn_beta_frac": args.spawn_beta_frac,
     "spawn_beta_mag": args.spawn_beta_mag,
@@ -318,6 +365,8 @@ default_env_config = {
     "drift_util_hi": args.drift_util_hi,
     "drift_curve_lo": args.drift_curve_lo,
     "drift_curve_hi": args.drift_curve_hi,
+    "drift_curve_fade_lo": args.drift_curve_fade_lo,
+    "drift_curve_fade_hi": args.drift_curve_fade_hi,
     "drift_mu_lo": args.drift_mu_lo,
     "drift_mu_hi": args.drift_mu_hi,
     "beta_max": args.beta_max,
@@ -384,6 +433,7 @@ default_env_config = {
             "rF": [0.3290, 0.3350],       # +/-1 % about 0.332
             "rR": [0.3435, 0.3505],       # +/-1 % about rear RRE 0.347
             "load_sensitivity": [0.12, 0.19],
+            "roll_share_front": [0.39, 0.51],  # measured .427-.467 plus margin
             "combined_slip_blend": [0.35, 0.65],
             "tire_stiffness_grip_exponent_x": [0.10, 0.30],
             "tire_stiffness_grip_exponent_y": [0.30, 0.50],
@@ -395,6 +445,7 @@ default_env_config = {
             "lsd_tau_max": [240.0, 360.0],
             "drive_efficiency": [0.975, 0.995],
             "motor_efficiency": [0.90, 1.10],
+            "motor_tau": [0.035, 0.075],
             "max_power_w": [345600.0, 422400.0],  # +/-10 % about 384 kW
             # Three calibrated road anchors are 1.0623 / 1.59345 / 2.1246.
             # Keep 10 % margin outside their envelope; the earlier exact-endpoint
@@ -416,11 +467,21 @@ default_env_config = {
     "random_seed": args.seed,
     "quiet": args.quiet,
     "grip_bias": args.grip_bias,
+    "steer_actuator_profile": args.steer_actuator_profile,
     "steer_actuator_tau": args.steer_actuator_tau,
     "steer_rate_limit": args.steer_rate_limit,
     "smooth_weight": args.smooth_weight,
     "continuing_task": args.continuing_task,
     "reward_mode": args.reward_mode,
+    "adaptive_alive": args.adaptive_alive_weight,
+    "adaptive_tracking": args.adaptive_tracking_weight,
+    "adaptive_performance": args.adaptive_performance_weight,
+    "adaptive_shape": args.adaptive_shape,
+    "adaptive_speed_penalty": args.adaptive_speed_penalty,
+    "adaptive_speed_coupling": args.adaptive_speed_coupling,
+    "adaptive_path_scale_m": args.adaptive_path_scale_m,
+    "adaptive_drift": args.adaptive_drift_weight,
+    "adaptive_smooth": args.adaptive_smooth_weight,
     "adaptive_guidance": args.adaptive_guidance_weight,
     "drift_spawn_spin_frac": args.drift_spawn_spin_frac,
     "drift_spawn_trim_frac": args.drift_spawn_trim_frac,
@@ -519,10 +580,13 @@ observer = (PerDimSigmaObserver(_std, path_refresh_every=args.path_refresh_every
             else RLGPUAlgoObserver(path_refresh_every=args.path_refresh_every,
                                    warm_start=args.warm_start))
 runner = Runner(observer)
+from utils.drift_network import register as register_drift_network
+register_drift_network(runner)
 file_path = os.path.dirname(__file__)
 with open(os.path.join(file_path, "runner_config.yaml")) as f:
     runner_config = yaml.safe_load(f)
 full_experiment_name = args.env + "_" + args.exp_name
+run_root = os.path.abspath(os.path.expanduser(args.run_root))
 # persist the resolved environment configuration next to the run so that
 # evaluation can reconstruct the exact MDP instead of guessing defaults
 if args.train_or_test == "train":
@@ -530,7 +594,7 @@ if args.train_or_test == "train":
     # recorded under a separate key that only the evaluator reads
     default_env_config["ref_mode_cli"] = args.ref_mode
     import json
-    _cfg_dir = os.path.join("runs", full_experiment_name)
+    _cfg_dir = os.path.join(run_root, full_experiment_name)
     os.makedirs(_cfg_dir, exist_ok=True)
     with open(os.path.join(_cfg_dir, "env_config.json"), "w") as _f:
         json.dump(default_env_config, _f, indent=2, default=str)
@@ -559,13 +623,20 @@ runner_config["params"]["config"]["horizon_length"] = args.horizon
 runner_config["params"]["config"]["score_to_win"] = args.score_to_win
 runner_config["params"]["config"]["name"] = args.env
 runner_config["params"]["config"]["full_experiment_name"] = full_experiment_name
+runner_config["params"]["config"]["train_dir"] = run_root
 runner_config["params"]["network"]["mlp"]["units"] = [args.mlp_size_last * i for i in (4, 2, 1)]
 runner_config["params"]["config"]["save_frequency"] = args.save_freq
 runner_config["params"]["config"]["entropy_coef"] = args.entropy_coef
 if args.learning_rate is not None:
     runner_config["params"]["config"]["learning_rate"] = args.learning_rate
     runner_config["params"]["config"]["min_learning_rate"] = args.learning_rate * 0.1
+if args.observable_gru:
+    # Persist the actual bound used by DriftAgent, not an ignored YAML hint.
+    _lr_cfg = runner_config["params"]["config"]
+    _lr_cfg["max_learning_rate"] = float(_lr_cfg["learning_rate"])
+    _lr_cfg["min_learning_rate"] = float(_lr_cfg["learning_rate"]) * .1
 if args.asymmetric:
+    runner_config["params"]["config"]["use_experimental_cv"] = False
     # Privileged critic: its own MLP over the drift related + absolute state
     # channels, no shared backbone with the GRU actor.
     runner_config["params"]["config"]["central_value_config"] = {
@@ -597,6 +668,50 @@ runner_config["params"]["config"]["device_name"] = args.device
 if not args.rnn:
     runner_config["params"]["network"].pop("rnn")
 
+if args.initial_action_mean is not None and not args.observable_gru:
+    parser.error("--initial-action-mean requires --observable-gru")
+
+if args.mirror_policy and not args.observable_gru:
+    parser.error("--mirror-policy requires --observable-gru")
+
+if args.observable_gru:
+    if not args.rnn or not args.asymmetric or args.obs_privileged:
+        parser.error("--observable-gru requires --rnn --asymmetric and no --obs-privileged")
+    if args.warm_start is not None:
+        parser.error("observable-GRU continuation requires --resume to restore the independent critic and optimizers")
+    # A validated non-degraded checkpoint may resume; strict state loading
+    # still rejects incompatible network structures. Pre-audit policies must
+    # not be reused across observation/action semantic changes.
+    runner_config["params"]["algo"]["name"] = "drift_ppo"
+    runner_config["params"]["network"]["name"] = "drift_observable"
+    runner_config["params"]["network"]["mlp"]["units"] = [256, 124, 64]
+    runner_config["params"]["network"]["rnn"] = {
+        "units": 128, "layers": 1, "name": "gru",
+        "before_mlp": True, "concat_output": True}
+    runner_config["params"]["network"]["beta_aux_weight"] = args.beta_aux_weight
+    if args.initial_action_mean is not None:
+        import math
+        try:
+            initial_mean = [float(x) for x in args.initial_action_mean.split(",")]
+        except ValueError:
+            parser.error("--initial-action-mean requires three finite values in [-1, 1]")
+        if len(initial_mean) != 3 or any(not math.isfinite(x) or abs(x) > 1 for x in initial_mean):
+            parser.error("--initial-action-mean requires three finite values in [-1, 1]")
+        runner_config["params"]["network"]["initial_action_mean"] = initial_mean
+    # Validate the eager path first; compile is a later throughput optimisation.
+    if args.mirror_policy:
+        runner_config["params"]["model"]["name"] = "drift_mirror_actor"
+        runner_config["params"]["network"]["name"] = "drift_mirror_actor"
+        cv = runner_config["params"]["config"]["central_value_config"]
+        cv["model"]["name"] = "drift_mirror_value"
+        cv["network"]["name"] = "drift_mirror_value"
+    runner_config["params"]["config"]["torch_compile"] = False
+    runner_config["params"]["load_checkpoint"] = False
+
+if args.train_or_test == "train":
+    with open(os.path.join(_cfg_dir, "resolved_runner.yaml"), "w", encoding="utf-8") as f:
+        yaml.safe_dump(runner_config, f, sort_keys=False)
+
 if args.quiet:
     with suppress_stdout_stderr():
         runner.load(runner_config)
@@ -610,7 +725,7 @@ if __name__ == "__main__":
             run_args['checkpoint'] = resume_compatible_checkpoint(args.resume)
         runner.run(run_args)
     elif args.train_or_test == "test":
-        checkpoint_dir = f"runs/{full_experiment_name}/nn"
+        checkpoint_dir = os.path.join(run_root, full_experiment_name, "nn")
         if args.epoch_index == -1:
             checkpoint_name = f"{checkpoint_dir}/{args.env}.pth"
         else:
@@ -621,3 +736,4 @@ if __name__ == "__main__":
             'play': True,
             'checkpoint' : checkpoint_name,
         })
+

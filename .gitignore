@@ -160,8 +160,16 @@ cython_debug/
 #.idea/
 
 runs/
-!experiments/continuous_drift_iwd/runs/drift_ev_best/
 data/
+renders/
+experiments/**/runs/
+experiments/**/data/
+experiments/**/scenarios/*.npz
+
+# Learned/generated binary artifacts live outside the source repository; see
+# ARTIFACTS.md.  Keep code/config/contract fixtures in Git, not checkpoints.
+*.pth
+*.gif
 
 *.png
 

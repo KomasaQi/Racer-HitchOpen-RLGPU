@@ -126,7 +126,44 @@ class TrajGen:
         y, dy, ddy = direction * y0, direction * dy0, direction * ddy0
         heading = torch.atan2(dy, dx)
         curvature = (dx * ddy - dy * ddx) / torch.clamp(dx * dx + dy * dy, min=1e-6).pow(1.5)
+        fraction = float(getattr(self, "switch_fraction", 0.0))
+        if not 0.0 <= fraction <= 1.0:
+            raise ValueError("switch_fraction must be in [0,1]")
+        if fraction > 0:
+            # Smooth Gerono eight: finite tangent speed at the crossing and
+            # continuous curvature reversal, unlike two joined circles.
+            select = torch.rand((n, 1), device=self.device) < fraction
+            ex = radius * torch.cos(t).expand(n, -1)
+            ey = direction * 0.5 * radius * torch.sin(2*t)
+            edx = -radius * torch.sin(t).expand(n, -1)
+            edy = direction * radius * torch.cos(2*t)
+            eddx = -radius * torch.cos(t).expand(n, -1)
+            eddy = -2 * direction * radius * torch.sin(2*t)
+            eh = torch.atan2(edy, edx)
+            ek = (edx*eddy - edy*eddx) / (edx.square()+edy.square()).clamp_min(1e-6).pow(1.5)
+            x, y = torch.where(select, ex, x), torch.where(select, ey, y)
+            heading, curvature = torch.where(select, eh, heading), torch.where(select, ek, curvature)
         return torch.stack((x, y, heading, curvature), dim=2)
+
+    @staticmethod
+    def resample_closed(waypoints):
+        """Uniform arclength samples, interpolating headings across +/-pi."""
+        count = waypoints.shape[1]
+        closed = torch.cat((waypoints, waypoints[:, :1]), dim=1)
+        ds = torch.linalg.vector_norm(torch.diff(closed[..., :2], dim=1), dim=-1)
+        arc = torch.cat((torch.zeros_like(ds[:, :1]), ds.cumsum(1)), dim=1)
+        query = arc[:, -1:] * (torch.arange(count, device=waypoints.device) / count)
+        right = torch.searchsorted(arc.contiguous(), query.contiguous(), right=True).clamp(1, count)
+        left = right - 1
+        a = torch.gather(closed, 1, left[..., None].expand(-1, -1, 4))
+        b = torch.gather(closed, 1, right[..., None].expand(-1, -1, 4))
+        fraction = ((query - arc.gather(1, left)) /
+                    (arc.gather(1, right) - arc.gather(1, left)).clamp_min(1e-8))
+        out = a + fraction[..., None] * (b-a)
+        angle = torch.atan2(torch.sin(b[..., 2]-a[..., 2]), torch.cos(b[..., 2]-a[..., 2]))
+        out[..., 2] = a[..., 2] + fraction * angle
+        out[..., 2] = torch.atan2(torch.sin(out[..., 2]), torch.cos(out[..., 2]))
+        return out
     def generate_custom_waypoints(self, segment_length: torch.Tensor, curvature: torch.Tensor, theta0: float = 0.) -> torch.Tensor:
         assert segment_length.shape[0] == curvature.shape[0], "segment_length and curvature must have the same number of scenes"
 

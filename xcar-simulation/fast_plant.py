@@ -218,6 +218,7 @@ DEFAULT_PARAMS = {
     "gear_ratio": 3.44,
     "drive_efficiency": 0.99,     # differential/final-drive mechanical efficiency
     "motor_efficiency": 1.0,      # multiplier on the CarSim efficiency carpet
+    "motor_tau": 0.0,            # motor-shaft torque lag [s]; EV preset uses TC_MOTOR
     "throttle_power_gain": 1.0,
     "throttle_power_rolloff": 0.0,
     "max_power_w": 384000.0,
@@ -292,7 +293,7 @@ TENSOR_KEYS = (
     "roll_share_front",
     "rho_air", "aero_Ax", "aero_Ay", "aero_Cdx", "aero_Cdy",
     "aero_Clx", "aero_Cly", "aero_xp", "aero_zp", "wind_x", "wind_y",
-    "gear_ratio", "drive_efficiency", "motor_efficiency", "throttle_power_gain",
+    "gear_ratio", "drive_efficiency", "motor_efficiency", "motor_tau", "throttle_power_gain",
     "throttle_power_rolloff", "max_power_w", "coast_torque_nm",
     "motor_inertia", "diff_input_inertia", "halfshaft_inertia",
     "battery_voc_v", "battery_min_voltage_v", "battery_resistance_ohm",
@@ -416,10 +417,10 @@ class FastRacerPlant:
         # Motor torque envelope (shared across envs).  For the CarSim EV preset,
         # its analytic battery ceiling is pre-merged into this same one-dimensional
         # map, so the training hot path pays no second lookup.
-        if bool(params.get("use_battery_torque_envelope", False)):
-            motor_source = list(zip(EV_BATTERY_LIMIT_RPM, EV_EFFECTIVE_MOTOR_TORQUE))
-        else:
-            motor_source = params.get("motor", EV_MOTOR_384KW)
+        self.use_battery_torque_envelope = bool(params.get("use_battery_torque_envelope", False))
+        # Keep the mechanical ceiling separate: random efficiency must change
+        # the battery constraint, never multiply requested mechanical power.
+        motor_source = params.get("motor", EV_MOTOR_384KW)
         motor = torch.as_tensor(motor_source, device=self.device, dtype=self.dtype)
         order = torch.argsort(motor[:, 0])
         motor = motor[order]
@@ -449,6 +450,8 @@ class FastRacerPlant:
         self.command_mode = "pedals"
         self._ax_guess = torch.zeros(self.n, device=self.device, dtype=self.dtype)
         self._ay_guess = torch.zeros(self.n, device=self.device, dtype=self.dtype)
+        self._motor_torque_state = torch.zeros(self.n, device=self.device, dtype=self.dtype)
+        self._motor_step_h = None
         #: optional per-env multiplicative friction scale (time varying disturbance)
         self.tyre_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
         #: per-env Ackermann blend for the front axle: 0 = parallel steering,
@@ -503,7 +506,9 @@ class FastRacerPlant:
         """
         if mask is None:
             mask = torch.ones(self.n, dtype=torch.bool, device=self.device)
-        num = int(mask.sum().item())
+        # Integer reset indices avoid a GPU->CPU reduction/synchronisation.  A
+        # bool mask remains supported for public/backward-compatible callers.
+        num = mask.numel() if mask.dtype != torch.bool else int(mask.sum().item())
         if num == 0:
             return
         override = override or {}
@@ -530,6 +535,7 @@ class FastRacerPlant:
     def reset_guess(self, mask=None):
         """Clear the load-transfer warm start (call on episode reset)."""
         if mask is None:
+            self._motor_torque_state.zero_()
             self._ax_guess.zero_()
             self._ay_guess.zero_()
             self._sx_relaxed.zero_()
@@ -537,6 +543,7 @@ class FastRacerPlant:
             self._relax_initialized.zero_()
         else:
             self._ax_guess[mask] = 0.0
+            self._motor_torque_state[mask] = 0.0
             self._ay_guess[mask] = 0.0
             self._sx_relaxed[mask] = 0.0
             self._alpha_relaxed[mask] = 0.0
@@ -695,17 +702,18 @@ class FastRacerPlant:
                                  self.col("tyre_scale_rear").unsqueeze(1))
         d_eff = D * axle_scale * self.tyre_scale
         d_surface = d_eff
-        if float(self.col("load_sensitivity").abs().max().item()) > 0.0:
-            static_ref = (self.col("m") * self.col("g") * 0.25).unsqueeze(1)
-            fzf = self.col("fz_ref_front").unsqueeze(1)
-            fzr = self.col("fz_ref_rear").unsqueeze(1)
-            fz_ref = torch.cat([fzf, fzf, fzr, fzr], dim=1)
-            fz_ref = torch.where(fz_ref > 0.0, fz_ref, static_ref.expand(-1, 4)).clamp(min=1.0)
-            sens = self.col("load_sensitivity").unsqueeze(1)
-            if self.load_sensitivity_model == "power":
-                d_eff = d_eff * torch.clamp(fz / fz_ref, min=0.1, max=4.0).pow(-sens)
-            else:
-                d_eff = d_eff * torch.clamp(1.0 - sens * (fz / fz_ref - 1.0), 0.4, 1.4)
+        # sens=0 is exactly the identity; avoid a GPU->CPU synchronisation in
+        # every tire evaluation (including each implicit wheel-solve trial).
+        static_ref = (self.col("m") * self.col("g") * 0.25).unsqueeze(1)
+        fzf = self.col("fz_ref_front").unsqueeze(1)
+        fzr = self.col("fz_ref_rear").unsqueeze(1)
+        fz_ref = torch.cat([fzf, fzf, fzr, fzr], dim=1)
+        fz_ref = torch.where(fz_ref > 0.0, fz_ref, static_ref.expand(-1, 4)).clamp(min=1.0)
+        sens = self.col("load_sensitivity").unsqueeze(1)
+        if self.load_sensitivity_model == "power":
+            d_eff = d_eff * torch.clamp(fz / fz_ref, min=0.1, max=4.0).pow(-sens)
+        else:
+            d_eff = d_eff * torch.clamp(1.0 - sens * (fz / fz_ref - 1.0), 0.4, 1.4)
 
         vf = self.col("slip_v_floor").unsqueeze(1)
         vfa = self.col("slip_alpha_v_floor").unsqueeze(1)
@@ -996,7 +1004,12 @@ class FastRacerPlant:
         """Bilinear lookup/extrapolation of the CarSim efficiency carpet.
 
         The source function is ``2D_LINEAR`` (interpolation *and extrapolation*).
-        CarSim then floors efficiency at 0.02.  Clamping torque to the last
+        FastPlant floors efficiency at 0.02. Direct CarSim internal telemetry
+        (motor_power_chain_capture, 2026-11-14) disproves the former assumption
+        that CarSim applies the same floor: its unscaled 305-Nm carpet can
+        extrapolate negative efficiency at the configured 2400-Nm torque.
+        This floor is a physical safeguard, not exact transient equivalence.
+        Clamping torque to the last
         305-Nm column hid the large electrical draw at the 400--2400 Nm drift
         operating points even though it did not change mechanical shaft power.
         """
@@ -1072,6 +1085,15 @@ class FastRacerPlant:
         # (=307.2 kW/omega) even though CarSim reports efficiency about .375.
         t_power_demand = q * p_max / torch.clamp(wm.abs(), min=1.0)
         t_motor = torch.minimum(t_map, t_power_demand)
+        if self.use_battery_torque_envelope:
+            t_motor = self._battery_limited_motor_torque(rpm, wm.abs(), t_motor)
+        if self._motor_step_h is not None:
+            tau_motor = self.col("motor_tau")
+            alpha_motor = torch.where(tau_motor > 0,
+                -torch.expm1(-self._motor_step_h / tau_motor.clamp_min(1e-6)),
+                torch.ones_like(tau_motor))
+            t_motor = self._motor_torque_state + alpha_motor * (
+                t_motor - self._motor_torque_state)
         # zero-pedal driveline drag (EV regen / in-gear coast), axle total
         coast = self.col("coast_torque_nm") * (1.0 - torch.clamp(throttle + brake, max=1.0)) \
             * torch.tanh(gear * wm / 30.0)
@@ -1235,6 +1257,7 @@ class FastRacerPlant:
         ax_sum = None
         ay_sum = None
         for _ in range(n_sub):
+            self._motor_step_h = h
             deriv, extras = self.derivatives(s, command, mode=mode)
             # The accelerometer reading is the average over the control period,
             # not the instantaneous value of the last physics substep.
@@ -1325,7 +1348,40 @@ class FastRacerPlant:
                 lo = torch.where(go_right, mid, lo)
                 hi = torch.where(go_right, hi, mid)
             omega_new = torch.where(locked, torch.zeros_like(w_old), 0.5 * (lo + hi))
+            # Independent bisection brackets are only approximate when rear
+            # motor/LSD torques couple both wheels. Correct the JOINT residual
+            # with a projected 2x2 Newton solve (front wheels remain scalar).
+            for _ in range(getattr(self, "wheel_solver_correction_iters", 2)):
+                residual = g_of(omega_new)
+                eps = 0.05
+                left = omega_new.clone()
+                right = omega_new.clone()
+                left[:, (0, 2)] += eps
+                right[:, (1, 3)] += eps
+                jl = (g_of(left) - residual) / eps
+                jr = (g_of(right) - residual) / eps
+                correction = torch.zeros_like(omega_new)
+                correction[:, 0] = residual[:, 0] / jl[:, 0].clamp_min(1e-4)
+                correction[:, 1] = residual[:, 1] / jr[:, 1].clamp_min(1e-4)
+                a, b, c, d = jl[:, 2], jr[:, 2], jl[:, 3], jr[:, 3]
+                det = (a * d - b * c).clamp_min(1e-4)
+                correction[:, 2] = (d * residual[:, 2] - b * residual[:, 3]) / det
+                correction[:, 3] = (a * residual[:, 3] - c * residual[:, 2]) / det
+                omega_new = (omega_new - correction.clamp(-5.0, 5.0)).clamp_min(0.0)
+            if getattr(self, "audit_wheel_solver", False):
+                residual = g_of(omega_new)
+                # At a locked wheel complementarity permits G >= 0.
+                self.last_wheel_residual = torch.where(
+                    omega_new <= 1e-6, residual.clamp(max=0.0), residual).detach()
+                self.last_wheel_residual_h = h
             s[:, 6:10] = omega_new.clamp(0.0, 2500.0)
+            if mode == "pedals":
+                # Trial root evaluations are pure; commit the motor state ONCE
+                # after the coupled wheel solve, never once per trial.
+                _, motor_next, _ = self._motor_torque(
+                    s[:, 8:10], command[:, 1], command[:, 2])
+                self._motor_torque_state.copy_(motor_next)
+            self._motor_step_h = None
             s[:, 2] = torch.atan2(torch.sin(s[:, 2]), torch.cos(s[:, 2]))
             self._update_tire_relaxation(s, delta_w, fz_w, h)
         # ``extras`` came from the beginning of the final physics substep while

@@ -25,6 +25,7 @@ def main():
     ap.add_argument("--seed", type=int, default=365000)
     ap.add_argument("--grip-scale", type=float, default=1.0,
                     help="road multiplier applied to the calibrated tyre peak")
+    ap.add_argument("--closed-random-radius", type=float, default=2.0)
     args = ap.parse_args()
     torch.manual_seed(args.seed)
 
@@ -34,8 +35,14 @@ def main():
         continuing_task=True, reward_mode="bounded_joint", drift_mode=True,
         drift_spawn_spin_frac=1.0, drift_spawn_trim_frac=1.0,
         spawn_beta_frac=1.0, speed_target_mode="limit", speed_margin=0.90,
-        speed_cap=22.0, steer_actuator_tau=0.08, steer_rate_limit=1.5,
-        preview_time="0.35,0.7,1.2", grip_scale=args.grip_scale)
+        speed_cap=15.0, steer_actuator_tau=0.08, steer_rate_limit=1.5,
+        closed_random_radius=args.closed_random_radius,
+        beta_ref_mode="adaptive_drift", beta_max=0.32,
+        drift_beta_target=0.40, drift_util_lo=0.55, drift_util_hi=0.90,
+        drift_curve_lo=0.02, drift_curve_hi=0.06,
+        drift_curve_fade_lo=0.10, drift_curve_fade_hi=0.15,
+        drift_mu_lo=1.0623, drift_mu_hi=2.1246,
+        grip_scale=args.grip_scale)
     env.reset()
     # Physical correction zero.  The environment adds the seeded trim; in the
     # final curriculum trim is zero and this is exactly zero physical command.
@@ -76,6 +83,7 @@ def main():
     report = {
         "n": args.n, "steps": args.steps, "seed": args.seed,
         "grip_scale": args.grip_scale,
+        "closed_random_radius": args.closed_random_radius,
         "full_length_rate": float(active.float().mean()),
         "mean_survival_s": float(duration_steps.float().mean() * env.dt),
         "median_survival_s": float(duration_steps.float().median() * env.dt),

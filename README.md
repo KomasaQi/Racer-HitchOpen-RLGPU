@@ -37,7 +37,7 @@ cd experiments/continuous_drift_iwd
 ./run.sh
 ```
 
-This will train a policy for the consecutive drifting task. Results will be saved in the `data` directory.
+This trains a policy for the continuing drifting task. Runtime artifacts are written under ignored `runs/` during execution and are moved to the sibling audit/artifact directory after completion; see [ARTIFACTS.md](ARTIFACTS.md).
 
 ## Environments 🌍
 
@@ -86,6 +86,8 @@ Common training flags:
 - `--epochs`: Number of training epochs
 - `--disturbed`: Enable disturbance modeling
 - `--randomize-tyre`: Randomize tire parameters
+
+The current full-size RWD-EV workflow uses domain randomization from the first formal PPO sample. `ev_drift` randomizes the calibrated vehicle, tire, LSD and powertrain parameters; sensor/actuator noise, delay and dropout are enabled separately. Hardware-specific parallel counts are not portable defaults: benchmark the GPU and keep the highest-throughput configuration with memory headroom.
 
 ## Technical Details 🔧
 

@@ -10,6 +10,7 @@ and the macroscopic trajectory an RL policy actually experiences.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -68,6 +69,25 @@ def evaluate_file(path: Path, horizons, stride, solver_iters, combined_slip_blen
             s[:, 6 + j] = torch.tensor(first[f"omega_{wheel}"].to_numpy(float),
                                        dtype=plant.dtype)
         plant.reset_guess()
+        # A rolling CarSim state does not have a zero-torque motor. Reconstruct
+        # the hidden scalar motor state from the preceding recorded commands
+        # and measured wheel speeds; document this as an estimate, not truth.
+        trace_plant = FastRacerPlant(params, len(c), "cpu")
+        trace_plant.tyre_scale.fill_(mu)
+        trace_wheels = torch.tensor(c[["omega_RL", "omega_RR"]].to_numpy(), dtype=plant.dtype)
+        trace_q = torch.tensor(c.throttle_cmd.to_numpy(), dtype=plant.dtype)
+        trace_b = torch.tensor(c.brake_cmd.to_numpy(), dtype=plant.dtype)
+        target_torque = trace_plant._motor_torque(trace_wheels, trace_q, trace_b)[1]
+        tau_motor = float(params.get("motor_tau", 0.0))
+        alpha_motor = 1.0 if tau_motor <= 0 else -np.expm1(-dt/tau_motor)
+        torque_history = torch.zeros_like(target_torque)
+        motor_state = torch.tensor(0., dtype=plant.dtype)
+        for index, command_torque in enumerate(target_torque):
+            motor_state = motor_state + alpha_motor * (command_torque - motor_state)
+            torque_history[index] = motor_state
+        plant._motor_torque_state.copy_(torque_history[torch.as_tensor(starts)])
+        plant._ax_guess.copy_(torch.tensor(first.ax.to_numpy(), dtype=plant.dtype))
+        plant._ay_guess.copy_(torch.tensor(first.ay.to_numpy(), dtype=plant.dtype))
         ex = None
         for k in range(1, steps + 1):
             future = c.iloc[starts + k]
@@ -166,6 +186,9 @@ def main():
     ap.add_argument("--stiffness-grip-exponent-y", type=float, default=None)
     args = ap.parse_args()
     data, out = Path(args.dataset), Path(args.out)
+    source_manifest = json.loads((data / "manifest.json").read_text(encoding="utf-8"))
+    if source_manifest.get("position_reference") != "instantaneous_total_vehicle_CG":
+        raise ValueError("Position audit requires freshly collected Xcg_TM/Ycg_TM data")
     out.mkdir(parents=True, exist_ok=True)
     horizons = [float(x) for x in args.horizons.split(",")]
     rows = []
@@ -192,6 +215,13 @@ def main():
     summary.to_csv(out / "summary.csv", index=False)
     render(frame, out / "local_flow_macro_horizon.png")
     payload = {"dataset": str(data), "solver_iters": args.wheel_solver_iters,
+               "preset": preset,
+               "source_sha256": {str(path.relative_to(ROOT)): hashlib.sha256(path.read_bytes()).hexdigest()
+                                  for path in (Path(ROOT) / "xcar-simulation" / "fast_plant.py",
+                                               Path(ROOT) / "xcar-simulation" / "presets.yaml",
+                                               Path(__file__))},
+               "position_reference": "instantaneous_total_vehicle_CG",
+               "motor_initialization": "estimated by replaying recorded commands and wheel speeds",
                "combined_slip_blend": args.combined_slip_blend,
                "stiffness_grip_exponent": args.stiffness_grip_exponent,
                "stiffness_grip_exponent_x": effective_x,

@@ -311,9 +311,10 @@ python experiments/continuous_drift_iwd/eval.py runs/drift_ev/nn \
     --grip-scale 1.0
 ```
 
-The policy behind the numbers above is archived at
-`experiments/continuous_drift_iwd/runs/drift_ev_best/`; the evaluation command
-above works on that directory unchanged.
+The historical policy behind the numbers above is no longer bundled with the
+source tree.  It is preserved under the external artifact archive documented in
+`ARTIFACTS.md`; pass its checkpoint path explicitly to `eval.py` together with
+the matching `env_config.json`.
 **Observability ablation.** `--obs-privileged` appends the plant quantities the
 real car cannot measure (beta, V, vx, vy) to the actor observation, which turns
 the task back into XCAR's formulation and gives the upper bound:

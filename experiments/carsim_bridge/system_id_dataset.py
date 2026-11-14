@@ -186,7 +186,7 @@ def carsim_trace(scenario, mu, maneuver, duration, dt):
             steer = np.array([math.radians(raw["Steer_" + suffix[0]]),
                               math.radians(raw["Steer_" + suffix[1]]), 0.0, 0.0])
             prefix = ["carsim", scenario, mu, maneuver, (k + 1) * dt,
-                      raw["Xo"], raw["Yo"], math.radians(raw["Yaw"]),
+                      raw["Xcg_TM"], raw["Ycg_TM"], math.radians(raw["Yaw"]),
                       delta, throttle, brake,
                       vxb, vyb, speed, math.radians(raw["Beta"]) if speed >= 0.5 else 0.0,
                       math.radians(raw["AVz"]), raw["Ax"] * 9.81, raw["Ay"] * 9.81,
@@ -250,7 +250,8 @@ def main():
                    if exp_x is None else exp_x)
     effective_y = (preset["tire_stiffness_grip_exponent_y"]
                    if exp_y is None else exp_y)
-    manifest = {"schema": HEADER, "dt": args.dt, "scenarios": [], "maneuvers": selected_m,
+    manifest = {"schema": HEADER, "position_reference": "instantaneous_total_vehicle_CG",
+                "dt": args.dt, "scenarios": [], "maneuvers": selected_m,
                 "stiffness_grip_exponent": args.stiffness_grip_exponent,
                 "stiffness_grip_exponent_x": effective_x,
                 "stiffness_grip_exponent_y": effective_y,
@@ -275,6 +276,10 @@ def main():
                               args.stiffness_grip_exponent_x,
                               args.stiffness_grip_exponent_y)
             if args.carsim_source:
+                with open(os.path.join(args.carsim_source, "manifest.json"), encoding="utf-8") as f:
+                    source_manifest = json.load(f)
+                if source_manifest.get("position_reference") != "instantaneous_total_vehicle_CG":
+                    raise ValueError("legacy source positions are vehicle-origin Xo/Yo; recollect CG data")
                 old_path = os.path.join(args.carsim_source, "%s__%s.csv" % (scenario, maneuver))
                 with open(old_path, newline="") as old:
                     source_rows = [r for r in csv.DictReader(old) if r["plant"] == "carsim"]

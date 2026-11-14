@@ -178,6 +178,7 @@ def test_physical_sign_contract():
     check("left-turn tire alpha/Fy convention",
           float(ex["alpha"][0, 0]) < 0 and float(ex["fy_wheel"][0, 0]) > 0)
     launch = plant.zero_state(1); plant.init_wheels(launch)
+    plant.reset_guess()
     for _ in range(10):
         launch, lex = plant.step(launch, torch.tensor([[0.0, 0.5, 0.0]]),
                                   dt=0.05, substeps=5)
@@ -185,6 +186,9 @@ def test_physical_sign_contract():
           float(launch[0, 8]) > 0 and float(lex["kappa_power"][0, 2]) > 0 and
           float(lex["fx_wheel"][0, 2]) > 0)
     rolling = plant.zero_state(1); rolling[:, 3] = 12.0; plant.init_wheels(rolling)
+    # This is a different experiment, not an instantaneous teleport with the
+    # launch experiment's residual motor torque/load-transfer memory.
+    plant.reset_guess()
     rolling, bex = plant.step(rolling, torch.tensor([[0.0, 0.0, 0.3]]),
                                dt=0.05, substeps=5)
     check("brake gives negative Ax/kappa/Fx",
@@ -369,6 +373,23 @@ def test_observation_contract():
           str(tuple(obs["states"].shape)))
 
 
+def test_privileged_actor_upper_bound_contract():
+    """The diagnostic flag adds four exact states without resizing sensor DR."""
+    from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+    env = ContinuousDriftIWDEnv(
+        "fullsize_racecar_ev", 2, "cuda:0", ref_mode="hybrid",
+        control_mode="pedals", train=True, asymmetric=True,
+        obs_privileged=True, sensor_dr=True)
+    obs = env.reset()
+    check("privileged upper-bound actor is 31",
+          tuple(obs["obs"].shape) == (2, 31), str(tuple(obs["obs"].shape)))
+    check("privileged upper bound leaves physical sensor packet at 27",
+          env.sensor_num_states == 27 and env._sensor_cached.shape[1] == 27,
+          "%d/%d" % (env.sensor_num_states, env._sensor_cached.shape[1]))
+    check("privileged upper bound retains 52-channel critic",
+          tuple(obs["states"].shape) == (2, 52), str(tuple(obs["states"].shape)))
+
+
 def test_compiled_resume_key_contract():
     """Compiled asymmetric critic checkpoints must be restorable by rl_games."""
     from collections import OrderedDict
@@ -382,6 +403,44 @@ def test_compiled_resume_key_contract():
     check("compiled central-value prefix is removed",
           "model.a2c_network.mu.weight" in fixed)
     check("unrelated checkpoint keys are preserved", "unrelated" in fixed)
+
+
+def test_eval_explicit_default_override_contract():
+    """Explicit CLI defaults must not be overwritten by checkpoint config."""
+    import argparse
+    from experiments.continuous_drift_iwd.eval import explicit_cli_dests
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--spawn-mode", default="equilibrium")
+    parser.add_argument("--reward-mode", default="legacy")
+    explicit = explicit_cli_dests(
+        parser, ["--spawn-mode", "equilibrium", "--reward-mode=legacy"])
+    check("eval preserves explicit option equal to argparse default",
+          explicit == {"spawn_mode", "reward_mode"}, "got %s" % explicit)
+
+
+def test_external_run_root_contract():
+    """Resolved configs and rl_games artifacts must share the selected root."""
+    with open(os.path.join(ROOT, "run.py"), encoding="utf-8") as stream:
+        source = stream.read()
+    check("training exposes an external artifact root",
+          'parser.add_argument("--run-root"' in source)
+    check("resolved configs use the selected artifact root",
+          '_cfg_dir = os.path.join(run_root, full_experiment_name)' in source)
+    check("rl_games uses the selected artifact root",
+          '["config"]["train_dir"] = run_root' in source)
+    check("test checkpoint lookup uses the selected artifact root",
+          'os.path.join(run_root, full_experiment_name, "nn")' in source)
+    env_source_path = os.path.join(ROOT, "envs", "continuous_drift_iwd.py")
+    with open(env_source_path, encoding="utf-8") as stream:
+        env_source = stream.read()
+    check("evaluation trajectory export is explicit",
+          'if not self.train and trajectory_output_dir:' in env_source)
+    render_path = os.path.join(ROOT, "experiments", "continuous_drift_iwd", "render.py")
+    with open(render_path, encoding="utf-8") as stream:
+        render_source = stream.read()
+    check("renderer reconstructs the checkpoint environment",
+          'ap.add_argument("--config-from"' in render_source and
+          'args._env_config = json.load(stream)' in render_source)
 
 
 def test_sensor_actuator_randomisation():
@@ -478,7 +537,7 @@ def test_vehicle_randomisation():
     env = ContinuousDriftIWDEnv("fullsize_racecar_ev", 2048, "cuda:0",
                                 ref_mode="hybrid", control_mode="pedals",
                                 train=True, randomize_param=rng)
-    env.randomize()
+    env.reset()
     for key in ("m", "Iz", "IwF", "rR", "bx", "by", "motor_efficiency",
                 "max_power_w", "load_sensitivity", "combined_slip_blend",
                 "tire_stiffness_grip_exponent_x", "tire_stiffness_grip_exponent_y",
@@ -486,6 +545,12 @@ def test_vehicle_randomisation():
         v = env.plant.col(key)
         spread = float(v.max() - v.min())
         check("DR varies %s" % key, spread > 1e-6, "spread %.3e" % spread)
+    expected_radius = torch.stack(
+        (env.plant.col("rF"), env.plant.col("rF"),
+         env.plant.col("rR"), env.plant.col("rR")), dim=1)
+    check("encoder wheel radii follow per-episode physics DR",
+          bool(torch.allclose(env.wheel_radius, expected_radius, atol=0.0, rtol=0.0)),
+          "max mismatch %.3e" % float((env.wheel_radius - expected_radius).abs().max()))
 
 
 def test_continuing_task_contract():
@@ -605,6 +670,18 @@ def test_bounded_reward_contract():
     check("terminal cost dominates maximum live bonus",
           env.terminal_cost > max_live,
           "terminal %.3f max live %.3f" % (env.terminal_cost, max_live))
+    beta = torch.tensor(0.0, device="cuda:0", requires_grad=True)
+    gate = env._dense_target_gate(beta, torch.tensor(0.4, device="cuda:0"), 0.30)
+    gate.backward()
+    check("bounded attitude gate is informative at zero sideslip",
+          float(gate) > 0.0 and abs(float(beta.grad)) > 1e-6,
+          "gate %.6f grad %.6f" % (float(gate), float(beta.grad)))
+    steer = torch.tensor(0.0, device="cuda:0", requires_grad=True)
+    counter = env._dense_target_gate(steer, torch.tensor(-0.25, device="cuda:0"), 0.20)
+    counter.backward()
+    check("bounded countersteer gate is informative at zero steer",
+          float(counter) > 0.0 and abs(float(steer.grad)) > 1e-6,
+          "gate %.6f grad %.6f" % (float(counter), float(steer.grad)))
 
 
 def test_adaptive_reward_contract():
@@ -636,6 +713,31 @@ def test_adaptive_reward_contract():
     check("adaptive terminal cost dominates maximum live bonus",
           env.terminal_cost > max_live,
           "terminal %.3f max live %.3f" % (env.terminal_cost, max_live))
+    # Zero drift must not receive the high Gaussian scores that v17 exploited.
+    # Every physical component must independently increase dense progress; the
+    # attitude weights ensure forward wheelspin alone remains a minority score.
+    missing = torch.zeros(4, device=env.device, requires_grad=True)
+    targets = torch.tensor([0.55, 0.30, 0.40, 0.25], device=env.device)
+    progress = env._xcar_target_improvement(missing, targets)
+    dense = env._weighted_drift_progress(progress.unsqueeze(0)).squeeze(0)
+    dense.backward()
+    check("adaptive dense drift progress gives zero at zero behaviour",
+          float(dense) == 0.0)
+    check("adaptive dense drift progress has gradients for every component",
+          bool((missing.grad > 0.0).all()), str(missing.grad.detach().cpu().tolist()))
+    wrong = env._xcar_target_improvement(-targets, targets)
+    check("XCAR-style target progress penalizes wrong-side exploration",
+          bool((wrong < 0.0).all()), str(wrong.detach().cpu().tolist()))
+    easy_only = env._weighted_drift_progress(torch.tensor(
+        [[1.0, 1.0, 0.0, 0.0]], device=env.device)).item()
+    attitude_only = env._weighted_drift_progress(torch.tensor(
+        [[0.0, 0.0, 1.0, 1.0]], device=env.device)).item()
+    check("forward wheelspin is a minority of dense drift progress",
+          easy_only <= 0.25 and attitude_only >= 0.75,
+          "easy %.3f attitude %.3f" % (easy_only, attitude_only))
+    strict_missing = torch.tensor([1.0, 1.0, 0.0, 1.0], device=env.device).prod()
+    check("strict drift bonus still rejects any absent requirement",
+          float(strict_missing) == 0.0)
 
 
 def test_carsim_policy_config_contract():
@@ -719,6 +821,19 @@ def test_xcar_reset_replica_contract():
           "beta p90 %.3f" % float(beta[~zero].quantile(0.90)))
 
 
+def test_sensor_packet_dtype_contract():
+    """A float64 plant must still feed the float32 deployable actor contract."""
+    from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+    env = ContinuousDriftIWDEnv(
+        "fullsize_racecar_ev", 4, "cuda:0", ref_mode="circle",
+        control_mode="pedals", train=False, sensor_dr=True)
+    env._sensor_pending[:] = True
+    packet = env._actor_sensor_packet(torch.zeros(
+        (env.n, env.num_states), device=env.device, dtype=torch.float64))
+    check("float64 plant packet is converted to float32 actor input",
+          packet.dtype == torch.float32, str(packet.dtype))
+
+
 def test_adaptive_drift_reference_contract():
     """Large beta is requested only for feasible grip/curvature/speed cells."""
     from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
@@ -732,8 +847,11 @@ def test_adaptive_drift_reference_contract():
     kappa = torch.full((3,), 0.08, device=env.device)
     fast = torch.full((3,), 14.0, device=env.device)
     ref = env._reference_beta(kappa, fast).abs()
-    check("adaptive beta decreases as nominal grip rises",
-          float(ref[0]) > float(ref[1]) > float(ref[2]) - 1e-8,
+    check("adaptive beta keeps the verified mu075 drift branch",
+          float(ref[1]) >= 0.95 * float(ref[0]) and float(ref[1]) > 0.30,
+          str(ref.detach().cpu().tolist()))
+    check("adaptive beta fades out at the high-grip endpoint",
+          float(ref[2]) < 0.05 * float(ref[1]),
           str(ref.detach().cpu().tolist()))
     straight = env._reference_beta(torch.zeros_like(kappa), fast)
     stopped = env._reference_beta(kappa, torch.zeros_like(fast))
@@ -745,6 +863,114 @@ def test_adaptive_drift_reference_contract():
     check("adaptive beta increases with path curvature",
           bool(torch.all(tight > gentle)),
           "%s vs %s" % (tight.detach().cpu().tolist(), gentle.detach().cpu().tolist()))
+    hairpin = env._reference_beta(torch.full_like(kappa, 0.16), fast).abs()
+    check("adaptive beta fades out beyond verified drift curvature band",
+          bool(torch.all(hairpin < 0.1 * tight)),
+          "%s vs %s" % (hairpin.detach().cpu().tolist(), tight.detach().cpu().tolist()))
+    # The map is not merely a reset helper: its utilisation gate depends on the
+    # live speed, so obs() must refresh it every control step.  Poisoning the
+    # cache makes this test fail if adaptive_drift is omitted from that update
+    # branch (the former bug silently left beta_ref at zero for the whole run).
+    env.reset()
+    env.beta_ref = torch.full((env.n,), float("nan"), device=env.device)
+    env.obs()
+    expected = env._reference_beta(
+        env.kappa_ref.unsqueeze(1), env.es[:, 6]).squeeze(1)
+    check("adaptive beta reference is refreshed in every observation",
+          bool(torch.isfinite(env.beta_ref).all() and
+               torch.allclose(env.beta_ref, expected, atol=1e-6, rtol=1e-6)),
+          str(env.beta_ref.detach().cpu().tolist()))
+
+
+def test_adaptive_beta_reward_scale_contract():
+    """A smaller feasible target must not make the PPO gradient disappear."""
+    from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+    env = ContinuousDriftIWDEnv(
+        "fullsize_racecar_ev", 3, "cuda:0", ref_mode="circle",
+        control_mode="pedals", train=False, drift_mode=True,
+        beta_ref_mode="adaptive_drift", drift_beta_target=0.40)
+    beta = torch.zeros(3, device=env.device, requires_grad=True)
+    target = torch.tensor([0.0, -0.15, -0.40], device=env.device)
+    shaped, demand = env._adaptive_beta_shaping(beta, target)
+    grad = torch.autograd.grad(shaped.sum(), beta)[0]
+    check("zero drift demand keeps the neutral beta optimum",
+          abs(float(shaped[0])) < 1e-8 and abs(float(grad[0])) < 1e-8)
+    check("moderate adaptive target has full smooth demand",
+          abs(float(demand[1]) - 1.0) < 1e-6)
+    ratio = abs(float(grad[1] / grad[2]))
+    check("moderate and full beta targets have comparable PPO gradient",
+          0.8 <= ratio <= 1.2, "gradient ratio %.3f" % ratio)
+    held, _ = env._adaptive_beta_shaping(target, target)
+    check("holding an adaptive beta target removes target error",
+          float(held[1:].abs().max()) < 1e-7, str(held.detach().cpu().tolist()))
+
+
+def test_adaptive_legacy_reset_contract():
+    """Broad resets retain low-grip drift but do not inject it at high grip."""
+    from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+    from fast_plant import PARAM_INDEX
+    env = ContinuousDriftIWDEnv(
+        "fullsize_racecar_ev", 2048, "cuda:0", ref_mode="circle",
+        control_mode="pedals", train=True, spawn_mode="legacy",
+        legacy_zero_prob=0.0, drift_mode=True,
+        beta_ref_mode="adaptive_drift", drift_beta_target=0.40,
+        # This contract isolates grip/reset scaling.  Move the independent
+        # upper-curvature window out of the tiny test circle's range.
+        drift_curve_fade_lo=0.80, drift_curve_fade_hi=1.00,
+        speed_target_mode="limit", speed_margin=0.90, speed_cap=20.0)
+    half = env.n // 2
+    env.plant.p[:half, PARAM_INDEX["D"]] = 1.0623
+    env.plant.p[half:, PARAM_INDEX["D"]] = 2.1246
+    env.is_done[:] = 1
+    env.reset_done_envs()
+    beta = env.es[:, 7].abs()
+    low = float(beta[:half].quantile(0.90))
+    high = float(beta[half:].quantile(0.90))
+    check("adaptive XCAR reset has wider beta support at low grip",
+          low > high + 0.05, "low/high p90 %.3f/%.3f" % (low, high))
+    speed = torch.hypot(env.s[:, 3], env.s[:, 4])
+    v_low = float(speed[:half].quantile(0.90))
+    v_high = float(speed[half:].quantile(0.90))
+    check("friction-limit XCAR reset reaches higher speed at high grip",
+          v_high > 1.25 * v_low,
+          "low/high speed p90 %.3f/%.3f" % (v_low, v_high))
+    kappa = env.path_bank[
+        env.path_generation, env.path_id, env.progress, 3]
+    yaw_error = (env.s[:, 5] - speed * kappa).abs()
+    check("friction-limit XCAR reset yaw rate matches V times path curvature",
+          float(yaw_error.max()) < 1e-5, "max error %.3g" % float(yaw_error.max()))
+
+
+def test_mixed_reset_curriculum_contract():
+    """Equilibrium and rolling states coexist in one PPO reset batch."""
+    from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
+    env = ContinuousDriftIWDEnv(
+        "fullsize_racecar_ev", 4096, "cuda:0", ref_mode="circle",
+        control_mode="pedals", train=True, spawn_mode="legacy",
+        equilibrium_reset_prob=0.60, legacy_zero_prob=0.0,
+        drift_mode=True, beta_ref_mode="adaptive_drift",
+        drift_spawn_spin_frac=0.0, drift_spawn_trim_frac=0.0,
+        speed_target_mode="limit", speed_margin=0.90, speed_cap=20.0)
+    env.is_done[:] = 1
+    env.reset_done_envs()
+    eq = env._last_equilibrium_reset
+    frac = float(eq.float().mean())
+    check("mixed reset samples the requested equilibrium fraction",
+          0.56 <= frac <= 0.64, "fraction %.4f" % frac)
+    check("mixed reset includes both populations",
+          bool(eq.any() and (~eq).any()))
+    check("zero trim fraction does not leak privileged spawn control",
+          float(env.u_trim.abs().max()) < 1e-8,
+          "max trim %.3g" % float(env.u_trim.abs().max()))
+    speed = torch.hypot(env.s[:, 3], env.s[:, 4])
+    # Equilibrium rows cluster near their feasible target; legacy rows retain
+    # XCAR's broad 0..limit exploration.  The latter must therefore have a
+    # materially wider low-speed tail in the same randomized batch.
+    eq_p10 = float(speed[eq].quantile(0.10))
+    legacy_p10 = float(speed[~eq].quantile(0.10))
+    check("mixed reset preserves broad rolling-state coverage",
+          legacy_p10 + 1.0 < eq_p10,
+          "equilibrium/legacy speed p10 %.3f/%.3f" % (eq_p10, legacy_p10))
 
 if __name__ == "__main__":
     print("contract tests")
@@ -759,7 +985,10 @@ if __name__ == "__main__":
                test_randomisation_covers_nominal,
                test_pretrain_gate_matches_training_dr, test_steering_conversion,
                test_wheel_order, test_actuator, test_observation_contract,
+               test_privileged_actor_upper_bound_contract,
                test_compiled_resume_key_contract,
+               test_eval_explicit_default_override_contract,
+               test_external_run_root_contract,
                test_sensor_actuator_randomisation,
                test_drift_stack_is_opt_in, test_rest_spawn_has_no_countersteer,
                test_vehicle_randomisation, test_continuing_task_contract,
@@ -769,7 +998,11 @@ if __name__ == "__main__":
                test_carsim_policy_config_contract,
                test_observable_teacher_contract,
                test_xcar_reset_replica_contract,
-               test_adaptive_drift_reference_contract):
+               test_sensor_packet_dtype_contract,
+               test_adaptive_drift_reference_contract,
+               test_adaptive_beta_reward_scale_contract,
+               test_adaptive_legacy_reset_contract,
+               test_mixed_reset_curriculum_contract):
         print(fn.__name__)
         fn()
     print()

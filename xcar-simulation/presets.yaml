@@ -229,11 +229,13 @@ fullsize_racecar_ev:
     load_sensitivity_model: power
     fz_ref_front: 3460.843
     fz_ref_rear: 5537.353
-    roll_share_front: 0.55
+    # Three-road load snapshots + held-out local-flow checks (2026-11-14).
+    roll_share_front: 0.455
     drivetrain: rwd
     gear_ratio: 3.44
     drive_efficiency: 0.99
     motor_efficiency: 1.00
+    motor_tau: 0.05  # CarSim TC_MOTOR, distinct from external pedal actuator lag
     throttle_power_gain: 1.00
     throttle_power_rolloff: 0.00
     # Expanded CarSim pars: IMOTOR/I_MOTOR=0.0226, IDS=0.013,

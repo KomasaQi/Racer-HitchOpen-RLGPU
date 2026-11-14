@@ -11,6 +11,7 @@ Usage
         --offpath-scale 0.4 --out render_v6 --frames 4
 """
 import argparse
+import json
 import math
 import os
 import sys
@@ -25,17 +26,24 @@ sys.path.insert(0, os.path.join(ROOT, "utils"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from envs.continuous_drift_iwd import ContinuousDriftIWDEnv  # noqa: E402
-from eval import Policy  # noqa: E402
+from eval import Policy, explicit_cli_dests  # noqa: E402
 
 
 def build_env(a, n):
-    kw = dict(ref_mode=a.ref_mode, control_mode="pedals", train=True,
+    # Reconstruct the policy's MDP first, then apply explicit rendering
+    # overrides.  Plant parameter DR is fixed for a readable nominal plot;
+    # sensor/actuator DR remains as trained and is reproducible from --seed.
+    skip = {"ref_mode_cli", "randomize_param", "disturbance_param",
+            "seq_length", "gamma", "aux_reward_decay_steps",
+            "aux_reward_coef", "quiet", "obs_privileged", "random_seed"}
+    kw = {k: v for k, v in getattr(a, "_env_config", {}).items()
+          if k not in skip}
+    kw.update(ref_mode=a.ref_mode, control_mode="pedals", train=True,
               curv_scale=a.curv_scale, curv_smooth=a.curv_smooth,
               preview_scale=a.preview_scale, preview_time=a.preview_time,
               flip_prob=a.flip_prob, beta_scale=a.beta_scale,
-              spawn_mode="equilibrium", spawn_speed=a.spawn_speed,
-              spawn_beta_frac=1.0, spawn_speed_min=args.spawn_speed_min,
-              spawn_deficit_frac=args.spawn_deficit_frac,
+              spawn_speed=a.spawn_speed, spawn_speed_min=a.spawn_speed_min,
+              spawn_deficit_frac=a.spawn_deficit_frac,
               offpath_scale=a.offpath_scale, course_fail=a.course_fail,
               stall_speed=a.stall_speed, stall_window=a.stall_window,
               stall_move=a.stall_move, grip_scale=a.grip_scale,
@@ -83,7 +91,8 @@ def main(args):
     end_step = [-1] * n
 
     for step in range(args.steps):
-        a = policy.act(obs)
+        actor_obs = obs["obs"] if isinstance(obs, dict) else obs
+        a = policy.act(actor_obs)
         obs, rew, done, info = env.step(a)
         policy.reset_hidden(done.bool())
         pos = env.s[:, :2].detach().cpu().numpy()
@@ -273,6 +282,8 @@ def main(args):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("checkpoint")
+    ap.add_argument("--config-from", default=None,
+                    help="run directory or env_config.json used to reconstruct the trained MDP")
     ap.add_argument("--car-preset", default="fullsize_racecar_ev")
     ap.add_argument("--ref-mode", default="hybrid")
     ap.add_argument("--n", type=int, default=4)
@@ -305,6 +316,21 @@ if __name__ == "__main__":
     ap.add_argument("--dir-weight", type=float, default=4.0)
     ap.add_argument("--pos-weight", type=float, default=8.0)
     args = ap.parse_args()
+    explicit = explicit_cli_dests(ap, sys.argv[1:])
+    args._env_config = {}
+    if args.config_from:
+        cfg_path = args.config_from
+        if os.path.isdir(cfg_path):
+            cfg_path = os.path.join(cfg_path, "env_config.json")
+        with open(cfg_path, encoding="utf-8") as stream:
+            args._env_config = json.load(stream)
+        for key, value in args._env_config.items():
+            if (hasattr(args, key) and key not in explicit and
+                    getattr(args, key) == ap.get_default(key)):
+                setattr(args, key, value)
+        if args._env_config.get("ref_mode_cli") and "ref_mode" not in explicit:
+            args.ref_mode = args._env_config["ref_mode_cli"]
+        print("env_config loaded for render:", os.path.abspath(cfg_path))
     if args.spawn_speed_min is None:
         args.spawn_speed_min = args.spawn_speed
     main(args)

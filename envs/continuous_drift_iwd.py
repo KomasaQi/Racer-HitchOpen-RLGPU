@@ -40,7 +40,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # rejected below until one is available; clamping at the last waypoint
         # would silently turn the task into straight-line holding.
         self.continuing_task = bool(kwargs.get("continuing_task", False))
+        self.critic_velocity_frame = kwargs.get("critic_velocity_frame", "world")
+        if self.critic_velocity_frame not in ("world", "body"):
+            raise ValueError("critic_velocity_frame must be world or body")
         self._cyclic_reference = ref_mode in ("circle", "eight", "closed_random")
+        self._streaming_reference = ref_mode == "streaming_random"
+        if self._streaming_reference and kwargs.get('preview_time') is None:
+            raise ValueError('streaming_random requires explicit time preview headways')
+        self.closed_curvature_cap = kwargs.get("closed_curvature_cap", None)
+        if self.closed_curvature_cap is not None:
+            self.closed_curvature_cap = float(self.closed_curvature_cap)
+            if self.closed_curvature_cap <= 0:
+                raise ValueError("closed_curvature_cap must be positive (1/m)")
         if self.continuing_task and ref_mode == "hybrid":
             raise ValueError(
                 "continuing_task with hybrid references requires seamless path streaming; "
@@ -68,6 +79,22 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.adaptive_drift = float(kwargs.get("adaptive_drift", 1.00))
         self.adaptive_smooth = float(kwargs.get("adaptive_smooth", 0.10))
         self.adaptive_guidance = float(kwargs.get("adaptive_guidance", 0.0))
+        # Opt-in: retain old checkpoint reward semantics when absent.
+        self.adaptive_speed_penalty = str(kwargs.get("adaptive_speed_penalty", "target"))
+        if self.adaptive_speed_penalty not in ("target", "envelope", "none"):
+            raise ValueError('adaptive_speed_penalty must be target, envelope or none')
+        self.adaptive_speed_coupling = str(kwargs.get("adaptive_speed_coupling", "precision"))
+        if self.adaptive_speed_coupling not in ("precision", "corridor", "independent_position"):
+            raise ValueError("adaptive_speed_coupling must be precision, corridor or independent_position")
+        self.adaptive_path_scale_m = kwargs.get("adaptive_path_scale_m", None)
+        if self.adaptive_path_scale_m is not None:
+            self.adaptive_path_scale_m = float(self.adaptive_path_scale_m)
+            if not math.isfinite(self.adaptive_path_scale_m) or self.adaptive_path_scale_m <= 0:
+                raise ValueError('adaptive_path_scale_m must be finite and positive')
+
+        self.adaptive_shape = str(kwargs.get("adaptive_shape", "legacy"))
+        if self.adaptive_shape not in ("legacy", "smooth_v1", "smooth_task_v2"):
+            raise ValueError("adaptive_shape must be legacy, smooth_v1, or smooth_task_v2")
 
         self.pedals = self.control_mode == "pedals"
         # observed: yaw rate + 3 accelerometer axes + previous commands (3/4)
@@ -109,7 +136,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.drift_util_lo = float(kwargs.get("drift_util_lo", 0.55))
         self.drift_util_hi = float(kwargs.get("drift_util_hi", 0.90))
         self.drift_curve_lo = float(kwargs.get("drift_curve_lo", 0.02))
-        self.drift_curve_hi = float(kwargs.get("drift_curve_hi", 0.10))
+        self.drift_curve_hi = float(kwargs.get("drift_curve_hi", 0.06))
+        self.drift_curve_fade_lo = float(kwargs.get("drift_curve_fade_lo", 0.10))
+        self.drift_curve_fade_hi = float(kwargs.get("drift_curve_fade_hi", 0.15))
         self.drift_mu_lo = float(kwargs.get("drift_mu_lo", 1.0623))
         self.drift_mu_hi = float(kwargs.get("drift_mu_hi", 2.1246))
         # reference-sideslip map: beta_ref = beta_max * clamp(v_limit / v_char, lo, 1)
@@ -194,10 +223,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # the 27-channel actor contract assumes the pedal triple; the legacy
             # wheel-speed mode would make it 28 channels
             raise ValueError("continuous_drift_iwd uses the 27-channel pedals actor")
-        # the 27-channel actor contract is fixed: privileged plant quantities
-        # (beta, V, vx, vy) are only ever exposed through the asymmetric critic
-        self.obs_privileged = False
-        self.num_states = (1 + 3 + n_ctrl + 4 + 4) + 12
+        # Production keeps the fixed 27-channel real-observable actor contract.
+        # The optional four exact plant channels are an explicitly non-deployable
+        # observability upper bound; sensor DR still acts only on physical sensors.
+        self.sensor_num_states = (1 + 3 + n_ctrl + 4 + 4) + 12
+        self.obs_privileged = bool(kwargs.get("obs_privileged", False))
+        self.num_states = self.sensor_num_states + (4 if self.obs_privileged else 0)
         # training; rl_games adds its own running normalisation on top.
         wheel_scale = 3.0 / self.speed_ref
         ctrl_scale = ([1.0 / self.max_steer, 1.0, 1.0] if self.pedals
@@ -216,8 +247,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # true simulation quantities.  Repeated obs() calls return the cached
         # packet, so rendering/evaluation cannot advance delay or random walk.
         self.sensor_dr = bool(kwargs.get("sensor_dr", False))
-        self.sensor_delay_max = max(int(kwargs.get("sensor_delay_max", 2)), 0)
-        self.sensor_dropout_prob = float(kwargs.get("sensor_dropout_prob", 0.002))
+        self.sensor_delay_max = max(int(kwargs.get("sensor_delay_max", 1)), 0)
+        self.sensor_dropout_prob = float(kwargs.get("sensor_dropout_prob", 0.0))
         yaw_n = 0.005 * scale[0]
         acc_n = 0.10 * scale[1]
         steer_n = 0.002 * scale[4]
@@ -236,13 +267,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self._sensor_white_std = torch.tensor(white, device=self.device)
         self._sensor_bias_std = torch.tensor(bias, device=self.device)
         self._sensor_rw_std = 0.001 * self._sensor_bias_std
-        self._sensor_bias = torch.zeros((self.n, self.num_states), device=self.device)
+        self._sensor_bias = torch.zeros((self.n, self.sensor_num_states), device=self.device)
         self._sensor_rw = torch.zeros_like(self._sensor_bias)
         self._sensor_noise_scale = torch.ones((self.n, 1), device=self.device)
         self._sensor_delay_steps = torch.zeros(self.n, dtype=torch.long, device=self.device)
         self._sensor_history = torch.zeros(
-            (self.sensor_delay_max + 1, self.n, self.num_states), device=self.device)
-        self._sensor_cached = torch.zeros((self.n, self.num_states), device=self.device)
+            (self.sensor_delay_max + 1, self.n, self.sensor_num_states), device=self.device)
+        self._sensor_cached = torch.zeros((self.n, self.sensor_num_states), device=self.device)
         self._sensor_pending = torch.ones(self.n, dtype=torch.bool, device=self.device)
         self._sensor_needs_fill = torch.ones_like(self._sensor_pending)
         self.priv_concat_scale = torch.tensor([1.0, 0.25, 0.25, 0.25], device=self.device)
@@ -264,6 +295,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # actor cannot measure.
         self.asymmetric = bool(kwargs.get("asymmetric", False))
         self.spawn_mode = str(kwargs.get("spawn_mode", "equilibrium"))
+        default_eq_prob = 1.0 if self.spawn_mode == "equilibrium" else 0.0
+        self.equilibrium_reset_prob = float(
+            kwargs.get("equilibrium_reset_prob", default_eq_prob))
+        if not 0.0 <= self.equilibrium_reset_prob <= 1.0:
+            raise ValueError("equilibrium_reset_prob must be in [0, 1]")
+        # Kept explicitly for reset-distribution diagnostics and contract tests.
+        # It is not part of either actor or critic observation.
+        self._last_equilibrium_reset = torch.zeros(
+            self.n, dtype=torch.bool, device=self.device)
         self.spawn_speed = float(kwargs.get("spawn_speed", 6.5))
         self.spawn_beta_frac = float(kwargs.get("spawn_beta_frac", 1.0))
         self.spawn_beta_noise = float(kwargs.get("spawn_beta_noise", 0.10))
@@ -287,6 +327,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # drive AT the limit of adhesion instead of at an arbitrary speed.
         self.speed_target_mode = str(kwargs.get("speed_target_mode", "signal"))
         self.speed_margin = float(kwargs.get("speed_margin", 0.9))
+        if self.adaptive_speed_penalty == "envelope" and (
+                self.speed_target_mode != "limit" or not 0.0 < self.speed_margin <= 1.0):
+            raise ValueError('envelope speed penalty requires limit speed mode and 0 < speed_margin <= 1')
         # The limit target assumes the full mu can be used laterally, but the car
         # sustains only a light sideslip, so at high grip it becomes too
         # optimistic (measured: 9.3 m/s at mu 1.25 with 30 % full length).  The cap
@@ -305,6 +348,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.recent_obs = [dummy_obs, dummy_obs]  # most recent first
         self.train = kwargs.get("train", False)
         self.wheel_radius = self.plant.geometry()[2]
+        # Encoder conversion uses a known calibration, never the hidden
+        # episode-specific rolling radius drawn by physics DR.
+        self.encoder_radius = self.wheel_radius.clone()
         # >1 biases the friction draw towards the low end while keeping the range
         self.plant.grip_bias = float(kwargs.get("grip_bias", 1.0))
 
@@ -339,6 +385,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self._is_hybrid = True
             self._refreshable_reference = True
             self._path_generator_kind = "open_random"
+        elif self._streaming_reference:
+            from utils.random_reference import RollingReference
+            initial = torch.zeros((self.n, 4), device=self.device)
+            initial[:, 3] = (torch.rand(self.n, device=self.device)*2-1)*.09
+            self._rolling_reference = RollingReference(
+                initial, segments=int(kwargs.get("reference_segments", 2)),
+                transition_min_m=kwargs.get("reference_transition_min_m", None))
+            self.path_bank = self._rolling_reference.roads
+            self.num_waypoints = self.path_bank.shape[1]
+            self._path_length_xcar = 240. / self.length_scale
         elif ref_mode == "closed_random":
             self.num_waypoints = 2512
             self.closed_random_radius = float(kwargs.get("closed_random_radius", 1.0))
@@ -348,6 +404,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self.num_paths = int(kwargs.get("num_paths", 256))
             self.trajectory_generator = TrajGen(
                 self.num_waypoints, self._path_length_xcar, device=device)
+            self.trajectory_generator.switch_fraction = float(kwargs.get("closed_switch_fraction", 0.0))
             self.path_bank = self._scale_waypoints(
                 self.trajectory_generator.generate_closed_random_waypoints(
                     self.num_paths, radius=self.closed_random_radius))
@@ -433,18 +490,30 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.num_paths = int(self.path_bank.shape[0])
         # three-generation ring: an environment keeps its generation for the whole
         # episode, and a refresh only overwrites a slot that no episode is using
-        self.path_bank = self.path_bank.unsqueeze(0).repeat(3, 1, 1, 1)
+        self.path_bank = (self.path_bank.unsqueeze(0) if self._streaming_reference
+                          else self.path_bank.unsqueeze(0).repeat(3, 1, 1, 1))
+        self._path_ds = torch.linalg.vector_norm(
+            torch.roll(self.path_bank[..., :2], -1, dims=2) - self.path_bank[..., :2],
+            dim=-1).mean(dim=-1)
         self.current_generation = 0
         self.path_generation = torch.zeros(self.n, dtype=torch.long, device=self.device)
         self._path_refresh_pending = False
         self.path_id = torch.zeros(self.n, dtype=torch.long, device=self.device)
-        if self.num_paths > 1:
+        if self._streaming_reference:
+            self.path_id = torch.arange(self.n, device=self.device)
+            self._path_ds.fill_(self._rolling_reference.ds)
+        elif self.num_paths > 1:
             self.path_id.random_(0, self.num_paths)
 
-        if not self.train:
+        # Evaluation used to create ``data/traj-*.csv`` in the process working
+        # directory unconditionally.  That silently polluted the source tree
+        # during read-only gates.  Export is now explicit and caller-owned.
+        trajectory_output_dir = kwargs.get("trajectory_output_dir")
+        if not self.train and trajectory_output_dir:
             basename = time.strftime("%Y%m%d-%H%M%S")
-            Path("data").mkdir(parents=True, exist_ok=True)
-            with open(os.path.join("data", "traj-" + basename + ".csv"), 'w') as f:
+            Path(trajectory_output_dir).mkdir(parents=True, exist_ok=True)
+            with open(os.path.join(trajectory_output_dir,
+                                   "traj-" + basename + ".csv"), 'w') as f:
                 writer = csv.writer(f, delimiter=',')
                 for i in range(self.num_waypoints):
                     x, y, psi = (self.path_bank[0, 0, i, 0].item(),
@@ -462,6 +531,26 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.preview_scale = float(kwargs.get("preview_scale", 1.0))
         # time-based preview headways (seconds); None keeps the metric previews
         pt = kwargs.get("preview_time", None)
+        self.preview_time = None if pt is None else torch.as_tensor(
+            [float(x) for x in (pt.split(',') if isinstance(pt, str) else pt)],
+            device=self.device, dtype=torch.float32)
+        if self.preview_time is not None:
+            values = self.preview_time
+            if (values.shape != (3,) or not bool(torch.isfinite(values).all())
+                    or not bool((values > 0).all()) or not bool((values.diff() > 0).all())):
+                raise ValueError('preview_time requires three increasing positive finite headways')
+        pd = kwargs.get("preview_distances_m", None)
+        self.preview_distances_m = None
+        if pd is not None:
+            if pt is not None:
+                raise ValueError('Choose metric or time preview, not both')
+            self.preview_distances_m = torch.as_tensor(
+                [float(x) for x in (pd.split(',') if isinstance(pd, str) else pd)],
+                device=self.device, dtype=torch.float32)
+            values = self.preview_distances_m
+            if (values.shape != (3,) or not bool(torch.isfinite(values).all())
+                    or not bool((values > 0).all()) or not bool((values.diff() > 0).all())):
+                raise ValueError('preview_distances_m requires three increasing positive finite distances')
         # arc length of one waypoint, needed to turn a time headway into an index
         self.waypoint_ds = float(getattr(self, "_path_length_xcar", 50.0) * self.length_scale / max(self.num_waypoints - 1, 1))
 
@@ -481,15 +570,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             if getattr(self, "preview_time", None) is not None:
                 preview_guard = guard_speed * float(self.preview_time.max().item())
             else:
-                preview_guard = 600.0 * self.preview_scale * self.waypoint_ds
+                preview_guard = (float(self.preview_distances_m[-1])
+                                 if self.preview_distances_m is not None
+                                 else 600.0 * self.preview_scale * self.waypoint_ds)
             reserve = (1.15 * guard_speed * self.max_steps * self.dt
                        + preview_guard + 2.0 * self.offpath_limit)
             usable = max((self.num_waypoints - 1) * self.waypoint_ds - reserve, 0.0)
             self._max_spawn_progress = min(
                 int(usable / self.waypoint_ds), self.num_waypoints - 1)
-        self.preview_time = None if pt is None else torch.as_tensor(
-            [float(x) for x in (pt if not isinstance(pt, str) else pt.split(","))],
-            device=self.device, dtype=torch.float32)
         self.is_done = torch.zeros(self.n, dtype=torch.uint8, device=self.device)   # 0 = not done, 1 = failed, 2 = succeeded
         self.no_progress_count = torch.zeros(self.n, dtype=torch.uint8, device=self.device)
         self._now = None
@@ -504,6 +592,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             out[..., 3] /= self.length_scale
         if False:  # the path no longer carries a reference sideslip
             pass
+        if self._cyclic_reference:
+            if self.closed_curvature_cap is not None:
+                # Enlarge the whole geometry, never clip only its curvature
+                # labels. Heading and curvature must describe the same path.
+                factor = (out[..., 3].abs().amax(dim=-1, keepdim=True)
+                          / self.closed_curvature_cap).clamp_min(1.)
+                out[..., :2] *= factor.unsqueeze(-1)
+                out[..., 3] /= factor
+            out = (TrajGen.resample_closed(out.unsqueeze(0))[0] if out.ndim == 2
+                   else TrajGen.resample_closed(out))
         return out
 
     def update_recent_obs(self, obs):
@@ -513,11 +611,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
     def _reset_sensor_model(self, mask):
         if not self.sensor_dr:
             return
-        n = int(mask.sum().item())
+        n = mask.numel() if mask.dtype != torch.bool else int(mask.sum().item())
         if n == 0:
             return
         self._sensor_noise_scale[mask] = 0.5 + torch.rand((n, 1), device=self.device)
-        self._sensor_bias[mask] = (torch.randn((n, self.num_states), device=self.device)
+        self._sensor_bias[mask] = (torch.randn((n, self.sensor_num_states), device=self.device)
                                    * self._sensor_bias_std)
         self._sensor_rw[mask] = 0.0
         self._sensor_delay_steps[mask] = torch.randint(
@@ -525,22 +623,40 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self._sensor_pending[mask] = True
         self._sensor_needs_fill[mask] = True
 
+    def _prepare_sensor_error(self):
+        """Sample once so derived previews and encoder channels share a reading."""
+        if not hasattr(self, '_sensor_error_prepared'):
+            self._sensor_error_prepared = torch.zeros_like(self._sensor_pending)
+            self._sensor_error = torch.zeros_like(self._sensor_cached)
+        mask = self._sensor_pending & ~self._sensor_error_prepared
+        if not bool(mask.any()):
+            return self._sensor_error
+        n = int(mask.sum().item())
+        scale = self._sensor_noise_scale[mask]
+        self._sensor_rw[mask] += (torch.randn((n, self.sensor_num_states), device=self.device)
+                                  * self._sensor_rw_std * scale)
+        limit = 3.0 * self._sensor_bias_std
+        self._sensor_rw[mask] = torch.maximum(torch.minimum(self._sensor_rw[mask], limit), -limit)
+        self._sensor_error[mask] = (self._sensor_bias[mask] + self._sensor_rw[mask]
+            + torch.randn_like(self._sensor_cached[mask]) * self._sensor_white_std * scale)
+        self._sensor_error_prepared[mask] = True
+        return self._sensor_error
+
     def _actor_sensor_packet(self, clean):
         """Return one delayed/noisy packet while preserving the 27-D contract."""
         if not self.sensor_dr:
             return clean
+        # CarSim exposes its native state as float64 while the deployable actor,
+        # sensor biases and delay queue are float32.  Letting the first addition
+        # promote ``sample`` to float64 made reset fail when it was assigned to
+        # the float32 history buffer.  The real sensor packet contract is
+        # float32, independent of the plant solver precision.
+        clean = clean.to(dtype=self._sensor_history.dtype)
         mask = self._sensor_pending
         if not bool(mask.any()):
             return self._sensor_cached
-        n = int(mask.sum().item())
-        scale = self._sensor_noise_scale[mask]
-        self._sensor_rw[mask] += (torch.randn((n, self.num_states), device=self.device)
-                                  * self._sensor_rw_std * scale)
-        limit = 3.0 * self._sensor_bias_std
-        self._sensor_rw[mask] = torch.maximum(
-            torch.minimum(self._sensor_rw[mask], limit), -limit)
-        sample = clean[mask] + self._sensor_bias[mask] + self._sensor_rw[mask]
-        sample = sample + torch.randn_like(sample) * self._sensor_white_std * scale
+        error = self._prepare_sensor_error()
+        sample = clean[mask] + error[mask]
         if self.sensor_delay_max > 0:
             self._sensor_history[1:, mask] = self._sensor_history[:-1, mask].clone()
         self._sensor_history[0, mask] = sample
@@ -550,9 +666,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self._sensor_needs_fill[fill] = False
         env_i = torch.arange(self.n, device=self.device)
         delayed = self._sensor_history[self._sensor_delay_steps, env_i]
-        dropout = mask & (torch.rand(self.n, device=self.device) < self.sensor_dropout_prob)
+        dropout = mask & ~fill & (torch.rand(self.n, device=self.device) < self.sensor_dropout_prob)
         delivered = torch.where(dropout.unsqueeze(1), self._sensor_cached, delayed)
         self._sensor_cached[mask] = delivered[mask]
+        self._sensor_error_prepared[mask] = False
         self._sensor_pending[mask] = False
         return self._sensor_cached
 
@@ -592,6 +709,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             raise RuntimeError("refreshed bank shape %s != %s"
                                % (tuple(fresh.shape), tuple(self.path_bank[target].shape)))
         self.path_bank[target].copy_(fresh)
+        self._path_ds[target] = torch.linalg.vector_norm(
+            torch.roll(fresh[..., :2], -1, dims=1) - fresh[..., :2], dim=-1).mean(dim=-1)
         self.current_generation = target
         self._path_refresh_pending = False
         return True
@@ -604,14 +723,42 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         return self._try_path_refresh()
 
     def find_nearest_waypoint(self, x, y, veldir, beta, kappa):
-        # Local projection around the last known progress.  The window is
+        if getattr(self, '_streaming_reference', False):
+            self.progress, _ = self._rolling_reference.advance(
+                self.progress, active=getattr(self, '_tracking_mask', None))
+        # A partial respawn must not advance another car's tracking history.
+        mask = getattr(self, "_tracking_mask", None)
+        saved = {}
+        if mask is not None:
+            for name in ("progress", "step_progress", "_stall_anchor", "no_progress_count",
+                         "angle_diff", "signed_pos_diff", "beta_diff", "beta_ref",
+                         "kappa_diff", "kappa_ref"):
+                value = getattr(self, name, None)
+                if torch.is_tensor(value):
+                    saved[name] = value.clone()
+        # Predict index motion from localised displacement, not hidden velocity.
+        # The correction window now covers projection error rather than imposing
+        # a 19-waypoint/control-step speed limit.
+        last = self.waypoints_at(self.progress[:, None])[:, 0]
+        nxt_idx = self.progress + 1
+        nxt_idx = (nxt_idx.remainder(self.num_waypoints) if self._cyclic_reference
+                   else nxt_idx.clamp(max=self.num_waypoints - 1))
+        nxt = self.waypoints_at(nxt_idx[:, None])[:, 0]
+        ds = torch.linalg.vector_norm(nxt[:, :2] - last[:, :2], dim=1).clamp_min(1e-4)
+        previous_xy = getattr(self, "_projection_xy", self.s[:, :2])
+        displacement = self.s[:, :2] - previous_xy
+        along = displacement[:, 0] * torch.cos(last[:, 2]) + displacement[:, 1] * torch.sin(last[:, 2])
+        advance = (along / ds).round().long()
+        if mask is not None:
+            advance = torch.where(mask, advance, torch.zeros_like(advance))
+        # Local projection around the predicted progress.  The window is
         # symmetric because a car that has been pushed off the line must be able
         # to re-acquire a reference point slightly BEHIND the last one; the old
         # forward-only window plus the "freeze progress while off path" rule made
         # the target stale exactly inside the recovery band (progress froze at
         # 3.8 m of lateral error while the failure corridor is 10.6 m).
         offs = self.search_offsets
-        ind = self.progress.unsqueeze(1) + offs
+        ind = (self.progress + advance).unsqueeze(1) + offs
         if self._cyclic_reference:
             ind = ind.remainder(self.num_waypoints)
         else:
@@ -629,7 +776,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         kappa_diff = diff[:, :, 3]
         best = torch.argmin(pos_diff, 1)
         bidx = best.unsqueeze(1)
-        self.step_progress = (best - self.win_back).to(torch.int16)
+        self.step_progress = (advance + best - self.win_back).to(torch.int16)
+        self.projection_search_edge = (best == 0) | (best == offs.numel() - 1)
         self.progress = self.progress + self.step_progress.long()
         if self._cyclic_reference:
             self.progress.remainder_(self.num_waypoints)
@@ -654,9 +802,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         pos_now = self.s[:, :2]
         moved = torch.norm(pos_now - self._stall_anchor, dim=1)
         reached = moved >= self.stall_move_min
-        self._stall_anchor = torch.where(reached.unsqueeze(1), pos_now, self._stall_anchor)
-        self.no_progress_count[reached] = 0
-        self.no_progress_count[~reached] += 1
+        if getattr(self, "_physics_advanced", False):
+            self._stall_anchor = torch.where(reached.unsqueeze(1), pos_now, self._stall_anchor)
+            self.no_progress_count[reached] = 0
+            self.no_progress_count[~reached] += 1
 
         # u = vector from nearest waypoint to current pos; v = velocity direction at nearest waypoint
         # theta = angle from u to v
@@ -675,6 +824,79 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.beta_ref = torch.zeros_like(self.beta_diff)   # set from the curvature map later
         self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
         self.kappa_ref = waypoints_filtered[:, :, 3].gather(1, bidx).squeeze(1)
+        for name, old in saved.items():
+            value = getattr(self, name)
+            select = mask.view(-1, *([1] * (value.ndim - 1)))
+            setattr(self, name, torch.where(select, value, old))
+        if mask is None or not hasattr(self, "_projection_xy"):
+            self._projection_xy = self.s[:, :2].clone()
+        else:
+            self._projection_xy[mask] = self.s[mask, :2]
+
+    @staticmethod
+    def _dense_target_gate(value, target, scale):
+        """Smooth [0, 1] gate with nonzero gradient away from its target."""
+        return torch.exp(-0.5 * ((value - target) / scale).square())
+
+    @staticmethod
+    def _positive_target_gate(value, target):
+        """Zero-baseline progress gate for a signed positive requirement.
+
+        Unlike a Gaussian target gate, zero behaviour earns exactly zero.  The
+        clamp boundary retains an autograd direction at zero.
+        """
+        target = torch.as_tensor(target, device=value.device, dtype=value.dtype)
+        return torch.clamp(value / target.clamp_min(1e-6), 0.0, 1.0)
+
+    @staticmethod
+    def _xcar_target_improvement(value, target):
+        """Signed quadratic improvement over doing nothing, in [-1, 1].
+
+        XCAR learns drift from ``-(value-target)^2``: samples on the wrong side
+        are worse, rather than indistinguishable from zero.  Subtracting the
+        zero-behaviour score preserves that direction while making zero exactly
+        neutral and the target exactly one.
+        """
+        target = torch.as_tensor(target, device=value.device, dtype=value.dtype)
+        denom = target.abs().clamp_min(1e-6).square()
+        improvement = (target.square() - (value - target).square()) / denom
+        return torch.clamp(improvement, -1.0, 1.0)
+
+    @staticmethod
+    def _weighted_drift_progress(progress):
+        """Dense zero-baseline drift progress without an easy-component loophole.
+
+        Columns are rear kappa, throttle, signed beta and countersteer.  Attitude
+        receives 75% of the mass, so pure forward wheelspin can earn at most 25%
+        of this shaping term.  The separate strict product still requires every
+        component at once.
+        """
+        weights = progress.new_tensor((0.15, 0.10, 0.40, 0.35))
+        return (progress * weights).sum(dim=1)
+
+    def _adaptive_beta_shaping(self, beta, beta_target):
+        """Keep adaptive drift learnable without forcing drift at zero demand.
+
+        A raw quadratic loses its exploration gradient quadratically when the
+        physics map asks for a smaller (but still meaningful) sideslip.  At a
+        0.15 rad target it is about seven times weaker than at 0.40 rad, and the
+        kappa term used to be attenuated a second time.  Separate target
+        *magnitude* from target *eligibility*: the requested angle stays exactly
+        the physical map output, while a smooth demand gate and normalized error
+        keep a comparable learning signal.  Below 0.15 rad the gate fades
+        smoothly to zero; at zero demand the neutral beta penalty remains.
+        """
+        target_abs = beta_target.abs()
+        x = torch.clamp(target_abs / 0.15, 0.0, 1.0)
+        demand = x * x * (3.0 - 2.0 * x)
+        # The square root is essential because the error is squared below.  It
+        # makes d(loss)/d(beta) at beta=0 approximately independent of target
+        # magnitude instead of over-amplifying small targets.
+        scale = torch.sqrt(self.drift_beta_target / target_abs.clamp_min(0.10))
+        cap = max(self.beta_max, self.drift_beta_target + 0.15) ** 2
+        target_loss = torch.clamp(((beta - beta_target) * scale) ** 2, max=cap)
+        neutral_loss = torch.clamp(beta ** 2, max=cap)
+        return -(demand * target_loss + (1.0 - demand) * neutral_loss), demand
 
     def _reference_beta(self, kappa, speed, idx=None):
         """Reference sideslip: the tight-corner target, faded by feasibility.
@@ -709,8 +931,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             gg = gg[idx]
         if not torch.is_tensor(speed):
             speed = torch.full_like(kappa, float(speed))
-        if speed.dim() < kappa.dim():
-            speed = speed.reshape(-1, *((1,) * (kappa.dim() - speed.dim())))
+        if speed.ndim == 0:
+            speed = speed.expand_as(kappa)
+        while speed.ndim < kappa.ndim:
+            speed = speed.unsqueeze(-1)
         # MEASURED against the trim solver (rounds 43-44): the steady sideslip the
         # car can actually hold is l_R*kappa plus a rear slip angle that is SMALL and
         # slightly negative at these utilisations -- 0.087 rad at (mu 1, R 12, 5 m/s)
@@ -732,7 +956,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # 1.1 s under the corrected action mapping.
         speed_fade = (speed / 3.0).clamp(0.0, 1.0)
         if self.drift_mode:
-            if self.beta_ref_mode == "adaptive_drift":
+            if self.beta_ref_mode in ("adaptive_drift", "geometry_drift"):
                 # Demand large sideslip only where it is useful and physically
                 # plausible: a sufficiently tight corner, near the friction
                 # limit, on a surface where power oversteer is accessible.
@@ -744,13 +968,33 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 util_gate = _smooth_gate(
                     (util - self.drift_util_lo) /
                     max(self.drift_util_hi - self.drift_util_lo, 1e-6))
+                if self.beta_ref_mode == "geometry_drift":
+                    # A path reference should not oscillate with the ratio of
+                    # local curvature to the most demanding preview point.
+                    # Geometry/grip gates below still suppress unsuitable bends.
+                    util_gate = torch.ones_like(util_gate)
                 curve = lr * kap
                 curve_gate = _smooth_gate(
                     (curve - self.drift_curve_lo) /
                     max(self.drift_curve_hi - self.drift_curve_lo, 1e-6))
+                # Power countersteer is not monotonically easier as a corner
+                # gets tighter.  CarSim and FastPlant both hold the mu075 drift
+                # branch near lR*kappa ~= 0.08, while lR*kappa ~= 0.16 has only
+                # a steer-into-turn / low-throttle equilibrium.  Fade the drift
+                # request back out above that verified band; path tracking then
+                # remains the objective in hairpins.
+                curve_gate = curve_gate * _smooth_gate(
+                    (self.drift_curve_fade_hi - curve) /
+                    max(self.drift_curve_fade_hi - self.drift_curve_fade_lo, 1e-6))
                 grip_gate = _smooth_gate(
                     (self.drift_mu_hi - mu) /
-                    max(self.drift_mu_hi - self.drift_mu_lo, 1e-6)).sqrt()
+                    max(self.drift_mu_hi - self.drift_mu_lo, 1e-6))
+                # The verified mu075 equilibrium is a genuine large-angle
+                # branch (|beta| ~= 0.54), not a half-sized interpolation
+                # between drift and normal cornering.  Keep the full drift
+                # target through the low/mid-grip range and use the gate only
+                # to fade the request near the high-grip endpoint.
+                grip_gate = _smooth_gate(grip_gate / 0.5)
                 target = self.drift_beta_target * util_gate * curve_gate * grip_gate
                 return -torch.sign(kappa) * target * speed_fade
             # explicit drift target: a large sideslip, faded in only at very low speed and
@@ -782,10 +1026,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         has to infer the hidden state (speed, sideslip) from history, which is
         why the actor is a GRU.
 
-        The reference/error part is unchanged in *meaning* from XCAR: preview
-        points are expressed in the course aligned frame (position, course
-        error, curvature and the reference sideslip sign), and the tracking
-        errors are the lateral error, the course error and the curvature error.
+        Preview positions and tangent headings use the localised BODY heading.
+        True course error is reserved for reward/critic; the actor receives
+        body-heading error. Localisation and IMU/encoder packets are subjected
+        to the same sensor model before either actor branch sees them.
         """
         x = self.s[:, 0]
         y = self.s[:, 1]
@@ -797,7 +1041,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         v = self.es[:, 6]
         vflx = self.es[:, 8]
         vfrx = self.es[:, 9]
-        wheel_speed = self.s[:, 6:10] * self.wheel_radius       # encoder measurement
+        wheel_speed = self.s[:, 6:10] * self.encoder_radius
         # curvature estimate from measurable signals (yaw rate / wheel speed)
         # Use the FRONT wheels for the speed estimate: during a drift the rear
         # wheels spin far above the ground speed, so averaging all four
@@ -815,7 +1059,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # obs() runs once per control step in training but is called again by the
         # evaluator and the renderer.  Advancing the nearest-point search twice
         # would corrupt progress and the stall counter, so guard it.
-        if getattr(self, "_track_pending", True):
+        update_history = getattr(self, "_track_pending", True)
+        if update_history:
             self.find_nearest_waypoint(x, y, veldir, beta, kappa_est)
             self._track_pending = False
 
@@ -826,7 +1071,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # corner at low speed asks for almost no sideslip and a corner at the
         # friction limit asks for beta_max.  It uses the TRUE speed and the TRUE
         # grip, so it is privileged information and never reaches the actor.
-        if self.beta_ref_mode in ("physics", "constant"):
+        # Every reference mode is state dependent: even ``adaptive_drift`` must
+        # be recomputed after the plant advances because its utilisation gate
+        # depends on the current speed.  Previously this condition omitted the
+        # adaptive mode, leaving ``beta_ref`` at its all-zero constructor value
+        # during training while reset_done_envs() spawned from a nonzero
+        # adaptive target.  That made the reset distribution and reward demand
+        # contradictory and disabled the drift-opportunity gate entirely.
+        if self.beta_ref_mode in ("physics", "constant", "adaptive_drift", "geometry_drift"):
             self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1), v).squeeze(1)
             self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),
                                          torch.cos(beta - self.beta_ref))
@@ -836,19 +1088,35 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         beta_ref = self.beta_ref
         kappa_diff = self.kappa_diff
         kappa_ref = self.kappa_ref
+        path_heading = self.waypoints_at(self.progress.unsqueeze(1))[:, 0, 2]
+        heading_error = torch.atan2(torch.sin(psi - path_heading),
+                                    torch.cos(psi - path_heading))
 
         # look ahead 3m (scaled with the reference geometry)
         # Preview points.  With --preview-time they are specified as TIME
         # headways and converted to an arc length with the current speed, so the
         # look-ahead in seconds stays constant from 4 to 10 m/s (a fixed metric
         # preview is 2.3 s at 4 m/s but only 0.85 s at 10 m/s).
-        if self.preview_time is not None:
-            ds_wp = self.waypoint_ds
+        if self.preview_distances_m is not None:
+            ds_wp = (self._path_ds[self.path_generation, self.path_id].unsqueeze(1)
+                     if self._cyclic_reference else self.s.new_full((self.n, 1), self.waypoint_ds))
+            offs = (self.preview_distances_m[None] / ds_wp.clamp_min(1e-6)).round().long().clamp_min(1)
+            inds = self.progress[:, None] + offs
+            inds = (inds.remainder(self.num_waypoints) if self._cyclic_reference
+                    else inds.clamp(0, self.num_waypoints - 1))
+            la_inds = [inds[:, k:k+1] for k in range(3)]
+        elif self.preview_time is not None:
+            ds_wp = (self._path_ds[self.path_generation, self.path_id].unsqueeze(1)
+                     if self._cyclic_reference else self.waypoint_ds)
             # use the ENCODER-derived speed, not the true speed: the preview
             # positions are actor-visible, so the true speed must not leak into
             # them through the time headway.
-            offs = (v_est.unsqueeze(1) * self.preview_time.unsqueeze(0) / ds_wp).round().long()
-            offs = offs.clamp(min=1, max=self.num_waypoints // 4)
+            preview_speed = wheel_speed[:, :2].mean(dim=1).clamp_min(0.)
+            # Preview uses the clean encoder-derived speed as the filtered
+            # deployment signal proxy. Do not inject wheel measurement noise
+            # into waypoint selection; true translational speed is never used.
+            offs = (preview_speed.unsqueeze(1) * self.preview_time.unsqueeze(0) / ds_wp).round().long()
+            offs = offs.clamp(min=1, max=self.num_waypoints - 1)
             if self._cyclic_reference:
                 la_inds = [((self.progress.unsqueeze(1) + offs[:, k:k + 1]) % self.num_waypoints)
                            for k in range(3)]
@@ -869,19 +1137,25 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         la = [self.waypoints_at(la_ind).squeeze(1) for la_ind in la_inds]
         # curvature at the preview points, used by the friction-limit speed target
         self.kappa_preview = torch.stack([w[:, 3] for w in la], dim=1)
+        if self.reward_mode == "adaptive_envelope" and self.beta_ref_mode in ("adaptive_drift", "geometry_drift"):
+            self.beta_ref = self._reference_beta(
+                self.kappa_ref[:, None], self._reference_speed()).squeeze(1)
+            self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),
+                                        torch.cos(beta - self.beta_ref))
+            beta_ref, beta_diff = self.beta_ref, self.beta_diff
 
 
         def convert(waypoints):
-            """Cast a waypoint into the current course aligned frame."""
+            """Cast a waypoint into the measured body-heading frame."""
             x1 = waypoints[:, 0]
             y1 = waypoints[:, 1]
             veldir1 = waypoints[:, 2]
             kappa1 = waypoints[:, 3]
-            theta = torch.atan2(y1 - y, x1 - x) - veldir
+            theta = torch.atan2(y1 - y, x1 - x) - psi
             l = torch.hypot(y1 - y, x1 - x)
             x2 = l * torch.cos(theta)
             y2 = l * torch.sin(theta)
-            veldir2 = veldir1 - veldir
+            veldir2 = veldir1 - psi
             veldir2 = torch.atan2(torch.sin(veldir2), torch.cos(veldir2))
             kappa2 = kappa1 * self.length_scale          # O(1) normalisation
             x2, y2, veldir2, kappa2 = map(lambda t: torch.unsqueeze(t, 1),
@@ -940,12 +1214,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         else:
             ctrl = [self.u[:, 1], self.u[:, 2], self.u[:, 3], self.u[:, 4]]
 
-        self._prev = self._now
-        self._now = {
+        now = {
             "beta": beta, "v": v, "kappa": r / (v + 1e-6),   # true curvature: reward only
             "r": r, "r_ref": v_est * kappa_ref,
             "vflx": vflx, "vfrx": vfrx,
             "delta": self.u_cmd[:, 0],
+            "raw_delta": getattr(self, "_raw_action", self.u_cmd)[:, 0],
             "wheel": wheel_speed,
             "kappa_power": (
                 self.extras["kappa_power"]
@@ -958,6 +1232,17 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             "beta_diff": beta_diff, "kappa_ref": kappa_ref,
             "prog": self.step_progress, "failed": failed.float(),
         }
+        if update_history:
+            mask = getattr(self, "_tracking_mask", None)
+            if mask is None or self._now is None:
+                self._prev = self._now
+                self._now = {k: t.clone() for k, t in now.items()}
+            else:
+                # Only initialise the newborn rows; survivors retain the
+                # previous real control sample used for smoothness rewards.
+                for k, t in now.items():
+                    m = mask.view(-1, *([1] * (t.ndim - 1)))
+                    self._now[k] = torch.where(m, t, self._now[k])
 
         # observed: ego state + previous commands + tracking errors + preview
         e_pos = signed_pos_diff / self.length_scale
@@ -984,14 +1269,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # count, but expose the stationary conservative speed estimate there.
         # Episodic mode preserves legacy semantics for checkpoint replay.
         encoder_feature = v_min if self.continuing_task else self.travel / self.length_scale
-        scalars += [e_pos, angle_diff, e_kappa, encoder_feature]
+        scalars += [e_pos, heading_error, e_kappa, encoder_feature]
         obs_list = [t.unsqueeze(1) for t in scalars]
         obs_list.extend(la_converted)
         obs = torch.cat(obs_list, 1) * self.obs_scale
         actor_obs = self._actor_sensor_packet(obs)
         if self.obs_privileged:
             priv = torch.stack([self.es[:, 7], self.es[:, 6], self.es[:, 3], self.es[:, 4]], dim=1)
-            obs = torch.cat([obs, priv * self.priv_concat_scale], dim=1)
+            actor_obs = torch.cat([actor_obs, priv * self.priv_concat_scale], dim=1)
         if self.asymmetric:
             # privileged critic input: everything the simulation knows and the
             # car cannot measure (sideslip, absolute speed, tyre forces/slips)
@@ -1002,8 +1287,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # forces are normalised by the static wheel load m*g/4, so Fz is O(1)
             # (it can reach ~2 at the front under braking) instead of O(10^4)
             f_ref = (self.plant.col("m") * self.plant.col("g") / 4.0).unsqueeze(1).clamp(min=1.0)
+            # Versioned for fresh mirror runs; old checkpoints retain world velocities.
+            critic_vx, critic_vy = self.s[:, 3], self.s[:, 4]
+            if self.critic_velocity_frame == "body":
+                c_psi, s_psi = self.s[:, 2].cos(), self.s[:, 2].sin()
+                critic_vx, critic_vy = (c_psi * critic_vx + s_psi * critic_vy,
+                                        -s_psi * critic_vx + c_psi * critic_vy)
             priv = [
-                beta, v, r, self.s[:, 3], self.s[:, 4],
+                beta, v, r, critic_vx, critic_vy,
                 (r / (v + 1e-6)), kappa_ref, self._now["r_ref"], beta_ref,
                 signed_pos_diff / self.length_scale, angle_diff,
                 ax_acc, ay_acc, az_acc,
@@ -1025,6 +1316,16 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             states = torch.cat(priv_list, 1) * self.priv_scale
             return {"obs": actor_obs, "states": states}
         return actor_obs
+
+    def _reference_speed(self):
+        """Heuristic attainable-speed scale; not a claimed friction bound."""
+        if self.speed_target_mode != "limit":
+            return torch.full_like(self.kappa_ref, self.speed_target)
+        amplitude = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp(.3, 3.)
+        curvature = torch.maximum(self.kappa_ref.abs(),
+                                  self.kappa_preview.abs().amax(dim=1)).clamp_min(.01)
+        return (self.speed_margin * torch.sqrt(amplitude * self.plant.col("g") /
+                                                curvature)).clamp(2., self.speed_cap)
 
     def reward(self):
         now, prev = self._now, self._prev
@@ -1085,6 +1386,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # the gate is optional: with the geometry-derived reference the reward
         # should target exactly beta_ref, so the gate is disabled when its scale is 0
         beta_target = self.beta_ref * beta_gate if self.beta_gate_scale > 0 else self.beta_ref
+        # Rear-wheel slip is required only where the reference map actually asks
+        # for a power slide.  With ``adaptive_drift`` the high-grip/straight
+        # target is zero; an unconditional kappa target there would contradict
+        # the user's objective and reward tyre smoke during a valid normal turn.
+        # The fixed low-grip drift task still receives a factor of one.
+        _drift_opportunity = torch.clamp(
+            beta_target.abs() / max(self.drift_beta_target, 1e-6), 0.0, 1.0)
         # cap the shaping term: an uncapped quadratic lets a single spin dominate the
         # return with hundreds of negative reward in one step, which swamps the critic
         # The clamp must never be active at beta = 0, or the quadratic has zero gradient
@@ -1093,6 +1401,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # sideslip collapsed to zero and stayed there.
         _b_cap = max(self.beta_max, self.drift_beta_target + 0.15) ** 2
         rew_beta = -torch.clamp((beta - beta_target) ** 2, max=_b_cap)
+        if self.drift_mode and self.beta_ref_mode in ("adaptive_drift", "geometry_drift"):
+            rew_beta, _drift_opportunity = self._adaptive_beta_shaping(
+                beta, beta_target)
         # Potential based recovery term: reward REDUCING the lateral error, not
         # just having a small one.  The static quadratic gives no direction at the
         # operating point and the car never learns to come back to the line.
@@ -1117,10 +1428,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # The grip multiplier is available to the reward but not to the actor,
             # so the policy must infer how fast it may go from the vehicle response,
             # which is exactly the adaptive behaviour we want.
-            mu = (self.plant.col("D") * self.plant.tyre_scale.squeeze(1)).clamp(0.3, 3.0)
-            kap = torch.maximum(self.kappa_ref.abs(),
-                                  self.kappa_preview.abs().amax(dim=1)).clamp(min=1e-2)
-            v_tgt = (self.speed_margin * torch.sqrt(mu * 9.81 / kap)).clamp(2.0, self.speed_cap)
+            v_tgt = self._reference_speed()
         else:
             v_tgt = self.speed_target
         if self.speed_target_mode == "limit":
@@ -1207,6 +1515,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # criterion hold at the same instant.
             _path_gate = torch.clamp(1.0 - signed_pos_diff.abs() / self.offpath_limit,
                                      0.0, 1.0)
+            if self.reward_mode == "adaptive_envelope" and self.adaptive_path_scale_m is not None:
+                # Precision is independent of the failure boundary. A rational
+                # score retains recovery signal even far from the centreline.
+                _path_gate = 1.0 / (1.0 + (signed_pos_diff / self.adaptive_path_scale_m).square())
             _course_gate = torch.clamp(1.0 - angle_diff.abs() / self.course_limit,
                                        0.0, 1.0)
             _v_target_tensor = torch.as_tensor(
@@ -1218,9 +1530,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                                      max(self.drift_kappa_target - 0.25, 1e-3), 0.0, 1.0)
             _thr_gate = torch.clamp((self.u_cmd[:, 1] - 0.25) /
                                     max(self.drift_throttle_gate - 0.25, 0.05), 0.0, 1.0)
-            _beta_gate = torch.clamp((_b.abs() - 0.12) /
-                                     max(self.drift_beta_target - 0.12, 1e-3), 0.0, 1.0)
-            _counter_gate = _g_delta * _sign_ok * _g_turn
+            # The former clipped |beta| and hard sign gates were exactly zero at
+            # the forward-wheelspin solution.  Their product therefore gave PPO
+            # no direction toward signed sideslip or countersteer.  Gaussian
+            # target gates remain bounded/nonnegative while providing a dense
+            # gradient from beta=0 and delta=0 toward the physical drift attitude.
+            _beta_gate = self._dense_target_gate(_b, beta_target, 0.30)
+            _counter_gate = (self._dense_target_gate(
+                delta, -0.25 * _sig, 0.20) * _g_turn)
             _steer_step = (delta - prev["delta"]).abs()
             _smooth_gate = torch.clamp(1.0 - _steer_step / 0.05, 0.0, 1.0)
             _track_mean = (_path_gate + _course_gate + _speed_gate) / 3.0
@@ -1229,15 +1546,96 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                       _thr_gate * _beta_gate * _counter_gate * _smooth_gate)
             live = 1.0 - is_failed
             if self.reward_mode == "adaptive_envelope":
+                # Eligibility follows the reference operating point. Slowing
+                # down cannot make the requested drift disappear; actual speed
+                # still gates whether a sample earns the optional bonus.
+                if self.drift_mode and self.beta_ref_mode in ("adaptive_drift", "geometry_drift"):
+                    beta_target = self._reference_beta(
+                        self.kappa_ref[:, None], _v_target_tensor).squeeze(1) * beta_gate
+                    demand = (beta_target.abs() / 0.15).clamp(0.0, 1.0)
+                    _drift_opportunity = demand.square() * (3.0 - 2.0 * demand)
+                    _beta_gate = self._dense_target_gate(_b, beta_target, 0.30)
+                    _counter_gate = self._positive_target_gate(
+                        -delta * _sig, 0.25) * _g_turn
                 _track_joint = _path_gate * _course_gate
                 _speed_ratio = v / _v_target_tensor.clamp_min(0.5)
                 _speed_use = torch.clamp(_speed_ratio, 0.0, 1.0)
+                _speed_ceiling_ratio = torch.ones_like(_speed_ratio)
+                if self.adaptive_speed_penalty == "envelope":
+                    # The margin-reduced speed is a performance reference, not
+                    # a hard upper bound. Allow self-selected equilibria up to
+                    # the un-margined reference, retaining preview slowdown and
+                    # the configured speed cap. This is a nominal envelope,
+                    # not a guarantee of combined-slip feasibility.
+                    _ceiling = (_v_target_tensor / self.speed_margin).clamp(max=self.speed_cap)
+                    _speed_ceiling_ratio = torch.maximum(
+                        _speed_ceiling_ratio, _ceiling / _v_target_tensor.clamp_min(0.5))
                 _overspeed_safe = torch.clamp(
-                    1.0 - torch.clamp(_speed_ratio - 1.0, min=0.0) / 0.25,
+                    1.0 - torch.clamp(_speed_ratio - _speed_ceiling_ratio, min=0.0) / 0.25,
                     0.0, 1.0)
+                if self.adaptive_speed_penalty == "none":
+                    _overspeed_safe = torch.ones_like(_speed_ratio)
                 _performance = _track_joint * _speed_use * _overspeed_safe
-                _drift_quality = (_performance * _slip_gate * _thr_gate *
-                                  _beta_gate * _counter_gate * _smooth_gate)
+                # Only the speed component is decoupled. Drift quality keeps
+                # its original precision gate; default checkpoint semantics stay exact.
+                _speed_performance = _performance
+                if self.adaptive_speed_coupling == "independent_position":
+                    _speed_performance = _course_gate * _speed_use * _overspeed_safe
+                elif self.adaptive_speed_coupling == "corridor":
+                    def fade_abs(value, start, end):
+                        t = ((value.abs() - start) / (end - start)).clamp(0., 1.)
+                        return 1. - t.square() * (3. - 2. * t)
+                    _corridor = fade_abs(signed_pos_diff, 1.5, 3.5)
+                    _direction = fade_abs(angle_diff, 0.35 * self.course_limit, self.course_limit)
+                    _speed_performance = _corridor * _direction * _speed_use * _overspeed_safe
+                # A strict product erases all exploration signal when one factor
+                # is absent.  Preserve XCAR's essential signed quadratic target
+                # information: correct-side samples improve over zero, while
+                # wrong-side beta/countersteer are explicitly worse than zero.
+                # The weighted sum remains zero at zero behaviour and the strict
+                # product remains the simultaneous-behaviour bonus.
+                _beta_aligned = _b * torch.sign(beta_target)
+                _counter_aligned = -delta * _sig
+                _drift_progress = torch.stack((
+                    self._positive_target_gate(_kx_rear, self.drift_kappa_target),
+                    self._positive_target_gate(
+                        self.u_cmd[:, 1], self.drift_throttle_gate),
+                    self._xcar_target_improvement(
+                        _beta_aligned, beta_target.abs().clamp_min(0.15)),
+                    torch.clamp(_counter_aligned / 0.25, -1.0, 1.0),
+                ), dim=1)
+                _drift_dense = self._weighted_drift_progress(_drift_progress)
+                if self.adaptive_shape in ("smooth_v1", "smooth_task_v2"):
+                    # Compact S curves: no bonus for zero/negative powered slip,
+                    # but progress starts before the former hard thresholds.
+                    def s_curve(x):
+                        x = x.clamp(0.0, 1.0)
+                        return x.square() * (3.0 - 2.0 * x)
+                    _slip_gate = s_curve(_kx_rear / self.drift_kappa_target)
+                    _thr_gate = s_curve(self.u_cmd[:, 1] / self.drift_throttle_gate)
+                    _counter_gate = s_curve(_counter_aligned / 0.25) * _g_turn
+                    # Same rational half-bell family as path precision; 0.05
+                    # radians per control step gives half smoothness credit.
+                    _smooth_gate = 1.0 / (1.0 + (_steer_step / 0.05).square())
+                # Necessary countersteer must not erase the drift bonus.
+                # v2 retains the independent smoothness term and bounded raw
+                # command-change cost, while actuator limits remain physical.
+                _strict_smooth = (1.0 if self.adaptive_shape == "smooth_task_v2"
+                                  else _smooth_gate)
+                _drift_strict = (_slip_gate * _thr_gate * _beta_gate *
+                                 _counter_gate * _strict_smooth)
+                # During drift entry the course error necessarily grows before
+                # countersteer arrests it.  Multiplying *dense* progress by the
+                # full course gate erased precisely those transition samples;
+                # weights 10 and 30 changed return but not behaviour.  Keep the
+                # car on-road and near its feasible speed while learning the
+                # transition, but reserve the strict bonus for simultaneous
+                # path+course+speed tracking.
+                _transition_support = (_path_gate * _speed_use * _overspeed_safe)
+                _dense_share = 0.5 if self.adaptive_shape in ("smooth_v1", "smooth_task_v2") else 0.8
+                _drift_quality = _drift_opportunity * (
+                    _dense_share * _transition_support * _drift_dense
+                    + (1.0 - _dense_share) * _performance * _drift_strict)
                 # A0-only geometric teacher.  delta_pp is computed exclusively
                 # from actor-visible preview/encoder signals; its weight is
                 # explicitly annealed to zero before adaptive mode selection.
@@ -1247,18 +1645,43 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # correlate exploration with better guidance reward.
                 _guidance_gate = torch.exp(
                     -0.5 * ((delta - self.delta_pp) / 0.20).square())
+                _raw_change_sq = ((now["raw_delta"] - prev["raw_delta"]) / 0.10).square()
+                _raw_change_cost = (_raw_change_sq / (1.0 + _raw_change_sq)
+                                    if self.adaptive_shape in ("smooth_v1", "smooth_task_v2")
+                                    else _raw_change_sq.clamp(max=1.0))
+                # In drift-eligible corners, grip-only tracking must not collect
+                # the entire task reward while avoiding the entry manoeuvre.
+                # Preserve a dense floor, then restore the base reward smoothly
+                # as signed sideslip AND positive rear power slip develop.
+                # Eligibility is reference-based; high-grip/straight rewards
+                # are exactly unchanged. Older reward profiles are untouched.
+                _task_factor = torch.ones_like(_performance)
+                if self.adaptive_shape == "smooth_task_v2":
+                    _beta_progress = s_curve(
+                        _beta_aligned / beta_target.abs().clamp_min(0.15))
+                    _powered_slide = _beta_progress * _slip_gate
+                    _task_factor = 1.0 - 0.75 * _drift_opportunity * (1.0 - _powered_slide)
                 adaptive_terms = {
                     "alive": self.adaptive_alive * live,
-                    "tracking": self.adaptive_tracking * _track_joint * live,
-                    "performance": self.adaptive_performance * _performance * live,
+                    "tracking": self.adaptive_tracking * _track_joint * _task_factor * live,
+                    "performance": self.adaptive_performance * _speed_performance * _task_factor * live,
                     "optional_drift": self.adaptive_drift * _drift_quality * live,
                     "guidance": self.adaptive_guidance * _guidance_gate * live,
                     "smooth": self.adaptive_smooth * _smooth_gate * live,
+                    "raw_steer_change": -0.05 * _raw_change_cost * live,
+                    # Retain brake for approaching a tighter/slower segment or
+                    # overspeed recovery; discourage braking below target speed.
+                    "unneeded_brake": -0.10 * self.u_cmd[:, 2] * (
+                        1. - _speed_ratio).clamp(0., 1.) * live,
                     "terminal": -self.terminal_cost * is_failed,
                 }
-                rew = torch.zeros_like(rew_pos)
-                for term in adaptive_terms.values():
-                    rew = rew + term
+                live_rew = torch.zeros_like(rew_pos)
+                for name, term in adaptive_terms.items():
+                    if name != "terminal":
+                        live_rew = live_rew + term
+                # Wrong-side samples must rank below zero behaviour, but a long
+                # shaping debt must never make deliberate failure profitable.
+                rew = live_rew.clamp_min(0.0) + adaptive_terms["terminal"]
                 with torch.no_grad():
                     self.rew_stats = {k: float(t.detach().mean())
                                       for k, t in adaptive_terms.items()}
@@ -1296,7 +1719,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # All drift-stack terms are conditional on drift_mode.  Previously
             # their nonzero defaults silently changed every nominal/v56-style
             # run, so a claimed throttle-only ablation was not an ablation.
-            "drift_kappa": _drift_on * self.drift_kappa_weight * rew_drift_kappa,
+            "drift_kappa": (_drift_on * self.drift_kappa_weight *
+                            _drift_opportunity * rew_drift_kappa),
             "drift_throttle": _drift_on * self.drift_throttle_weight * rew_drift_throttle,
             # throttle and countersteer are ELIGIBILITY gates in the joint term now, not
             # standalone rewards: a positive standalone throttle reward pays full throttle
@@ -1363,6 +1787,61 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         }
         return info_dict
 
+    def _refresh_reset_diagnostics(self, indices):
+        """Install the exact kinematics and neutral one-sample IMU at a respawn.
+
+        The terminal physics step has already produced valid diagnostics for all
+        surviving environments.  Re-evaluating tire forces for the entire batch
+        merely to populate the first observation of a few respawned cars cost
+        16--18 ms at 262k environments.  A respawn is a teleport, so acceleration
+        at that mathematical instant is undefined; use a neutral IMU sample and
+        exact pose/speed/beta/wheel kinematics.  The first real physics substep
+        replaces every field with the full plant solution before any new reward.
+        """
+        if indices.numel() == 0:
+            return
+        state = self.s[indices]
+        psi = state[:, 2]
+        speed = torch.hypot(state[:, 3], state[:, 4])
+        beta = torch.atan2(state[:, 4], state[:, 3]) - psi
+        beta = torch.atan2(torch.sin(beta), torch.cos(beta))
+        wheel_surface = state[:, 6:10] * self.wheel_radius[indices]
+
+        # Clear stale terminal diagnostics only on the respawned rows.
+        if self.es is None:
+            # Direct reset_done_envs() is a supported lightweight test path even
+            # before reset(); the production reset already owns this buffer.
+            self.es = torch.zeros((self.n, 56), device=self.device, dtype=self.s.dtype)
+        self.es[indices] = 0.0
+        self.es[indices, 0:2] = state[:, 3:5]
+        self.es[indices, 2] = state[:, 5]
+        self.es[indices, 6] = speed
+        self.es[indices, 7] = beta
+        self.es[indices, 8:12] = wheel_surface
+
+        if self.extras is None:
+            return
+        for key in ("ax", "ay", "yaw_acc"):
+            if key in self.extras:
+                self.extras[key][indices] = 0.0
+        for key in ("sx", "sy", "slip", "alpha", "mux", "muy",
+                    "fx_body", "fy_body", "kappa_power"):
+            if key in self.extras:
+                self.extras[key][indices] = 0.0
+        if "vx_wheel" in self.extras:
+            self.extras["vx_wheel"][indices] = wheel_surface
+        if "vy_wheel" in self.extras:
+            self.extras["vy_wheel"][indices] = 0.0
+        if "fz" in self.extras:
+            mass = self.plant.col("m")[indices]
+            gravity = self.plant.col("g")[indices]
+            lf = self.plant.col("lF")[indices]
+            lr = self.plant.col("lR")[indices]
+            front = mass * gravity * lr / (2.0 * (lf + lr))
+            rear = mass * gravity * lf / (2.0 * (lf + lr))
+            self.extras["fz"][indices] = torch.stack(
+                (front, front, rear, rear), dim=1)
+
     def reset_done_envs(self):
         """Only reset envs that are already done.
 
@@ -1371,47 +1850,83 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         one CUDA sync per control step) is not needed.
         """
         is_done = self.is_done.bool()
-        size = torch.sum(is_done)
+        done_idx = is_done.nonzero(as_tuple=False).squeeze(1)
+        size = done_idx.numel()
+        if size == 0:
+            return
+        if self._streaming_reference:
+            from utils.random_reference import generate_reference_chunk
+            initial = torch.zeros((size, 4), device=self.device,
+                                  dtype=self._rolling_reference.roads.dtype)
+            initial[:, 3] = (torch.rand(size, device=self.device)*2-1)*.09
+            options = self._rolling_reference.options
+            first = generate_reference_chunk(initial, **options)
+            second = generate_reference_chunk(first[:, -1], **options)
+            self._rolling_reference.roads[done_idx] = torch.cat((first, second[:, 1:]), dim=1)
+            self._rolling_reference.offset[done_idx] = 0
 
         # a deferred refresh may become installable now that these episodes end
         if self._refreshable_reference:
             self._try_path_refresh(releasing=is_done)
-            self.path_generation[is_done] = self.current_generation
+            self.path_generation[done_idx] = self.current_generation
 
-        self.step_count[is_done] = 0
-        if self.num_paths > 1:
-            self.path_id[is_done] = torch.randint(0, self.num_paths, (size,), device=self.device)
-        self.progress[is_done] = torch.randint(
+        self.step_count[done_idx] = 0
+        if self._streaming_reference:
+            self.path_id[done_idx] = done_idx
+        elif self.num_paths > 1:
+            self.path_id[done_idx] = torch.randint(0, self.num_paths, (size,), device=self.device)
+        self.progress[done_idx] = torch.randint(
             self._max_spawn_progress + 1, (size,), device=self.device)
-        self.step_progress[is_done] = 0
-        self.no_progress_count[is_done] = 0
-        self.travel[is_done] = 0
+        self.step_progress[done_idx] = 0
+        self.no_progress_count[done_idx] = 0
+        self.travel[done_idx] = 0
         # periodically draw a fresh set of roads so the policy cannot memorise
         # a fixed bank (256 roads x 131072 envs would be heavily overfitted)
         if self._refreshable_reference and self.path_regen_every > 0:
-            self._resets_since_regen += int(size.item())
+            self._resets_since_regen += size
             if self._resets_since_regen >= self.path_regen_every:
                 # never replace the [generation, path, w, ch] ring by a 3-D bank
                 self.request_path_refresh()
                 self._resets_since_regen = 0
         # Ackermann blend randomised per episode: 0.8 - 1.2 of the exact geometry
         if self.plant_name == "fast":
-            n_ack = int(torch.sum(is_done).item())
-            if n_ack:
-                self.plant.ackermann_scale[is_done] = (self.ackermann_lo + (self.ackermann_hi - self.ackermann_lo) * torch.rand((n_ack, 1), device=self.device))
+            self.plant.ackermann_scale[done_idx] = (
+                self.ackermann_lo + (self.ackermann_hi - self.ackermann_lo)
+                * torch.rand((size, 1), device=self.device))
         # sample the episode tyre FIRST: the equilibrium spawn below is grip
         # dependent and must see this episode's D, not the previous episode's
-        self.randomize(is_done)
-        self._reset_sensor_model(is_done)
+        self.randomize(done_idx)
+        if self.plant_name == "fast" and hasattr(self.plant, "p"):
+            # Encoder conversion must follow the episode's randomized rolling
+            # radii.  Keeping the constructor-time radius here silently made
+            # rF/rR randomization affect physics but not the actor observation.
+            self.wheel_radius[done_idx, 0:2] = self.plant.col("rF")[done_idx, None]
+            self.wheel_radius[done_idx, 2:4] = self.plant.col("rR")[done_idx, None]
+        self._reset_sensor_model(done_idx)
 
-        def gen_random_state(indices):
+        # A gradual state-coverage curriculum is essential for pedal control:
+        # equilibrium rows expose a maintainable powered-slide state, while
+        # legacy rows require the actor to enter it from ordinary rolling/rest.
+        # Draw the mixture per respawn so both populations share one PPO batch.
+        if self.equilibrium_reset_prob <= 0.0:
+            equilibrium_mask = torch.zeros(size, dtype=torch.bool, device=self.device)
+        elif self.equilibrium_reset_prob >= 1.0:
+            equilibrium_mask = torch.ones(size, dtype=torch.bool, device=self.device)
+        else:
+            equilibrium_mask = (torch.rand(size, device=self.device) <
+                                self.equilibrium_reset_prob)
+        equilibrium_idx = done_idx[equilibrium_mask]
+        legacy_idx = done_idx[~equilibrium_mask]
+        self._last_equilibrium_reset[done_idx] = equilibrium_mask
+
+        def gen_random_state(indices, mode):
             # The XCAR code spawned 20 % of the episodes at the path start at
             # rest (bernoulli mask multiplied into the state).  For a 1320 kg car
             # that is "enter a drift from standstill", which it cannot do yet and
             # which consumed a fifth of every batch; the equilibrium spawn below
             # is used for all episodes instead.
             legacy_active = torch.ones(len(indices), device=self.device)
-            if self.spawn_mode == "legacy" and self.legacy_zero_prob > 0.0:
+            if mode == "legacy" and self.legacy_zero_prob > 0.0:
                 legacy_active = (torch.rand(len(indices), device=self.device)
                                  >= self.legacy_zero_prob).to(torch.float32)
                 # Exact XCAR reset semantics: zero-state samples begin at the
@@ -1421,8 +1936,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             waypoints = self.path_bank[
                 self.path_generation[indices], self.path_id[indices], prog, :]
 
-            x = waypoints[:, 0]
-            y = waypoints[:, 1]
+            x = waypoints[:, 0].clone()
+            y = waypoints[:, 1].clone()
             veldir = waypoints[:, 2]
 
             kappa = waypoints[:, 3]
@@ -1430,7 +1945,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             x += 0.1 * self.length_scale * torch.randn_like(x)
             y += 0.1 * self.length_scale * torch.randn_like(y)
 
-            if self.spawn_mode == "equilibrium":
+            if mode == "equilibrium":
                 # Start on the drift equilibrium of the local reference: the
                 # sideslip magnitude follows the reference sign, the speed and
                 # the yaw rate follow the local curvature.  The XCAR paper
@@ -1471,26 +1986,71 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 yd = v0 * torch.sin(beta0 + psi)
                 psid = v0 * kappa
             else:
-                random_V = torch.rand(prog.shape, device=self.device) * 3 * self.speed_scale
-                random_beta = -torch.sign(kappa) * torch.rand(prog.shape, device=self.device) * self.spawn_beta_mag
+                if self.speed_target_mode == "limit":
+                    # Preserve XCAR's broad 0..V reset, but scale its upper end
+                    # with the local friction-limit speed.  The fixed model-car
+                    # range scales to only ~8.2 m/s and never reaches the known
+                    # mu075 drift branch (CarSim: ~14.6 m/s), so a policy cannot
+                    # learn to maintain a state absent from its reset support.
+                    mu0 = (self.plant.col("D")[indices] *
+                           self.plant.tyre_scale[indices, 0]).clamp(0.3, 3.0)
+                    g0 = self.plant.col("g")[indices]
+                    v_limit = (self.speed_margin * torch.sqrt(
+                        mu0 * g0 / kappa.abs().clamp(min=1e-2))).clamp(
+                            min=2.0, max=self.speed_cap)
+                    random_V = torch.rand_like(kappa) * 1.10 * v_limit
+                else:
+                    random_V = (torch.rand(prog.shape, device=self.device) *
+                                3 * self.speed_scale)
+                if self.drift_mode and self.beta_ref_mode in ("adaptive_drift", "geometry_drift"):
+                    # XCAR-style broad resets must agree with the task at each
+                    # friction/curvature cell.  A fixed +/-0.4 rad reset on a
+                    # high-grip cell whose valid target is zero created an
+                    # impossible recovery distribution and made nearly every
+                    # full-DR episode terminate.  Low-grip/tight/fast cells
+                    # still span the complete requested drift attitude.
+                    beta_cap = self._reference_beta(
+                        kappa.unsqueeze(1), random_V, idx=indices).squeeze(1)
+                    random_beta = torch.rand_like(random_V) * beta_cap
+                else:
+                    random_beta = (-torch.sign(kappa) * torch.rand(
+                        prog.shape, device=self.device) * self.spawn_beta_mag)
                 psi = veldir - random_beta
                 psi += 0.1 * torch.randn_like(psi)
                 xd = random_V * torch.cos(random_beta + psi)
                 yd = random_V * torch.sin(random_beta + psi)
-                psid = -torch.sign(random_beta) * (1 + torch.rand(prog.shape, device=self.device) * 2) / self.speed_scale
+                if self.speed_target_mode == "limit":
+                    # Once the reset speed is scaled to the full-size friction
+                    # limit, yaw rate must be scaled jointly as r = V*kappa.
+                    # Retaining XCAR's independent model-car [1,3] rad/s draw
+                    # made the high-speed state kinematically inconsistent with
+                    # its path before the actor issued a command.
+                    psid = random_V * kappa
+                else:
+                    psid = (-torch.sign(random_beta) * (1 + torch.rand(
+                        prog.shape, device=self.device) * 2) / self.speed_scale)
 
             x, y, psi, xd, yd, psid = map(lambda t: torch.unsqueeze(t, 1), [x, y, psi, xd, yd, psid])
             state = torch.cat([x, y, psi, xd, yd, psid], 1)
-            if self.spawn_mode == "legacy":
-                state = state * legacy_active.unsqueeze(1)
+            if mode == "legacy":
+                # Rest is zero velocity at the reference start, not zero world
+                # pose: closed paths need not begin at (0, 0) or heading zero.
+                resting = legacy_active == 0
+                state[resting, 0:2] = waypoints[resting, 0:2]
+                state[resting, 2] = veldir[resting]
+                state[:, 3:6] *= legacy_active.unsqueeze(1)
             return state
 
-        self.s[is_done, :] = 0
-        self.s[is_done, :6] = gen_random_state(is_done.nonzero().squeeze(-1))
-        self._stall_anchor[is_done] = self.s[is_done, :2]
-        self.u[is_done, :] = 0
-        self.u_cmd[is_done, :] = 0
-        if self.pedals and self.spawn_mode == "equilibrium":
+        self.s[done_idx, :] = 0
+        if equilibrium_idx.numel() > 0:
+            self.s[equilibrium_idx, :6] = gen_random_state(
+                equilibrium_idx, "equilibrium")
+        if legacy_idx.numel() > 0:
+            self.s[legacy_idx, :6] = gen_random_state(legacy_idx, "legacy")
+        self._stall_anchor[done_idx] = self.s[done_idx, :2]
+        self.u[done_idx, :] = 0
+        self.u_cmd[done_idx, :] = 0
+        if self.pedals and equilibrium_idx.numel() > 0:
             # A car teleported into a drift was, physically, already
             # countersteering and on the throttle.  The observation contains the
             # previous command, and a zero previous command at a 0.75 rad
@@ -1499,7 +2059,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # empty) and learns to lift off, which collapses the drift.
             # per-env curvature from the ring, then the map-B target (the helper
             # works on whole batches, so evaluate it for all envs and index)
-            _di = is_done.nonzero(as_tuple=False).squeeze(1)
+            _di = equilibrium_idx
             kappa_all = self.path_bank[self.path_generation, self.path_id, self.progress, 3]
             beta_all = self._reference_beta(
                 kappa_all.unsqueeze(1),
@@ -1515,7 +2075,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # countersteer while its sideslip is zero
             _v_now = torch.hypot(self.s[_di, 3], self.s[_di, 4])
             _fade_cmd = (_v_now / 3.0).clamp(0.0, 1.0)
-            if self.drift_mode:
+            if self.drift_mode and equilibrium_idx.numel() > 0:
                 # In drift mode the countersteer target is -0.25*sign(kappa) and the spawn must
                 # be consistent with it.  The old 2.5*beta gave -1.0*sign(kappa) (clamped to the
                 # steering limit), i.e. a full opposite lock, which the joint gate's countersteer
@@ -1550,18 +2110,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.u_trim = getattr(self, "u_trim", None)
         if self.u_trim is None:
             self.u_trim = torch.zeros_like(self.u_cmd)
-        self.u_trim[is_done] = self.u_cmd[is_done]
+        self.u_trim[done_idx] = self.u_cmd[done_idx]
         # the equilibrium spawn installs a physical steering command; keep the
         # actuator state consistent with it or the first steps fight the wheel
-        if bool(getattr(self, "_steer_tau_env", torch.zeros(1, device=self.device))[is_done].gt(0).any()):
-            self._steer_state[is_done] = self.u_cmd[is_done, 0]
-            self._steer_prev[is_done] = self.u_cmd[is_done, 0]
+        if hasattr(self, "_steer_tau_env"):
+            self._steer_state[done_idx] = self.u_cmd[done_idx, 0]
+            self._steer_prev[done_idx] = self.u_cmd[done_idx, 0]
         if hasattr(self, "_pedal_state"):
-            self._pedal_state[is_done] = self.u_cmd[is_done, 1:3]
+            self._pedal_state[done_idx] = self.u_cmd[done_idx, 1:3]
         if hasattr(self, "_action_delay_buffer"):
-            self._action_delay_buffer[:, is_done] = self.u_cmd[is_done].unsqueeze(0)
+            self._action_delay_buffer[:, done_idx] = self.u_cmd[done_idx].unsqueeze(0)
         if self.plant_name == "fast":
-            self.plant.init_wheels_mask(self.s, is_done)
+            self.plant.init_wheels_mask(self.s, done_idx)
             if self.drift_mode:
                 # DRIFT SPAWN.  The joint drift gate pays 12 per step only when the rear is
                 # already overslipping AND the sideslip is large AND correctly signed.  The
@@ -1575,23 +2135,36 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # Scale the already initialized contact-velocity rolling speed.
                 # Using total vehicle speed here silently injected Kappa even at
                 # spin_frac=0 whenever the car had sideslip/yaw rate.
-                self.s[is_done, 8:10] = (self.s[is_done, 8:10] * _spin).clamp(min=0.0)
-            self.plant.reset_guess(is_done)
+                self.s[equilibrium_idx, 8:10] = (
+                    self.s[equilibrium_idx, 8:10] * _spin).clamp(min=0.0)
+            self.plant.reset_guess(done_idx)
             if self.disturbance_param is not None:
-                self.tyre_scale[is_done] = 1.0
-        self.is_done[:] = 0
+                self.tyre_scale[done_idx] = 1.0
+        self.is_done.zero_()
         if self.plant_name == "fast":
             # Refresh the extended (diagnostic / reward) state for the respawned
             # envs.  Without this the first reward after a reset is computed from
             # the previous episode's state, and any controller that reads ``es``
             # sees stale values on the spawn step.
-            self.extras = self._eval_extras(self.u_cmd)
-            self.es = self.plant.package_extended(self.s, self.extras)
+            if size == self.n:
+                # Preserve the historical, fully physical initial observation
+                # for deterministic evaluation and whole-batch reset.  This is
+                # paid once, not on the high-frequency partial-respawn path.
+                self.extras = self._eval_extras(self.u_cmd)
+                self.es = self.plant.package_extended(self.s, self.extras)
+            else:
+                self._refresh_reset_diagnostics(done_idx)
         # the next observation belongs to the new pose/path position, not to the
         # terminal tracking solution of the episode that just ended
         self._track_pending = True
         self._physics_advanced = False
-        self._sensor_pending[is_done] = True
+        self._sensor_pending[done_idx] = True
+        if hasattr(self, "_raw_action"):
+            self._raw_action[done_idx] = self.u_cmd[done_idx]
+        self._tracking_mask = is_done.clone()
+        if not hasattr(self, "_projection_xy"):
+            self._projection_xy = self.s[:, :2].clone()
+        self._projection_xy[done_idx] = self.s[done_idx, :2]
 
     # ---------------------------------------------------------------- scenarios
     def capture_scenario(self):
@@ -1601,10 +2174,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         an index-only scenario would replay the state on a different road.
         """
         sel = self.path_bank[self.path_generation, self.path_id]
-        return {"path": sel.detach().cpu().numpy().copy(),
+        scenario = {"path": sel.detach().cpu().numpy().copy(),
                 "progress": self.progress.detach().cpu().numpy().copy(),
                 "s": self.s.detach().cpu().numpy().copy(),
                 "u_cmd": self.u_cmd.detach().cpu().numpy().copy()}
+        if hasattr(self.plant, "_motor_torque_state"):
+            scenario["motor_torque"] = self.plant._motor_torque_state.detach().cpu().numpy().copy()
+        return scenario
 
     def apply_scenario(self, sc):
         """Replay a frozen scenario: install its roads, then its start states."""
@@ -1621,6 +2197,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                     % (self.n, self.num_paths))
             n = self.n
             self.path_bank[self.current_generation, :n].copy_(roads[:n])
+            self._path_ds[self.current_generation, :n] = torch.linalg.vector_norm(
+                torch.roll(roads[..., :2], -1, dims=1) - roads[..., :2], dim=-1).mean(dim=-1)
             self.path_id[:n] = torch.arange(n, device=self.device)
             self.path_generation[:n] = self.current_generation
         prog = torch.as_tensor(_np.asarray(sc["progress"]), device=self.device, dtype=self.progress.dtype)
@@ -1628,6 +2206,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         n = min(prog.numel(), self.n)
         self.progress[:n] = prog[:n]
         self.s[:n] = st[:n]
+        self._projection_xy = self.s[:, :2].clone()
+        self._tracking_mask = None
+        self._sensor_pending.fill_(True)
+        self._sensor_needs_fill.fill_(True)
         self.u[:n] = 0
         if "u_cmd" in sc:
             uc = torch.as_tensor(_np.asarray(sc["u_cmd"]), device=self.device, dtype=self.u_cmd.dtype)
@@ -1646,15 +2228,20 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self.es = self.plant.package_extended(self.s, self.extras)
         self._track_pending = True
         self._physics_advanced = False
+        if "motor_torque" in sc and hasattr(self.plant, "_motor_torque_state"):
+            self.plant._motor_torque_state.copy_(torch.as_tensor(
+                sc["motor_torque"], device=self.device, dtype=self.s.dtype))
         return self.obs()
 
     def step(self, action, **kwargs):
+        self._raw_action = action.detach().clone()
         # Physics first, THEN respawn: the action was chosen from the terminal
         # observation, so it has to act on the terminal state.  Resetting before
         # the step (the previous order) applied that action to the freshly
         # spawned car, which injected an arbitrary command into the start of
         # every episode and made the reward history cross episode boundaries.
         self._track_pending = True   # the tracking update belongs to this step
+        self._tracking_mask = None
         self._physics_advanced = True   # only a real physics step may advance travel
         self._sensor_pending.fill_(True)
         obs, reward, done, info = super().step(action, **kwargs)
@@ -1688,3 +2275,4 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                             self._prev[k] = torch.where(m, self._now[k], self._prev[k])
         self.update_recent_obs(obs)
         return obs, reward, done, info
+

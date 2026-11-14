@@ -55,7 +55,7 @@ def _carsim_row(raw, scenario, mu, t, cmd):
     steer = np.array([math.radians(raw["Steer_" + suffix[0]]),
                       math.radians(raw["Steer_" + suffix[1]]), 0.0, 0.0])
     prefix = ["carsim", scenario, mu, MANEUVER, t,
-              raw["Xo"], raw["Yo"], math.radians(raw["Yaw"]),
+              raw["Xcg_TM"], raw["Ycg_TM"], math.radians(raw["Yaw"]),
               delta, throttle, brake,
               vxb, vyb, speed, math.radians(raw["Beta"]) if speed >= 0.5 else 0.0,
               math.radians(raw["AVz"]), raw["Ax"] * 9.81, raw["Ay"] * 9.81,
@@ -82,11 +82,11 @@ def collect_carsim(scenario, cfg, duration, dt):
             if t < 2.0:
                 cmd = (0.0, 0.40, 0.0)
             else:
-                ds, dq = _prbs(t)
+                ds, dq = _prbs(t) if cfg.get("prbs", True) else (0.0, 0.0)
                 steer = cfg["counter"] + cfg["beta_kp"] * (beta - cfg["beta_target"]) + ds
                 throttle = cfg["throttle_base"] + cfg["kappa_kp"] * (0.70 - np.clip(kappa, -2, 3)) + dq
                 cmd = (float(np.clip(steer, -MAX_ROAD_WHEEL_RAD, MAX_ROAD_WHEEL_RAD)),
-                       float(np.clip(throttle, 0.35, 1.0)), 0.0)
+                       float(np.clip(throttle, cfg.get("throttle_min", 0.35), 1.0)), 0.0)
             env.step([cmd[0] / MAX_ROAD_WHEEL_RAD, cmd[1], cmd[2]])
             commands.append(cmd)
             rows.append(_carsim_row(env.raw(), scenario, cfg["mu"], (k + 1) * dt, cmd))
@@ -197,7 +197,7 @@ def main():
     ap.add_argument("--combined-slip-model",
                     choices=("isotropic", "ellipse", "compact_transition",
                              "carsim_transition"),
-                    default="ellipse")
+                    default=None)
     ap.add_argument("--combined-slip-blend", type=float, default=0.49)
     ap.add_argument("--wheel-solver-iters", type=int, default=None,
                     help="candidate wheel-speed bisection count")
@@ -216,6 +216,10 @@ def main():
         if scenario not in selected:
             continue
         if args.carsim_source:
+            with open(os.path.join(args.carsim_source, "manifest.json"), encoding="utf-8") as f:
+                source_manifest = json.load(f)
+            if source_manifest.get("position_reference") != "instantaneous_total_vehicle_CG":
+                raise ValueError("legacy source uses Xo/Yo; recollect instantaneous-CG data")
             source = os.path.join(args.carsim_source, scenario + "__" + MANEUVER + ".csv")
             with open(source, newline="") as f:
                 source_rows = [row for row in csv.DictReader(f) if row["plant"] == "carsim"]
@@ -258,7 +262,8 @@ def main():
         w.writeheader()
         w.writerows(summary)
     with open(os.path.join(args.out, "manifest.json"), "w", encoding="utf-8") as f:
-        json.dump({"schema": HEADER, "duration": args.duration, "dt": args.dt,
+        json.dump({"schema": HEADER, "position_reference": "instantaneous_total_vehicle_CG",
+                   "duration": args.duration, "dt": args.dt,
                    "prbs_start": 6.0, "configs": CONFIGS,
                    "combined_slip_model": args.combined_slip_model,
                    "combined_slip_blend": args.combined_slip_blend,

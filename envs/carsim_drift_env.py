@@ -29,6 +29,7 @@ from envs.carsim_flat_env import (CARSIM_WHEEL_SUFFIXES, CHANNELS,  # noqa: E402
                                   DEFAULT_SCENARIOS, IDX, MAX_BRAKE_MPA,
                                   MAX_STEER_SW_DEG, CarSimFlatEnv)
 from envs.continuous_drift_iwd import ContinuousDriftIWDEnv  # noqa: E402
+from fast_plant import load_preset
 
 G = 9.81
 R_EFF = 0.332
@@ -77,13 +78,12 @@ class CarSimPlant:
         self._rdot = 0.0
         self._r_prev = 0.0
         # constants the task environment asks for
-        self._cols = {
-            "lR": torch.full((self.n,), 1.195, device=self.device, dtype=self.dtype),
-            "lF": torch.full((self.n,), 1.455, device=self.device, dtype=self.dtype),
-            "g": torch.full((self.n,), G, device=self.device, dtype=self.dtype),
-            "m": torch.full((self.n,), 1514.8, device=self.device, dtype=self.dtype),
-            "D": torch.full((self.n,), self.effective_mu, device=self.device, dtype=self.dtype),
-        }
+        nominal = load_preset("fullsize_racecar_ev")
+        self._cols = {key: torch.full((self.n,), float(nominal[key]),
+                     device=self.device, dtype=self.dtype)
+                      for key in ("lR", "lF", "g", "m", "Tf", "Tr", "rF", "rR")}
+        self._cols["D"] = torch.full((self.n,), self.effective_mu,
+                                    device=self.device, dtype=self.dtype)
         self.tyre_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
         self.ackermann_scale = torch.ones((self.n, 1), device=self.device, dtype=self.dtype)
         self.g = G
@@ -97,9 +97,11 @@ class CarSimPlant:
         raise KeyError("CarSimPlant has no parameter column %r" % name)
 
     def geometry(self):
-        x = torch.tensor([1.455, 1.455, -1.195, -1.195], device=self.device)
-        y = torch.tensor([0.8, -0.8, 0.8, -0.8], device=self.device)
-        return x, y, torch.full((4,), R_EFF, device=self.device), torch.zeros(4, device=self.device)
+        lf, lr, tf, tr, rf, rr = (self.col(k) for k in ("lF", "lR", "Tf", "Tr", "rF", "rR"))
+        x = torch.stack((lf, lf, -lr, -lr), dim=1)
+        y = torch.stack((tf, -tf, tr, -tr), dim=1) * 0.5
+        radius = torch.stack((rf, rf, rr, rr), dim=1)
+        return x, y, radius, torch.zeros_like(radius)
 
     def randomize(self, mask=None, override=None, ranges=None):
         return None
@@ -192,10 +194,19 @@ class CarSimPlant:
         w = torch.tensor([raw[IDX["AVy_" + k]]
                           for k in CARSIM_WHEEL_SUFFIXES], device=dev)
         w = w * (2 * math.pi / 60.0)
-        vx_w = (w * R_EFF).unsqueeze(0)
-        nan4 = torch.zeros((1, 4), device=dev)
+        x, y, _, _ = self.geometry()
+        steer = torch.tensor([[raw[IDX["Steer_L1"]], raw[IDX["Steer_R1"]], 0., 0.]],
+                             device=dev, dtype=self.dtype) * (math.pi / 180.0)
+        yawrate = float(raw[IDX["AVz"]]) * math.pi / 180.0
+        vx_body = float(raw[IDX["Vx"]]) / 3.6 - yawrate * y
+        vy_body = float(raw[IDX["Vy"]]) / 3.6 + yawrate * x
+        c, sn = torch.cos(steer), torch.sin(steer)
+        vx_w = c * vx_body + sn * vy_body
+        vy_w = -sn * vx_body + c * vy_body
+        fx_body = c * fx.unsqueeze(0) - sn * fy.unsqueeze(0)
+        fy_body = sn * fx.unsqueeze(0) + c * fy.unsqueeze(0)
         return {
-            "vx_wheel": vx_w, "vy_wheel": nan4,
+            "vx_wheel": vx_w, "vy_wheel": vy_w,
             # FastPlant's legacy sx is (Vx-Rw)/denom, whereas CarSim Kappa is
             # positive for driven-wheel overspeed.  Keep sx compatible with the
             # training critic and expose an explicit canonical channel for reward
@@ -208,8 +219,9 @@ class CarSimPlant:
             "alpha": alpha.unsqueeze(0),
             "mux": torch.full((1, 4), self.effective_mu, device=dev),
             "muy": torch.full((1, 4), self.effective_mu, device=dev),
-            "fz": fz.unsqueeze(0), "fx_body": fx.unsqueeze(0), "fy_Body": fy.unsqueeze(0),
-            "fy_body": fy.unsqueeze(0),
+            "fz": fz.unsqueeze(0), "fx_body": fx_body,
+            "fy_body": fy_body,
+            "fx_wheel": fx.unsqueeze(0), "fy_wheel": fy.unsqueeze(0), "delta": steer,
         }
 
     # --------------------------------------------------------- extended state
@@ -370,7 +382,24 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self.u_cmd.copy_(self.u_trim)
         self._steer_state.copy_(self.u_trim[:, 0])
         self._steer_prev.copy_(self.u_trim[:, 0])
+        self.progress.zero_()
+        self.step_progress.zero_()
+        self._refresh_bridge_packet()
         return self.obs()
+
+    def _refresh_bridge_packet(self):
+        """Invalidate all buffers after installing an actual solver state."""
+        self._stall_anchor.copy_(self.s[:, :2])
+        self._tracking_mask = None
+        self._projection_xy = self.s[:, :2].clone()
+        self._track_pending = True
+        self._physics_advanced = False
+        self._sensor_pending.fill_(True)
+        self._sensor_needs_fill.fill_(True)
+        self._steer_state.copy_(self.u_cmd[:, 0])
+        self._steer_prev.copy_(self.u_cmd[:, 0])
+        self._pedal_state.copy_(self.u_cmd[:, 1:3])
+        self._action_delay_buffer[:] = self.u_cmd.unsqueeze(0)
 
     def reset(self):
         super().reset()
@@ -390,6 +419,10 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self._stall_anchor.copy_(self.s[:, :2])
         self.car.sim.reset()
         self.s.copy_(self.car.sim.s.to(self.s.device))
+        self._normalise_paths()
+        bank = self.path_bank[self.current_generation]
+        bank[:, :, 0] += self.s[0, 0]
+        bank[:, :, 1] += self.s[0, 1]
         self.car._steer_prev = 0.0
         self.car._r_prev = float(self.s[0, 5])
         self.car._rdot = 0.0
@@ -399,6 +432,7 @@ class CarSimDriftEnv(ContinuousDriftIWDEnv):
         self._track_pending = True
         self._now = None
         self._prev = None
+        self._refresh_bridge_packet()
         return self.obs()
 
     def close(self):

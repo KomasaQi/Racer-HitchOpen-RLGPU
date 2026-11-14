@@ -90,6 +90,11 @@ class GPUVectorizedCarEnv:
         self.brake_margin = float(kwargs.get("brake_margin", 0.0))
         self.steer_actuator_tau = float(kwargs.get("steer_actuator_tau", 0.0))
         self.steer_rate_limit = float(kwargs.get("steer_rate_limit", 0.0))
+        self.steer_actuator_profile = str(kwargs.get("steer_actuator_profile", "legacy"))
+        if self.steer_actuator_profile not in ("legacy", "responsive"):
+            raise ValueError("unknown steer_actuator_profile")
+        if self.steer_actuator_profile == "responsive":
+            self.steer_actuator_tau = self.steer_rate_limit = self.steer_deadband = 0.0
         self.pedal_actuator_tau = float(kwargs.get("pedal_actuator_tau", 0.0))
         self.actuator_dr = bool(kwargs.get("actuator_dr", False))
         self.action_delay_max = int(kwargs.get("action_delay_max", 2 if self.actuator_dr else 0))
@@ -240,7 +245,11 @@ class GPUVectorizedCarEnv:
 
     def _randomize_actuators(self, env_mask):
         """Draw bounded physical actuator uncertainty for selected episodes."""
-        n = int(env_mask.sum().item())
+        # Reset hot paths pass integer indices so the selected count is already
+        # host metadata.  Summing a CUDA bool mask here forced a device sync once
+        # per reset (and the plant/sensor paths repeated the same sync).
+        n = (env_mask.numel() if env_mask.dtype != torch.bool
+             else int(env_mask.sum().item()))
         if n == 0:
             return
         if not self.actuator_dr:
@@ -263,6 +272,13 @@ class GPUVectorizedCarEnv:
         self._brake_gain_env[env_mask] = rand(0.90, 1.10)
         self._action_delay_steps[env_mask] = torch.randint(
             0, self.action_delay_max + 1, (n,), device=self.device)
+        if self.steer_actuator_profile == "responsive":
+            self._steer_tau_env[env_mask] = 0.0
+            self._steer_rate_env[env_mask] = 0.0
+            self._steer_deadband_env[env_mask] = 0.0
+            # Reuse the existing draw to preserve other DR random sequences.
+            self._steer_gain_env[env_mask] = 1.0 + 0.4 * (self._steer_gain_env[env_mask] - 1.0)
+
 
     # ------------------------------------------------------------------ hooks
     def obs(self):
@@ -356,6 +372,10 @@ class GPUVectorizedCarEnv:
         self._action_delay_buffer[0] = u
         env_i = torch.arange(self.n, device=self.device)
         u = self._action_delay_buffer[self._action_delay_steps, env_i].clone()
+        if self.steer_actuator_profile == "responsive":
+            # Only steering bypasses artificial transport delay. Pedal delay
+            # and dynamics are retained; physical maximum angle stays bounded.
+            u[:, 0] = target
         target = u[:, 0]
 
         active_steer = self._steer_tau_env > 0.0
