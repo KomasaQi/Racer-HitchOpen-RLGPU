@@ -97,3 +97,10 @@ Detailed source hashes, configuration comparison and validation are in
 `speed_coupling_integration.json`. Path-sampling pilot results are separate in
 `path_sampling_training_pair/`. Steering reversal shaping is still an offline
 prototype, not an active training reward.
+
+
+## 2026-11-14 experiment drain before user pause
+
+User requested completion of already-running experiments then a stop. All launched training/evaluation jobs have now exited; final training exit codes are zero and checkpoint epoch/frame budgets and SHA256 were verified. No new experiment is queued. Details: `../Codex_Drift_Audit_2026-11-13/review_20261114/drain_before_user_pause.json` and `drain_training_completion_verified.json` in that directory.
+
+Reward smooth03/tight10 reached ep125 (13,107,200 added frames each); path baseline/short reached ep145 (6,553,600 each). Final followup and short-path checkpoints remain unvalidated in CarSim; their final evaluations were not launched during drain. No candidate was adopted. Speed-position decoupling improved ep125 high-grip eight speed in two evaluation seeds, but tracking/braking gains were inconsistent and mid-grip circle tracking worsened. Early smoothness/tracking-only changes did not resolve high-grip straight oscillation. Low-grip ellipse failures remain. Overall transfer goal is NOT achieved. Wait for user to resume before further experiments.

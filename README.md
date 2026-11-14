@@ -1,7 +1,7 @@
 # GPU Accelerated RL Race Car for HitchOpen World AI Championship 🏎️
 <div style="display: flex; gap: 10px; align-items: stretch;">
   <!-- 左侧：单张图，40% -->
-  <div style="width: 60%;">
+  <div style="width: 58%;">
     <img src="./assets/fig/drift_car.png" alt="Overview" style="width: 100%;">
   </div>
   <!-- 右侧：60%，两张上下叠放，间距 -->
