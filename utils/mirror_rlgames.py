@@ -33,9 +33,10 @@ class MirrorActorBuilder(network_builder.A2CBuilder):
     class Network(nn.Module):
         def __init__(self, params, **kwargs):
             super().__init__()
-            if tuple(kwargs["input_shape"]) != (27,) or kwargs["actions_num"] != 3:
-                raise ValueError("mirror actor requires 27 observable inputs and 3 pedal actions")
-            self.core = SharedMirrorActor()
+            self.obs_width = int(kwargs["input_shape"][0])
+            if self.obs_width not in (27,35) or kwargs["actions_num"] != 3:
+                raise ValueError("mirror actor requires 27 or 35 observable inputs and 3 pedal actions")
+            self.core = SharedMirrorActor((self.obs_width-15)//4, params.get("beta_feedback", False))
             self.num_seqs = kwargs.get("num_seqs", 1)
             self.beta_aux_weight = float(params.get("beta_aux_weight", .1))
             self.beta_labels = self.beta_mask = self.beta_prediction = None
@@ -62,7 +63,7 @@ class MirrorActorBuilder(network_builder.A2CBuilder):
             obs = data["obs"]
             length = data.get("seq_length", 1)
             count = obs.shape[0] // length
-            seq = obs.reshape(count, length, 27).transpose(0, 1)
+            seq = obs.reshape(count, length, self.obs_width).transpose(0, 1)
             states = data.get("rnn_states")
             hidden = torch.stack(states) if states is not None and len(states) else None
             done = data.get("dones")
@@ -89,9 +90,10 @@ class MirrorValueBuilder(network_builder.A2CBuilder):
     class Network(nn.Module):
         def __init__(self, params, **kwargs):
             super().__init__()
-            if tuple(kwargs["input_shape"]) != (52,):
-                raise ValueError("mirror critic requires 52 body-frame privileged channels")
-            self.core = SharedMirrorCritic(params["mlp"]["units"])
+            width = int(kwargs["input_shape"][0])
+            if width not in (52,62):
+                raise ValueError("mirror critic requires 52 or 62 body-frame privileged channels")
+            self.core = SharedMirrorCritic(params["mlp"]["units"], (width-37)//5)
         @property
         def mirror(self): return self.core.mirror
         def is_rnn(self): return False

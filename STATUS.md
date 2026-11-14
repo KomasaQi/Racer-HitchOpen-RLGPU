@@ -104,3 +104,17 @@ prototype, not an active training reward.
 User requested completion of already-running experiments then a stop. All launched training/evaluation jobs have now exited; final training exit codes are zero and checkpoint epoch/frame budgets and SHA256 were verified. No new experiment is queued. Details: `../Codex_Drift_Audit_2026-11-13/review_20261114/drain_before_user_pause.json` and `drain_training_completion_verified.json` in that directory.
 
 Reward smooth03/tight10 reached ep125 (13,107,200 added frames each); path baseline/short reached ep145 (6,553,600 each). Final followup and short-path checkpoints remain unvalidated in CarSim; their final evaluations were not launched during drain. No candidate was adopted. Speed-position decoupling improved ep125 high-grip eight speed in two evaluation seeds, but tracking/braking gains were inconsistent and mid-grip circle tracking worsened. Early smoothness/tracking-only changes did not resolve high-grip straight oscillation. Low-grip ellipse failures remain. Overall transfer goal is NOT achieved. Wait for user to resume before further experiments.
+
+
+## Final checkpoint evaluation requested while training remains paused
+
+Completed 27 additional CarSim rollouts; all eight evaluation jobs exited zero. Followup ep125 and short-path ep145 now evaluated. Results, aligned beta metrics, plots and qualified decisions: `../Codex_Drift_Audit_2026-11-13/review_20261114/final_checkpoint_requested_tests/decision.json`. Tight tracking improved circle/eight error but did not improve speed; smooth03 reduced straight oscillation amplitude with substantial speed loss; short-path145 improved high-grip performance but had low/mid-grip regressions. Low-grip ellipse remains unsolved. No checkpoint adopted, no training resumed, no delay/control-period change made.
+
+
+## Frozen DSH overnight matrix prepared (2026-11-14)
+
+User authorized implementation and one-epoch smoke tests only before reviewing the night plan. Long-running training remains paused. New CLI train/eval defaults: zero artificial observation delay, tracking scale 1.0 m, four streaming reference segments with 15 m minimum transition, steering smoothness weight 0.2. Physical motor/pedal dynamics and full training DR remain.
+
+Optional interventions: detached predicted beta feedback, uncapped speed credit, curvature-dependent steering smoothness, second steering difference, and 5 time previews (actor35/critic62). Existing 3-point checkpoints retain exact default physics/observation/reward parity. Architecture-changing branches train fresh against a matched fresh baseline; compatible branches resume healthy v11 epoch105, never a degraded checkpoint.
+
+Fixed scheduler/evaluator/collector: `experiments/continuous_drift_iwd/night_*.py`. External plan, input checkpoints, smoke evidence, backups and Chinese DSH handoff are in `../DSH_Night_2026-11-14/`. The scheduler verifies a frozen commit/file seal, limits GPU training to two workers, serializes CarSim, archives native output and updates LastRun, and records failures/budget skips without tuning or promotion. Main matrix: 11 branches, 675 updates; optional second seed within a 9.5 h wall limit. This is experiment infrastructure, not evidence of improved driving performance.

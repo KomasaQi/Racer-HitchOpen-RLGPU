@@ -39,6 +39,7 @@ parser.add_argument("--physics-dt", type=float, default=0.01, help="physics step
 parser.add_argument("--rnn", action='store_true')
 parser.add_argument("--observable-gru", action="store_true",
                     help="GRU128 + observation bypass + 256/124/64 actor and beta auxiliary loss")
+parser.add_argument("--beta-feedback", action="store_true")
 parser.add_argument("--beta-aux-weight", type=float, default=0.1)
 parser.add_argument("--disturbed", action='store_true')
 parser.add_argument("--randomize-tyre", nargs='?', const='big', default=None, type=str)
@@ -188,9 +189,9 @@ parser.add_argument("--speed-margin", type=float, default=0.9,
                     help="fraction of the friction-limit speed used as the target")
 parser.add_argument("--speed-cap", type=float, default=None,
                     help="upper clamp on the friction-limit speed target")
-parser.add_argument("--reference-segments", type=int, default=2,
+parser.add_argument("--reference-segments", type=int, default=4,
                     help="curvature transitions per120m streaming chunk")
-parser.add_argument("--reference-transition-min-m", type=float, default=None,
+parser.add_argument("--reference-transition-min-m", type=float, default=15.0,
                     help="optional minimum transition span; bound each curvature change by its span")
 parser.add_argument("--preview-time", type=str, default=None,
                     help="comma separated preview headways in seconds, e.g. 0.5,1.0,1.6")
@@ -243,7 +244,7 @@ parser.add_argument("--action-delay-max", type=int, default=2,
                     help="maximum discrete command-delay steps when actuator DR is enabled")
 parser.add_argument("--sensor-dr", action="store_true",
                     help="actor-only sensor noise, bias/random-walk, latency and packet dropout")
-parser.add_argument("--sensor-delay-max", type=int, default=1,
+parser.add_argument("--sensor-delay-max", type=int, default=0,
                     help="maximum actor sensor-packet latency in control steps")
 parser.add_argument("--sensor-dropout-prob", type=float, default=0.0,
                     help="per-step probability of holding the previous sensor packet")
@@ -258,11 +259,15 @@ parser.add_argument("--adaptive-tracking-weight", type=float, default=1.0)
 parser.add_argument("--adaptive-performance-weight", type=float, default=3.0)
 parser.add_argument("--adaptive-shape", choices=["legacy", "smooth_v1", "smooth_task_v2"], default="legacy")
 parser.add_argument("--adaptive-speed-penalty", choices=["target", "envelope", "none"], default="target")
+parser.add_argument("--speed-reward-uncapped", action="store_true")
+parser.add_argument("--smooth-curve-extra", type=float, default=0.0)
+parser.add_argument("--smooth-curve-half-kappa", type=float, default=0.05)
+parser.add_argument("--steer-second-weight", type=float, default=0.0)
 parser.add_argument("--adaptive-speed-coupling", choices=["precision", "corridor", "independent_position"], default="precision")
-parser.add_argument("--adaptive-path-scale-m", type=float, default=None,
+parser.add_argument("--adaptive-path-scale-m", type=float, default=1.0,
                     help="Optional tracking precision half-score distance, independent of failure boundary")
 parser.add_argument("--adaptive-drift-weight", type=float, default=1.0)
-parser.add_argument("--adaptive-smooth-weight", type=float, default=0.10)
+parser.add_argument("--adaptive-smooth-weight", type=float, default=0.2)
 parser.add_argument("--adaptive-guidance-weight", type=float, default=0.0,
                     help="A0-only actor-observable pure-pursuit guidance; anneal to zero")
 parser.add_argument("--drift-spawn-spin-frac", type=float, default=1.0,
@@ -344,6 +349,11 @@ default_env_config = {
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "mirror_policy": args.mirror_policy,
+    "beta_feedback": args.beta_feedback,
+    "speed_reward_uncapped": args.speed_reward_uncapped,
+    "smooth_curve_extra": args.smooth_curve_extra,
+    "smooth_curve_half_kappa": args.smooth_curve_half_kappa,
+    "steer_second_weight": args.steer_second_weight,
     "critic_velocity_frame": "body" if args.mirror_policy else "world",
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
@@ -671,6 +681,8 @@ if not args.rnn:
 if args.initial_action_mean is not None and not args.observable_gru:
     parser.error("--initial-action-mean requires --observable-gru")
 
+if args.beta_feedback and not args.mirror_policy:
+    parser.error("--beta-feedback requires --mirror-policy")
 if args.mirror_policy and not args.observable_gru:
     parser.error("--mirror-policy requires --observable-gru")
 
@@ -689,6 +701,7 @@ if args.observable_gru:
         "units": 128, "layers": 1, "name": "gru",
         "before_mlp": True, "concat_output": True}
     runner_config["params"]["network"]["beta_aux_weight"] = args.beta_aux_weight
+    runner_config["params"]["network"]["beta_feedback"] = args.beta_feedback
     if args.initial_action_mean is not None:
         import math
         try:

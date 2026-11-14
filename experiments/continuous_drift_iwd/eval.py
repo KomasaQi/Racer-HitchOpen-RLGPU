@@ -38,7 +38,9 @@ class Policy:
         self.mirror_core = None
         if "a2c_network.core.gru.weight_ih_l0" in w:
             from utils.mirror_policy import SharedMirrorActor
-            self.mirror_core = SharedMirrorActor().to(device)
+            width = w["a2c_network.core.gru.weight_ih_l0"].shape[1]
+            feedback = w["a2c_network.core.mlp.0.weight"].shape[1] == 128 + width + 1
+            self.mirror_core = SharedMirrorActor((width-15)//4, feedback).to(device)
             prefix = "a2c_network.core."
             self.mirror_core.load_state_dict({k[len(prefix):]: v for k, v in w.items()
                                              if k.startswith(prefix)}, strict=True)
@@ -172,7 +174,7 @@ def main():
     ap.add_argument("--pedal-actuator-tau", type=float, default=0.0)
     ap.add_argument("--action-delay-max", type=int, default=2)
     ap.add_argument("--sensor-dr", action="store_true")
-    ap.add_argument("--sensor-delay-max", type=int, default=2)
+    ap.add_argument("--sensor-delay-max", type=int, default=0)
     ap.add_argument("--sensor-dropout-prob", type=float, default=0.002)
     ap.add_argument("--alpha-peak", type=float, default=0.12)
     ap.add_argument("--beta-max", type=float, default=0.32)
@@ -209,8 +211,8 @@ def main():
                     help="allow repeated respawns (biased); one episode per env is the default")
     ap.add_argument("--curv-smooth", type=int, default=0)
     ap.add_argument("--preview-scale", type=float, default=1.0)
-    ap.add_argument("--reference-segments", type=int, default=2)
-    ap.add_argument("--reference-transition-min-m", type=float, default=None)
+    ap.add_argument("--reference-segments", type=int, default=4)
+    ap.add_argument("--reference-transition-min-m", type=float, default=15.0)
     ap.add_argument("--preview-time", type=str, default=None)
     ap.add_argument("--preview-distances-m", type=str, default=None)
     ap.add_argument("--flip-prob", type=float, default=None)
@@ -287,10 +289,14 @@ def main():
     ap.add_argument("--adaptive-performance", type=float, default=3.0)
     ap.add_argument("--adaptive-shape", choices=["legacy", "smooth_v1", "smooth_task_v2"], default="legacy")
     ap.add_argument("--adaptive-speed-penalty", choices=["target", "envelope", "none"], default="target")
+    ap.add_argument("--speed-reward-uncapped", action="store_true")
+    ap.add_argument("--smooth-curve-extra", type=float, default=0.0)
+    ap.add_argument("--smooth-curve-half-kappa", type=float, default=0.05)
+    ap.add_argument("--steer-second-weight", type=float, default=0.0)
     ap.add_argument("--adaptive-speed-coupling", choices=["precision", "corridor", "independent_position"], default="precision")
-    ap.add_argument("--adaptive-path-scale-m", type=float, default=None)
+    ap.add_argument("--adaptive-path-scale-m", type=float, default=1.0)
     ap.add_argument("--adaptive-drift", type=float, default=1.0)
-    ap.add_argument("--adaptive-smooth", type=float, default=0.10)
+    ap.add_argument("--adaptive-smooth", type=float, default=0.2)
     ap.add_argument("--adaptive-guidance", type=float, default=0.0)
     # Strict per-step powered-drift contract.  These are evaluation thresholds,
     # not reward knobs; a mean can no longer hide a long non-drift interval.
@@ -331,7 +337,7 @@ def main():
             _skip = {"seq_length", "gamma", "aux_reward_decay_steps",
                      "aux_reward_coef", "train", "ref_mode_cli",
                      "disturbance_param", "randomize_param", "random_seed",
-                     "quiet", "obs_privileged"}
+                     "quiet", "obs_privileged", "beta_feedback"}
             _unsupported = sorted(k for k in _cfg
                                   if not hasattr(args, k) and k not in _skip)
             if _unsupported:
@@ -404,6 +410,10 @@ def main():
                                  adaptive_performance=args.adaptive_performance,
                                  adaptive_speed_penalty=args.adaptive_speed_penalty,
                                  adaptive_speed_coupling=args.adaptive_speed_coupling,
+                                 speed_reward_uncapped=args.speed_reward_uncapped,
+                                 smooth_curve_extra=args.smooth_curve_extra,
+                                 smooth_curve_half_kappa=args.smooth_curve_half_kappa,
+                                 steer_second_weight=args.steer_second_weight,
                                  adaptive_path_scale_m=args.adaptive_path_scale_m,
                                  adaptive_shape=args.adaptive_shape,
                                  adaptive_drift=args.adaptive_drift,

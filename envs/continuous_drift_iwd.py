@@ -78,6 +78,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.adaptive_performance = float(kwargs.get("adaptive_performance", 3.00))
         self.adaptive_drift = float(kwargs.get("adaptive_drift", 1.00))
         self.adaptive_smooth = float(kwargs.get("adaptive_smooth", 0.10))
+        self.speed_reward_uncapped = bool(kwargs.get("speed_reward_uncapped", False))
+        self.smooth_curve_extra = float(kwargs.get("smooth_curve_extra", 0.0))
+        self.smooth_curve_half_kappa = float(kwargs.get("smooth_curve_half_kappa", 0.05))
+        self.steer_second_weight = float(kwargs.get("steer_second_weight", 0.0))
+        if self.smooth_curve_half_kappa <= 0 or min(self.smooth_curve_extra,self.steer_second_weight) < 0:
+            raise ValueError("Invalid smoothness parameters")
         self.adaptive_guidance = float(kwargs.get("adaptive_guidance", 0.0))
         # Opt-in: retain old checkpoint reward semantics when absent.
         self.adaptive_speed_penalty = str(kwargs.get("adaptive_speed_penalty", "target"))
@@ -226,7 +232,11 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # Production keeps the fixed 27-channel real-observable actor contract.
         # The optional four exact plant channels are an explicitly non-deployable
         # observability upper bound; sensor DR still acts only on physical sensors.
-        self.sensor_num_states = (1 + 3 + n_ctrl + 4 + 4) + 12
+        pt0 = kwargs.get("preview_time")
+        self.preview_count = len(pt0.split(",") if isinstance(pt0,str) else pt0) if pt0 is not None else 3
+        if self.preview_count not in (3,5):
+            raise ValueError("Only 3 or 5 preview points are supported")
+        self.sensor_num_states = 15 + 4 * self.preview_count
         self.obs_privileged = bool(kwargs.get("obs_privileged", False))
         self.num_states = self.sensor_num_states + (4 if self.obs_privileged else 0)
         # training; rl_games adds its own running normalisation on top.
@@ -239,7 +249,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         scale += [1.0, 1.0, 1.0,
                   (1.0 / self.speed_ref if self.continuing_task else 0.05)]
         # e_pos, e_dir, e_kappa, encoder speed (continuing) or legacy odometry
-        for _ in range(3):
+        for _ in range(self.preview_count):
             scale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0]
         self.obs_scale = torch.tensor(scale, device=self.device, dtype=torch.float32)
         # Actor-only sensor/fusion uncertainty.  Noise is specified after the
@@ -258,12 +268,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         white = ([yaw_n, acc_n, acc_n, acc_n, steer_n, 0.005, 0.005]
                  + [wheel_n] * 4
                  + [pos_n, 0.005, curv_n, 0.03 / self.speed_ref]
-                 + [pos_n, pos_n, 0.005, curv_n] * 3)
+                 + [pos_n, pos_n, 0.005, curv_n] * self.preview_count)
         bias = ([0.010 * scale[0], 0.15 * scale[1], 0.15 * scale[1], 0.15 * scale[1],
                  0.003 * scale[4], 0.005, 0.005]
                 + [0.02 * wheel_scale] * 4
                 + [pos_n, 0.005, curv_n, 0.02 / self.speed_ref]
-                + [pos_n, pos_n, 0.005, curv_n] * 3)
+                + [pos_n, pos_n, 0.005, curv_n] * self.preview_count)
         self._sensor_white_std = torch.tensor(white, device=self.device)
         self._sensor_bias_std = torch.tensor(bias, device=self.device)
         self._sensor_rw_std = 0.001 * self._sensor_bias_std
@@ -283,7 +293,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                    0.1, 0.1, 0.1]
                   + [wheel_scale] * 4 + [0.5] * 4 + [1.0] * 4 + [1.0] * 4 + [1.0] * 4
                   + list(ctrl_scale))
-        for _ in range(3):
+        for _ in range(self.preview_count):
             pscale += [1.0 / self.length_scale, 1.0 / self.length_scale, 1.0, 1.0, 1.0]
         self.priv_scale = torch.tensor(pscale, device=self.device, dtype=torch.float32)
         # "equilibrium" spawns start near the drift equilibrium of the local
@@ -341,7 +351,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_states,))
         self.state_space = self.observation_space
         if self.asymmetric:
-            self.num_priv = 52
+            self.num_priv = 37 + 5 * self.preview_count
             self.state_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(self.num_priv,))
 
         dummy_obs = torch.zeros((self.n, self.num_states), device=self.device)
@@ -536,9 +546,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             device=self.device, dtype=torch.float32)
         if self.preview_time is not None:
             values = self.preview_time
-            if (values.shape != (3,) or not bool(torch.isfinite(values).all())
+            if (values.shape != (self.preview_count,) or not bool(torch.isfinite(values).all())
                     or not bool((values > 0).all()) or not bool((values.diff() > 0).all())):
-                raise ValueError('preview_time requires three increasing positive finite headways')
+                raise ValueError('preview_time requires 3 or 5 increasing positive finite headways')
         pd = kwargs.get("preview_distances_m", None)
         self.preview_distances_m = None
         if pd is not None:
@@ -548,7 +558,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 [float(x) for x in (pd.split(',') if isinstance(pd, str) else pd)],
                 device=self.device, dtype=torch.float32)
             values = self.preview_distances_m
-            if (values.shape != (3,) or not bool(torch.isfinite(values).all())
+            if (values.shape != (self.preview_count,) or not bool(torch.isfinite(values).all())
                     or not bool((values > 0).all()) or not bool((values.diff() > 0).all())):
                 raise ValueError('preview_distances_m requires three increasing positive finite distances')
         # arc length of one waypoint, needed to turn a time headway into an index
@@ -1104,7 +1114,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             inds = self.progress[:, None] + offs
             inds = (inds.remainder(self.num_waypoints) if self._cyclic_reference
                     else inds.clamp(0, self.num_waypoints - 1))
-            la_inds = [inds[:, k:k+1] for k in range(3)]
+            la_inds = [inds[:, k:k+1] for k in range(self.preview_count)]
         elif self.preview_time is not None:
             ds_wp = (self._path_ds[self.path_generation, self.path_id].unsqueeze(1)
                      if self._cyclic_reference else self.waypoint_ds)
@@ -1119,10 +1129,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             offs = offs.clamp(min=1, max=self.num_waypoints - 1)
             if self._cyclic_reference:
                 la_inds = [((self.progress.unsqueeze(1) + offs[:, k:k + 1]) % self.num_waypoints)
-                           for k in range(3)]
+                           for k in range(self.preview_count)]
             else:
                 la_inds = [(self.progress.unsqueeze(1) + offs[:, k:k + 1]).clamp(0, self.num_waypoints - 1)
-                           for k in range(3)]
+                           for k in range(self.preview_count)]
         elif not self._cyclic_reference:
             la_inds = [(self.progress + i).unsqueeze(-1)
                        for i in (int(200 * self.preview_scale), int(400 * self.preview_scale),
@@ -1174,7 +1184,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # positive-y/positive-yaw (left) turn.  A preview point to the left must
         # therefore produce positive steering.  The old extra minus sign made
         # every pure-pursuit teacher/reward steer away from the reference.
-        pp = la_converted[1]
+        pp = la_converted[self.preview_count // 2]
         ld2 = (pp[:, 0] ** 2 + pp[:, 1] ** 2).clamp(min=1e-3)
         self.delta_pp = torch.atan2(2.0 * self.wheelbase * pp[:, 1], ld2)
 
@@ -1232,6 +1242,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             "beta_diff": beta_diff, "kappa_ref": kappa_ref,
             "prog": self.step_progress, "failed": failed.float(),
         }
+        old_raw = self._now["raw_delta"] if self._now is not None else now["raw_delta"]
+        now["raw_delta_step"] = torch.where(self.step_count > 1, now["raw_delta"] - old_raw, torch.zeros_like(old_raw))
         if update_history:
             mask = getattr(self, "_tracking_mask", None)
             if mask is None or self._now is None:
@@ -1311,7 +1323,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # critic previews keep the reference sideslip (5 channels); the actor
             # version above does not have it
             beta_preview = self._reference_beta(self.kappa_preview, v[:, None])
-            for j in range(3):
+            for j in range(self.preview_count):
                 priv_list.append(torch.cat([la_converted[j], beta_preview[:, j:j + 1]], dim=1))
             states = torch.cat(priv_list, 1) * self.priv_scale
             return {"obs": actor_obs, "states": states}
@@ -1576,18 +1588,19 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 if self.adaptive_speed_penalty == "none":
                     _overspeed_safe = torch.ones_like(_speed_ratio)
                 _performance = _track_joint * _speed_use * _overspeed_safe
+                _speed_credit = _speed_ratio.clamp_min(0.) if self.speed_reward_uncapped else _speed_use
                 # Only the speed component is decoupled. Drift quality keeps
                 # its original precision gate; default checkpoint semantics stay exact.
-                _speed_performance = _performance
+                _speed_performance = _track_joint * _speed_credit * _overspeed_safe
                 if self.adaptive_speed_coupling == "independent_position":
-                    _speed_performance = _course_gate * _speed_use * _overspeed_safe
+                    _speed_performance = _course_gate * _speed_credit * _overspeed_safe
                 elif self.adaptive_speed_coupling == "corridor":
                     def fade_abs(value, start, end):
                         t = ((value.abs() - start) / (end - start)).clamp(0., 1.)
                         return 1. - t.square() * (3. - 2. * t)
                     _corridor = fade_abs(signed_pos_diff, 1.5, 3.5)
                     _direction = fade_abs(angle_diff, 0.35 * self.course_limit, self.course_limit)
-                    _speed_performance = _corridor * _direction * _speed_use * _overspeed_safe
+                    _speed_performance = _corridor * _direction * _speed_credit * _overspeed_safe
                 # A strict product erases all exploration signal when one factor
                 # is absent.  Preserve XCAR's essential signed quadratic target
                 # information: correct-side samples improve over zero, while
@@ -1661,13 +1674,20 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                         _beta_aligned / beta_target.abs().clamp_min(0.15))
                     _powered_slide = _beta_progress * _slip_gate
                     _task_factor = 1.0 - 0.75 * _drift_opportunity * (1.0 - _powered_slide)
+                curve = torch.maximum(self.kappa_ref.abs(), self.kappa_preview.abs().amax(dim=1))
+                smooth_weight = self.adaptive_smooth + self.smooth_curve_extra * torch.exp(
+                    -math.log(2.) * (curve / self.smooth_curve_half_kappa).square())
+                second = (now["raw_delta_step"] - prev["raw_delta_step"]) / 0.05
+                second_cost = second.square() / (1. + second.square())
+                second_cost = torch.where(self.step_count > 2, second_cost, torch.zeros_like(second_cost))
                 adaptive_terms = {
                     "alive": self.adaptive_alive * live,
                     "tracking": self.adaptive_tracking * _track_joint * _task_factor * live,
                     "performance": self.adaptive_performance * _speed_performance * _task_factor * live,
                     "optional_drift": self.adaptive_drift * _drift_quality * live,
                     "guidance": self.adaptive_guidance * _guidance_gate * live,
-                    "smooth": self.adaptive_smooth * _smooth_gate * live,
+                    "smooth": smooth_weight * _smooth_gate * live,
+                    "steer_second": -self.steer_second_weight * second_cost * live,
                     "raw_steer_change": -0.05 * _raw_change_cost * live,
                     # Retain brake for approaching a tighter/slower segment or
                     # overspeed recovery; discourage braking below target speed.
