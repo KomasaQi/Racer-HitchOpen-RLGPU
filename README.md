@@ -150,7 +150,7 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 > **Current Contributors:**
 > - Komasa Qi, School of Vehicle and Mobility, THU, komasaqi@foxmail.com
 > - Zhantao Wang, Digital China, wangztq@digitalchina.com
-> - Yuhang Wu, College of AI, Tsinghua University
+> - Yuhang Wu, College of AI, Tsinghua University, yh-wu22@mails.tsinghua.edu.cn
 
 
 ## License 📄
