@@ -118,3 +118,33 @@ User authorized implementation and one-epoch smoke tests only before reviewing t
 Optional interventions: detached predicted beta feedback, uncapped speed credit, curvature-dependent steering smoothness, second steering difference, and 5 time previews (actor35/critic62). Existing 3-point checkpoints retain exact default physics/observation/reward parity. Architecture-changing branches train fresh against a matched fresh baseline; compatible branches resume healthy v11 epoch105, never a degraded checkpoint.
 
 Fixed scheduler/evaluator/collector: `experiments/continuous_drift_iwd/night_*.py`. External plan, input checkpoints, smoke evidence, backups and Chinese DSH handoff are in `../DSH_Night_2026-11-14/`. The scheduler verifies a frozen commit/file seal, limits GPU training to two workers, serializes CarSim, archives native output and updates LastRun, and records failures/budget skips without tuning or promotion. Main matrix: 11 branches, 675 updates; optional second seed within a 9.5 h wall limit. This is experiment infrastructure, not evidence of improved driving performance.
+
+
+## 2026-11-16 stability-first default and frozen experiment preparation
+
+User requested restoring streaming reference distribution to 2 segments/120 m
+with automatic 56.25 m minimum transition, smoothness weight 0.1, retaining
+1.0 m tracking scale and zero artificial observation delay. CLI batch defaults
+restore 32768 environments / 81920 minibatch; the frozen experiment explicitly
+sets horizon40, sequence10, four mini-epochs, fresh105 (137625600 frames).
+Full dynamics/sensor DR, mirror GRU actor and privileged critic remain.
+These are requested experimental defaults, not an accepted performance claim.
+
+External frozen orchestration, one-epoch smokes, backups and DSH handoff:
+`../DSH_Stability_Night_2026-11-16/`. All evaluation configurations override
+training sensor delay to zero; training-only delay arms use at most one 50ms
+control step. Absolute deadline: 2026-11-17 09:00 Asia/Shanghai. No full
+training was launched during preparation. The prior night seal refers to its
+old commit and must not be used to launch this new matrix.
+
+Historical audit and 60 additional CarSim rollouts:
+`../Default_Stability_Audit_2026-11-16/REPORT.html`. Matched path-distribution
+weights show low/mid-grip stability regressions; smoothness increase is a
+secondary risk, with observation-seed sensitivity also present. Pedal switch
+count is diagnostic only, assessed jointly with amplitudes and tracking
+oscillation. No checkpoint has passed all stability requirements.
+
+Optional seven-point time preview now accepts actor43/critic72 dimensions;
+mirror mappings and network sizes derive from preview count. Three/five-point
+computation is unchanged. Full one-epoch and deployment smokes are required
+in the external frozen handoff before optional seven-point jobs may launch.

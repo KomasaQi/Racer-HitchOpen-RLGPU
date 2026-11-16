@@ -3,19 +3,19 @@ import sys,json,torch
 r=Path(__file__).resolve().parents[2];sys.path[:0]=[str(r),str(r/'utils'),str(r/'xcar-simulation')]
 from utils.mirror_policy import SharedMirrorActor,SharedMirrorCritic
 from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
-for n in [3,5]:
+for n in [3,5,7]:
  for feedback in [False,True]:
   a=SharedMirrorActor(n,feedback);x=torch.randn(4,3,15+4*n);mu,_,beta,h=a(x,None,None);mm,_,bb,hh=a(a.mirror(x),None,None);torch.testing.assert_close(mm,mu*a.mirror.action_sign);torch.testing.assert_close(bb,-beta)
   mu.square().sum().backward();assert all(p.grad is None for p in a.beta.parameters()),'action gradients leaked into beta head'
   a.zero_grad();a(x,None,None)[2].square().sum().backward();assert a.beta[0].weight.grad.abs().sum()>0
   c=SharedMirrorCritic(preview_count=n);z=torch.randn(3,37+5*n);torch.testing.assert_close(c(z,None,None),c(c.mirror(z),None,None))
- cfg=json.loads(Path(sys.argv[1]).read_text());cfg.update(n=3,device='cpu',preview_time='0.5,1,1.5' if n==3 else '.25,.5,1,1.5,2',sensor_delay_max=0,smooth_curve_extra=.8,steer_second_weight=.2,speed_reward_uncapped=True)
+ cfg=json.loads(Path(sys.argv[1]).read_text());cfg.update(n=3,device='cpu',preview_time={3:'.5,1,1.5',5:'.25,.5,1,1.5,2',7:'.25,.5,1,1.5,2,2.5,3'}[n],sensor_delay_max=0,smooth_curve_extra=.8,steer_second_weight=.2,speed_reward_uncapped=True)
  cfg.pop('ref_mode_cli',None);cfg.pop('num_parallel',None)
  e=ContinuousDriftIWDEnv(preset_name="fullsize_racecar_ev",ref_mode="streaming_random",**cfg);obs=e.reset();assert obs['obs'].shape==(3,15+4*n);assert obs['states'].shape==(3,37+5*n)
  for j in range(8):
   obs,reward,done,info=e.step(torch.tensor([[.05,.3,0.]]).repeat(3,1));assert torch.isfinite(reward).all()
  assert torch.equal(e.obs()['obs'],e.obs()['obs'])
-print('Mirror symmetry, stop-gradient, critic separation, 3/5-point real environment steps passed')
+print('Mirror symmetry, stop-gradient, critic separation, 3/5/7-point real environment steps passed')
 
 
 # Controlled reward probes isolate each intervention from state/path differences.

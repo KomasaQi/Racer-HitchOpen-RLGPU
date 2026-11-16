@@ -228,14 +228,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         if not self.pedals:
             # the 27-channel actor contract assumes the pedal triple; the legacy
             # wheel-speed mode would make it 28 channels
-            raise ValueError("continuous_drift_iwd uses the 27-channel pedals actor")
-        # Production keeps the fixed 27-channel real-observable actor contract.
+            raise ValueError("continuous_drift_iwd requires the observable pedals actor")
+        # Actor uses 15 sensor/control channels plus 4 channels per preview point.
         # The optional four exact plant channels are an explicitly non-deployable
         # observability upper bound; sensor DR still acts only on physical sensors.
         pt0 = kwargs.get("preview_time")
         self.preview_count = len(pt0.split(",") if isinstance(pt0,str) else pt0) if pt0 is not None else 3
-        if self.preview_count not in (3,5):
-            raise ValueError("Only 3 or 5 preview points are supported")
+        if self.preview_count not in (3,5,7):
+            raise ValueError("Only 3, 5 or 7 preview points are supported")
         self.sensor_num_states = 15 + 4 * self.preview_count
         self.obs_privileged = bool(kwargs.get("obs_privileged", False))
         self.num_states = self.sensor_num_states + (4 if self.obs_privileged else 0)
@@ -548,7 +548,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             values = self.preview_time
             if (values.shape != (self.preview_count,) or not bool(torch.isfinite(values).all())
                     or not bool((values > 0).all()) or not bool((values.diff() > 0).all())):
-                raise ValueError('preview_time requires 3 or 5 increasing positive finite headways')
+                raise ValueError('preview_time requires 3, 5 or 7 increasing positive finite headways')
         pd = kwargs.get("preview_distances_m", None)
         self.preview_distances_m = None
         if pd is not None:
@@ -560,7 +560,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             values = self.preview_distances_m
             if (values.shape != (self.preview_count,) or not bool(torch.isfinite(values).all())
                     or not bool((values > 0).all()) or not bool((values.diff() > 0).all())):
-                raise ValueError('preview_distances_m requires three increasing positive finite distances')
+                raise ValueError('preview_distances_m requires matching increasing positive finite distances')
         # arc length of one waypoint, needed to turn a time headway into an index
         self.waypoint_ds = float(getattr(self, "_path_length_xcar", 50.0) * self.length_scale / max(self.num_waypoints - 1, 1))
 

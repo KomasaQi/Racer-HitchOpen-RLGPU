@@ -34,8 +34,8 @@ class MirrorActorBuilder(network_builder.A2CBuilder):
         def __init__(self, params, **kwargs):
             super().__init__()
             self.obs_width = int(kwargs["input_shape"][0])
-            if self.obs_width not in (27,35) or kwargs["actions_num"] != 3:
-                raise ValueError("mirror actor requires 27 or 35 observable inputs and 3 pedal actions")
+            if self.obs_width not in (27,35,43) or kwargs["actions_num"] != 3:
+                raise ValueError("mirror actor requires 27, 35 or 43 observable inputs and 3 pedal actions")
             self.core = SharedMirrorActor((self.obs_width-15)//4, params.get("beta_feedback", False))
             self.num_seqs = kwargs.get("num_seqs", 1)
             self.beta_aux_weight = float(params.get("beta_aux_weight", .1))
@@ -91,8 +91,8 @@ class MirrorValueBuilder(network_builder.A2CBuilder):
         def __init__(self, params, **kwargs):
             super().__init__()
             width = int(kwargs["input_shape"][0])
-            if width not in (52,62):
-                raise ValueError("mirror critic requires 52 or 62 body-frame privileged channels")
+            if width not in (52,62,72):
+                raise ValueError("mirror critic requires 52, 62 or 72 body-frame privileged channels")
             self.core = SharedMirrorCritic(params["mlp"]["units"], (width-37)//5)
         @property
         def mirror(self): return self.core.mirror

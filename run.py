@@ -49,8 +49,8 @@ parser.add_argument("--run-root", type=str, default="runs",
                     help="artifact directory for checkpoints, summaries and resolved configs; "
                          "use a path outside the repository for formal runs")
 parser.add_argument("--epochs", type=int, default=1000)
-parser.add_argument("--num-parallel", type=int, default=16384)
-parser.add_argument("--minibatch", type=int, default=65536,
+parser.add_argument("--num-parallel", type=int, default=32768)
+parser.add_argument("--minibatch", type=int, default=81920,
                     help="PPO minibatch size; capped at num_parallel*horizon")
 parser.add_argument("--lr-schedule", type=str, default="adaptive")
 parser.add_argument("--mini-epochs", type=int, default=5)
@@ -189,9 +189,9 @@ parser.add_argument("--speed-margin", type=float, default=0.9,
                     help="fraction of the friction-limit speed used as the target")
 parser.add_argument("--speed-cap", type=float, default=None,
                     help="upper clamp on the friction-limit speed target")
-parser.add_argument("--reference-segments", type=int, default=4,
+parser.add_argument("--reference-segments", type=int, default=2,
                     help="curvature transitions per120m streaming chunk")
-parser.add_argument("--reference-transition-min-m", type=float, default=15.0,
+parser.add_argument("--reference-transition-min-m", type=float, default=None,
                     help="optional minimum transition span; bound each curvature change by its span")
 parser.add_argument("--preview-time", type=str, default=None,
                     help="comma separated preview headways in seconds, e.g. 0.5,1.0,1.6")
@@ -267,7 +267,7 @@ parser.add_argument("--adaptive-speed-coupling", choices=["precision", "corridor
 parser.add_argument("--adaptive-path-scale-m", type=float, default=1.0,
                     help="Optional tracking precision half-score distance, independent of failure boundary")
 parser.add_argument("--adaptive-drift-weight", type=float, default=1.0)
-parser.add_argument("--adaptive-smooth-weight", type=float, default=0.2)
+parser.add_argument("--adaptive-smooth-weight", type=float, default=0.1)
 parser.add_argument("--adaptive-guidance-weight", type=float, default=0.0,
                     help="A0-only actor-observable pure-pursuit guidance; anneal to zero")
 parser.add_argument("--drift-spawn-spin-frac", type=float, default=1.0,
