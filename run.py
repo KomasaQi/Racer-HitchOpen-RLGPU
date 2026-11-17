@@ -35,8 +35,8 @@ parser.add_argument("--plant", type=str, default="fast", choices=["fast", "iwd"]
 parser.add_argument("--control-mode", type=str, default="pedals", choices=["pedals", "wheel_speed"])
 parser.add_argument("--dt", type=float, default=None,
                     help="control period; default 0.05 s (20 Hz) for the fast plant, 0.01 s for iwd")
-parser.add_argument("--fastplant-solver", choices=["original", "cached", "cuda_graph"],
-                    default=os.environ.get("FASTPLANT_IMPLICIT_SOLVER", "cached"),
+parser.add_argument("--fastplant-solver", choices=["auto", "original", "cached", "cuda_graph"],
+                    default=os.environ.get("FASTPLANT_IMPLICIT_SOLVER", "auto"),
                     help="equivalent implicit wheel solver execution backend; keeps physics accuracy")
 parser.add_argument("--physics-dt", type=float, default=0.01, help="physics step of the fast plant (100 Hz)")
 parser.add_argument("--rnn", action='store_true')
@@ -119,6 +119,10 @@ parser.add_argument("--yaw-weight", type=float, default=1.0,
 parser.add_argument("--yaw-scale", type=float, default=0.5, help="normalisation of the yaw error [rad/s]")
 parser.add_argument("--alive-bonus", type=float, default=0.0,
                     help="constant reward per surviving control step")
+parser.add_argument("--actor-inference-precision", choices=["float32", "float16"], default="float32",
+                    help="actor rollout precision; FP16 is optional and leaves physics/critic precision unchanged")
+parser.add_argument("--network-execution", choices=["reference", "cuda_graph"], default="cuda_graph",
+                    help="mirror actor/critic execution backend; retains current math and precision settings")
 parser.add_argument("--mirror-policy", action="store_true",
                     help="exact shared-call mirror actor and independent invariant critic")
 parser.add_argument("--asymmetric", action="store_true",
@@ -353,6 +357,8 @@ default_env_config = {
     "speed_hinge": args.speed_hinge,
     "asymmetric": args.asymmetric,
     "mirror_policy": args.mirror_policy,
+    "network_execution": args.network_execution,
+    "actor_inference_precision": args.actor_inference_precision,
     "beta_feedback": args.beta_feedback,
     "speed_reward_uncapped": args.speed_reward_uncapped,
     "smooth_curve_extra": args.smooth_curve_extra,
@@ -717,6 +723,9 @@ if args.observable_gru:
         runner_config["params"]["network"]["initial_action_mean"] = initial_mean
     # Validate the eager path first; compile is a later throughput optimisation.
     if args.mirror_policy:
+        runner_config["params"]["network"]["execution_backend"] = args.network_execution
+        runner_config["params"]["network"]["inference_precision"] = args.actor_inference_precision
+        runner_config["params"]["config"]["central_value_config"]["network"]["execution_backend"] = args.network_execution
         runner_config["params"]["model"]["name"] = "drift_mirror_actor"
         runner_config["params"]["network"]["name"] = "drift_mirror_actor"
         cv = runner_config["params"]["config"]["central_value_config"]

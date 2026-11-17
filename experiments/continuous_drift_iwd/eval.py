@@ -29,7 +29,15 @@ from envs.continuous_drift_iwd import ContinuousDriftIWDEnv
 class Policy:
     """Actor rebuilt from an rl_games checkpoint (MLP or GRU + MLP)."""
 
-    def __init__(self, path, device):
+    def __init__(self, path, device, inference_precision=None, execution_backend=None):
+        import json
+        from pathlib import Path
+        config_path=Path(path).parent.parent/"env_config.json"
+        execution_config=json.loads(config_path.read_text()) if config_path.exists() else {}
+        if inference_precision is None:inference_precision=execution_config.get("actor_inference_precision","float32")
+        if execution_backend is None:execution_backend=execution_config.get("network_execution","reference")
+        if inference_precision not in ("float32","float16"):raise ValueError("invalid inference precision")
+        if execution_backend not in ("reference","cuda_graph"):raise ValueError("invalid network execution backend")
         ck = torch.load(path, map_location="cpu", weights_only=False)
         self.squashed = ck.get("action_distribution") == "tanh_normal"
         sd = ck["model"] if "model" in ck else ck
@@ -46,6 +54,8 @@ class Policy:
             self.mirror_core.load_state_dict({k[len(prefix):]: v for k, v in w.items()
                                              if k.startswith(prefix)}, strict=True)
             self.mirror_core.eval()
+            self.mirror_core.inference_precision=inference_precision
+            self.mirror_core.execution_backend=execution_backend
             self.action_std = self.mirror_core.logstd.detach().exp()
             self.gru = self.mirror_core.gru
             self.h = None
@@ -308,6 +318,9 @@ def main():
     ap.add_argument("--metric-util-min", type=float, default=0.70)
     ap.add_argument("--metric-util-max", type=float, default=1.10)
     ap.add_argument("--metric-epos-max", type=float, default=1.50)
+    ap.add_argument("--actor-inference-precision",choices=["float32","float16"],default=None)
+    ap.add_argument("--network-execution",choices=["reference","cuda_graph"],default=None)
+    ap.add_argument("--implicit-solver-backend",choices=["auto","original","cached","cuda_graph"],default="auto")
     args = ap.parse_args()
     _explicit_cli = explicit_cli_dests(ap, sys.argv[1:])
     if str(args.device).startswith("cpu"):
@@ -356,6 +369,7 @@ def main():
         args.ref_mode = "closed_random"
     env = ContinuousDriftIWDEnv(args.car_preset, args.n, args.device, ref_mode=args.ref_mode,
                                 dt=args.dt, physics_dt=args.physics_dt, plant=args.plant,
+                                implicit_solver_backend=args.implicit_solver_backend,
                                 control_mode=args.control_mode, beta_scale=args.beta_scale,
                                 obs_privileged=args.obs_privileged,
                                 spawn_mode=args.spawn_mode, spawn_speed=args.spawn_speed,
@@ -538,7 +552,7 @@ def main():
         if not cands:
             cands = [os.path.join(ckpt, "continuous_drift_iwd.pth")]
         ckpt = max(cands, key=os.path.getmtime)
-    policy = Policy(ckpt, torch.device(args.device))
+    policy = Policy(ckpt, torch.device(args.device),inference_precision=args.actor_inference_precision,execution_backend=args.network_execution)
     args.checkpoint = ckpt
     policy.reset_hidden(torch.ones(args.n, dtype=torch.bool, device=args.device))
 

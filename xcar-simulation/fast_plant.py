@@ -1258,6 +1258,8 @@ class FastRacerPlant:
         cuda_graph: cached evaluation plus exact-operation graph replay of refinement.
         Call before rollouts; compilation/capture cost belongs to the first step.
         """
+        if backend == "auto":
+            backend = "cuda_graph" if (self.device.type=="cuda" and self.combined_slip_model=="compact_transition" and not self.tire_relaxation and self.drivetrain in ("rwd","iwd")) else "cached"
         if backend not in ("original", "cached", "cuda_graph"):
             raise ValueError("unknown implicit solver backend: " + backend)
         self.implicit_fx_optimized = backend != "original"

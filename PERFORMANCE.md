@@ -31,7 +31,7 @@ Developed in the isolated `codex/fastplant-speed` worktree. The running DSH
 experiment remains on the original checkout/code. After completing that frozen
 matrix, use this version with `--fastplant-solver cuda_graph`. The option is
 saved as `implicit_solver_backend` in env_config.json. `original` preserves the
-reference implementation; `cached` (the CLI default) removes repeated invariant
+reference implementation; `cached` (the explicit eager alternative) removes repeated invariant
 work; `cuda_graph` additionally replays the wheel refinement with the original
 arithmetic operations. CPU evaluation uses cached equations automatically.
 
@@ -60,3 +60,39 @@ Reproduce solver checks with:
 `python experiments/continuous_drift_iwd/solver_equivalence.py --device cuda --backend cuda_graph --steps 600 --output ABSOLUTE_RESULT_JSON`
 This test deliberately samples parameter ranges and changes them after capture.
 It is a numerical-equivalence test, not a learned-policy drift success test.
+
+## Network execution acceleration and current defaults
+
+Current defaults select FastPlant `auto` (CUDA graphs for eligible CUDA compact
+RWD/IWD; cached otherwise), mirror network `cuda_graph`, and actor inference
+`float32`. The original architecture, losses, optimizer, AMP update configuration,
+normalizers and sensors are retained. CPU evaluation falls back to eager execution.
+Restore the reference path with `--fastplant-solver original --network-execution reference`.
+
+Graphs replay the original actor/critic forward/backward. AMP half-weight cast
+sharing is preserved; no RNN parameter flattening occurs after graph capture.
+Only state_dict is saved, so checkpoint keys are unchanged. Fixed startup selection
+is supported; late graph creation after eager training/new shapes may fall back to
+reference execution. TensorBoard execution/backends and actor/critic graph-cache
+counts expose the requested/effective startup configuration and graph creation.
+
+A same-process32768-env ABBA test (5 steady epochs each) measured update phase
+3.786s ->2.554s (1.48x), and total epoch12.101s ->10.599s (1.14x), with the same
+already-accelerated FastPlant. Actor forward/backward alone was2.57x faster under
+the actual AMP setting; inference gains at FP32 were negligible. These phase
+figures include data/loss/optimizer work and do not imply a2.57x whole PPO speedup.
+At10.6s/epoch,150epochs project to about27minutes plus startup/checkpoint overhead;
+a complete150-epoch run has not been timed. Do not promise XCAR's13minutes.
+
+FP16 actor inference is explicit: `--actor-inference-precision float16`.
+It accelerated the32768-actor forward microbenchmark about9.9x, but is not the
+default: the one-checkpoint CarSim medium-grip figure-eight comparison diverged
+in failure time (FP32 27.55s; FP16 91.10s; both failed120s). Most other paired metrics
+were very close. This changes actor rollout arithmetic, not physics/critic precision.
+Precision/backend options reconstruct from env_config in evaluation; CPU remainsFP32.
+
+Validation includes FP16/BF16 AMP + GradScaler + Adam regression, train/eval
+transitions, finite checkpoints, and all120tensor leaves equal after3full32768-env
+PPO epochs versus reference network execution. Existing contracts also passed.
+Rejected packed/GRUCell/aligned-head/fused-Adam prototypes and all raw evidence stay
+outside the repository in `../Network_Optimization_20261117/`.

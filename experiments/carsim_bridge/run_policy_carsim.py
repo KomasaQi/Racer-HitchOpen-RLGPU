@@ -176,7 +176,7 @@ def run(scenario, policy_path, config_path, steps=600, seed=0, entry_speed=0.0,
         "bias_scaled_packet_units": env._sensor_bias.detach().cpu().tolist(),
         "dropout_probability": float(env.sensor_dropout_prob),
     }
-    pol = Policy(policy_path, torch.device(device))
+    pol = Policy(policy_path, torch.device(device),inference_precision=cfg.get("actor_inference_precision","float32"),execution_backend=cfg.get("network_execution","reference"))
     pol.reset_hidden(torch.ones(1, dtype=torch.bool, device=device))
     _solver_t0 = float(env.car.sim._t)
     speed, beta_err, epos, eyaw, n = 0.0, 0.0, 0.0, 0.0, 0

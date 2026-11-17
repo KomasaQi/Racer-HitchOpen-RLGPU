@@ -37,6 +37,8 @@ class MirrorActorBuilder(network_builder.A2CBuilder):
             if self.obs_width not in (27,35,43,51) or kwargs["actions_num"] != 3:
                 raise ValueError("mirror actor requires 27, 35, 43 or 51 observable inputs and 3 pedal actions")
             self.core = SharedMirrorActor((self.obs_width-15)//4, params.get("beta_feedback", False))
+            self.core.execution_backend = params.get("execution_backend", "reference")
+            self.core.inference_precision = params.get("inference_precision", "float32")
             self.num_seqs = kwargs.get("num_seqs", 1)
             self.beta_aux_weight = float(params.get("beta_aux_weight", .1))
             self.beta_labels = self.beta_mask = self.beta_prediction = None
@@ -94,6 +96,7 @@ class MirrorValueBuilder(network_builder.A2CBuilder):
             if width not in (52,62,72,82):
                 raise ValueError("mirror critic requires 52, 62, 72 or 82 body-frame privileged channels")
             self.core = SharedMirrorCritic(params["mlp"]["units"], (width-37)//5)
+            self.core.execution_backend = params.get("execution_backend", "reference")
         @property
         def mirror(self): return self.core.mirror
         def is_rnn(self): return False

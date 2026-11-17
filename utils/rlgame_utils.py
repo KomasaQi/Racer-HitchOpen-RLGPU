@@ -111,6 +111,14 @@ class RLGPUAlgoObserver(AlgoObserver):
         self.ep_infos = []
         self.direct_info = {}
         self.writer = self.algo.writer
+        env = getattr(self.algo.vec_env, "env", None)
+        core = getattr(getattr(self.algo.model, "a2c_network", None), "core", None)
+        execution = dict(fastplant=getattr(getattr(env,"plant",None),"implicit_solver_backend","legacy"),
+                         mirror_network=getattr(core,"execution_backend","legacy"),
+                         actor_inference_precision=getattr(core,"inference_precision","float32"),
+                         ppo_mixed_precision=bool(getattr(self.algo,"mixed_precision",False)))
+        print("Effective execution backends:",execution)
+        if hasattr(self.writer,"add_text"):self.writer.add_text("execution/backends",str(execution),0)
         if self.warm_start:
             payload = torch.load(self.warm_start, map_location=self.algo.ppo_device,
                                  weights_only=False)
@@ -159,6 +167,11 @@ class RLGPUAlgoObserver(AlgoObserver):
         return False
 
     def after_print_stats(self, frame, epoch_num, total_time):
+        actor_core=getattr(getattr(self.algo.model,"a2c_network",None),"core",None)
+        self.writer.add_scalar("execution/actor_graph_cache",len(getattr(actor_core,"_execution_graph_cache",{})),epoch_num)
+        central=getattr(self.algo,"central_value_net",None)
+        value_core=getattr(getattr(getattr(central,"model",None),"a2c_network",None),"core",None)
+        self.writer.add_scalar("execution/critic_graph_cache",len(getattr(value_core,"_execution_graph_cache",{})),epoch_num)
         if self.comparison_reward_count:
             reward = self.comparison_reward_sum / self.comparison_reward_count
             self.writer.add_scalar("comparison/reward_per_step_frames", reward, self.comparison_frames)

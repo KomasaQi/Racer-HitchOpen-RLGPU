@@ -1,5 +1,23 @@
 # Current project status
 
+Updated 2026-11-17 evening. The old DSH queue stopped on a Windows state-file
+replacement PermissionError; the user explicitly chose not to restore that queue.
+Its completed results and incomplete PPO9 seed2 (logged through epoch88) remain.
+
+FastPlant and mirror PPO execution acceleration are validated. Current execution
+defaults: eligible CUDA FastPlant graph replay, actor/critic CUDA graph replay,
+FP32 actor rollout. Existing PPO AMP updates are unchanged. FP16 actor inference
+is optional and not promoted after the sensitive medium-grip figure-eight test.
+No new formal150-epoch experiment has been launched; smoke/profile runs are separate.
+The sustained drift/tracking objective and100% robustness remain unachieved.
+
+Latest implementation/measurement report and precision comparison:
+`../Network_Optimization_20261117/`. Source backups and original simulator artifacts
+are retained. See PERFORMANCE.md for execution flags, guarantees and limits.
+
+The following dated entries are historical records, not active-run instructions.
+
+
 Updated 2026-11-17. Formal 150-epoch comparison is prepared, not launched by Codex.
 The sustained FastPlant-to-CarSim drift objective remains unachieved, especially
 continuous power drift through medium-grip figure-eight transitions.

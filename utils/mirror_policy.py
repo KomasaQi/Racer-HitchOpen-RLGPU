@@ -4,6 +4,7 @@ Inputs use the 27/35/43/51-channel observable actor contract. Hidden state store
 histories as [2, layers, batch, hidden]; reflecting a history swaps its branches.
 Enabled explicitly by the --mirror-policy training option.
 """
+import os
 import torch
 from torch import nn
 
@@ -58,6 +59,24 @@ class SharedMirrorActor(nn.Module):
         self.logstd = nn.Parameter(torch.tensor([-.99, -.80, -1.39]))
 
     def forward(self, obs, mean, variance, hidden=None, done_before=None):
+        precision=getattr(self,"inference_precision","float32")
+        if precision not in ("float32","float16"):raise ValueError("unknown actor inference precision: "+precision)
+        if precision=="float16" and obs.is_cuda and not torch.is_grad_enabled() and not torch.is_autocast_enabled("cuda"):
+            with torch.autocast("cuda",dtype=torch.float16):
+                return self._execute(obs,mean,variance,hidden,done_before)
+        return self._execute(obs,mean,variance,hidden,done_before)
+
+    def _execute(self, obs, mean, variance, hidden=None, done_before=None):
+        backend = getattr(self, "execution_backend", os.environ.get("MIRROR_NETWORK_BACKEND", "reference"))
+        if backend not in ("reference", "cuda_graph"):
+            raise ValueError("unknown mirror execution backend: " + backend)
+        if backend != "reference" and obs.is_cuda:
+            from utils.exact_network_graph import actor_graph_call
+            return actor_graph_call(self, obs, mean, variance, hidden, done_before)
+        if torch.is_grad_enabled():self._reference_training_used=True
+        return self._forward_reference(obs, mean, variance, hidden, done_before)
+
+    def _forward_reference(self, obs, mean, variance, hidden=None, done_before=None):
         if obs.ndim != 3:
             raise ValueError("expected [time,batch,observation_width]")
         batch = obs.shape[1]
@@ -118,6 +137,14 @@ class SharedMirrorCritic(nn.Module):
         self.mlp = nn.Sequential(*layers)
 
     def forward(self, states, mean, variance):
+        backend = getattr(self, "execution_backend", os.environ.get("MIRROR_NETWORK_BACKEND", "reference"))
+        if backend in ("cuda_graph",) and states.is_cuda:
+            from utils.exact_network_graph import critic_graph_call
+            return critic_graph_call(self, states, mean, variance)
+        if torch.is_grad_enabled():self._reference_training_used=True
+        return self._forward_reference(states, mean, variance)
+
+    def _forward_reference(self, states, mean, variance):
         x = (states if mean is None else
              self.mirror.normalize(states, mean, variance))
         n = x.shape[0]
