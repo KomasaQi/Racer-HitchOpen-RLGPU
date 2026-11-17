@@ -1,5 +1,32 @@
 # Current project status
 
+Updated 2026-11-17. Formal 150-epoch comparison is prepared, not launched by Codex.
+The sustained FastPlant-to-CarSim drift objective remains unachieved, especially
+continuous power drift through medium-grip figure-eight transitions.
+
+Current experiment default: beta feedback (stop-gradient), 7 time previews,
+uncapped speed reward, tracking width 1.5 m, smooth coefficient 0.1, original
+streaming path distribution, observation delay/dropout 0, full other DR.
+9-point PPO adds .75 and 1.25 s without extending the 3 s horizon. Actor remains
+real-observation bypass + mirrored GRU128 +256/124/64; critic is privileged.
+Explicit commands/configurations in the external plan are authoritative; a bare
+run.py command does not select this full experimental preset.
+
+External plan, backups, smoke evidence, DSH handoff and live-view launchers:
+`../DSH_Day_2026-11-17/`. All fresh, planned checkpoints 105 and150, fixed seeds;
+PPO/DSAC epoch-equivalent is 1,310,720 collected transitions. New recurrent,
+asymmetric DSAC-T adapter follows the official DSAC-v2 loss, with approximate
+burn-in replay state reconstruction. It is not an unchanged SB3/SBX baseline.
+Comparison requires both sample-matched and wall-time results, not epoch names
+or training reward alone. No algorithm or new policy has been promoted.
+
+Repository changes also support 9-point mirror/deployment contracts and tanh
+DSAC checkpoint actions. Common reward logs use the actual returned reward
+(after clipping), not the sum of pre-clipping shaping components.
+
+Below are historical dated records; their active-run headings are historical.
+
+
 Updated 2026-11-14. The sustained FastPlant-to-CarSim drift objective is **not achieved**.
 
 ## Active run

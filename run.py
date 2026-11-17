@@ -48,7 +48,7 @@ parser.add_argument("--exp-name", type=str, default="default")
 parser.add_argument("--run-root", type=str, default="runs",
                     help="artifact directory for checkpoints, summaries and resolved configs; "
                          "use a path outside the repository for formal runs")
-parser.add_argument("--epochs", type=int, default=1000)
+parser.add_argument("--epochs", type=int, default=150)
 parser.add_argument("--num-parallel", type=int, default=32768)
 parser.add_argument("--minibatch", type=int, default=81920,
                     help="PPO minibatch size; capped at num_parallel*horizon")
@@ -264,7 +264,7 @@ parser.add_argument("--smooth-curve-extra", type=float, default=0.0)
 parser.add_argument("--smooth-curve-half-kappa", type=float, default=0.05)
 parser.add_argument("--steer-second-weight", type=float, default=0.0)
 parser.add_argument("--adaptive-speed-coupling", choices=["precision", "corridor", "independent_position"], default="precision")
-parser.add_argument("--adaptive-path-scale-m", type=float, default=1.0,
+parser.add_argument("--adaptive-path-scale-m", type=float, default=1.5,
                     help="Optional tracking precision half-score distance, independent of failure boundary")
 parser.add_argument("--adaptive-drift-weight", type=float, default=1.0)
 parser.add_argument("--adaptive-smooth-weight", type=float, default=0.1)

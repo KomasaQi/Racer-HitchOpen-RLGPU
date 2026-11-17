@@ -31,6 +31,7 @@ class Policy:
 
     def __init__(self, path, device):
         ck = torch.load(path, map_location="cpu", weights_only=False)
+        self.squashed = ck.get("action_distribution") == "tanh_normal"
         sd = ck["model"] if "model" in ck else ck
         w = {k.replace("_orig_mod.", ""): v.float() for k, v in sd.items()}
         self.mean = w["running_mean_std.running_mean"].to(device)
@@ -109,7 +110,7 @@ class Policy:
             mu, _, beta, self.h = self.mirror_core(
                 obs.unsqueeze(0), self.mean, self.var, self.h)
             self._mirror_beta = beta[0, :, 0]
-            return mu[0]
+            return mu[0].tanh() if self.squashed else mu[0]
         x = (obs - self.mean) / torch.sqrt(self.var + 1e-5)
         x = torch.clamp(x, -5.0, 5.0)
         if self.gru is not None:

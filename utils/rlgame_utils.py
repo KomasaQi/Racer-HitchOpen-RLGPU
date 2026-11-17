@@ -104,6 +104,9 @@ class RLGPUAlgoObserver(AlgoObserver):
 
     def after_init(self, algo):
         self.algo = algo
+        self.comparison_frames = 0
+        self.comparison_reward_sum = 0.0
+        self.comparison_reward_count = 0
         self.mean_scores = torch_ext.AverageMeter(1, self.algo.games_to_track).to(self.algo.ppo_device)
         self.ep_infos = []
         self.direct_info = {}
@@ -122,6 +125,12 @@ class RLGPUAlgoObserver(AlgoObserver):
             print("warm-started model weights (fresh optimizer) from", self.warm_start)
 
     def process_infos(self, infos, done_indices):
+        env = getattr(self.algo.vec_env, "env", None)
+        reward_mean = getattr(env, "last_step_reward_mean", None)
+        if reward_mean is not None:
+            self.comparison_reward_sum += float(reward_mean)
+            self.comparison_reward_count += 1
+            self.comparison_frames += env.n
         assert isinstance(infos, dict), "RLGPUAlgoObserver expects dict info"
         if isinstance(infos, dict):
             if 'episode' in infos:
@@ -150,6 +159,13 @@ class RLGPUAlgoObserver(AlgoObserver):
         return False
 
     def after_print_stats(self, frame, epoch_num, total_time):
+        if self.comparison_reward_count:
+            reward = self.comparison_reward_sum / self.comparison_reward_count
+            self.writer.add_scalar("comparison/reward_per_step_frames", reward, self.comparison_frames)
+            self.writer.add_scalar("comparison/reward_per_step_epoch", reward, epoch_num)
+            self.writer.add_scalar("comparison/reward_per_step_wall_seconds", reward, int(total_time))
+            self.comparison_reward_sum = 0.0
+            self.comparison_reward_count = 0
         # every N PPO epochs ask for a new path generation; the env installs it
         # only when the target ring slot has no active episode
         if (self.path_refresh_every > 0 and epoch_num > 0

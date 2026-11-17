@@ -234,8 +234,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # observability upper bound; sensor DR still acts only on physical sensors.
         pt0 = kwargs.get("preview_time")
         self.preview_count = len(pt0.split(",") if isinstance(pt0,str) else pt0) if pt0 is not None else 3
-        if self.preview_count not in (3,5,7):
-            raise ValueError("Only 3, 5 or 7 preview points are supported")
+        if self.preview_count not in (3,5,7,9):
+            raise ValueError("Only 3, 5, 7 or 9 preview points are supported")
         self.sensor_num_states = 15 + 4 * self.preview_count
         self.obs_privileged = bool(kwargs.get("obs_privileged", False))
         self.num_states = self.sensor_num_states + (4 if self.obs_privileged else 0)
@@ -257,7 +257,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # true simulation quantities.  Repeated obs() calls return the cached
         # packet, so rendering/evaluation cannot advance delay or random walk.
         self.sensor_dr = bool(kwargs.get("sensor_dr", False))
-        self.sensor_delay_max = max(int(kwargs.get("sensor_delay_max", 1)), 0)
+        self.sensor_delay_max = max(int(kwargs.get("sensor_delay_max", 0)), 0)
         self.sensor_dropout_prob = float(kwargs.get("sensor_dropout_prob", 0.0))
         yaw_n = 0.005 * scale[0]
         acc_n = 0.10 * scale[1]
@@ -548,7 +548,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             values = self.preview_time
             if (values.shape != (self.preview_count,) or not bool(torch.isfinite(values).all())
                     or not bool((values > 0).all()) or not bool((values.diff() > 0).all())):
-                raise ValueError('preview_time requires 3, 5 or 7 increasing positive finite headways')
+                raise ValueError('preview_time requires 3, 5, 7 or 9 increasing positive finite headways')
         pd = kwargs.get("preview_distances_m", None)
         self.preview_distances_m = None
         if pd is not None:
@@ -2294,5 +2294,6 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                             m = newly.view(-1, *([1] * (self._prev[k].dim() - 1)))
                             self._prev[k] = torch.where(m, self._now[k], self._prev[k])
         self.update_recent_obs(obs)
+        self.last_step_reward_mean = reward.detach().mean()
         return obs, reward, done, info
 

@@ -1,6 +1,6 @@
 """Exact left/right symmetry by shared recurrent evaluation, not a loss penalty.
 
-Inputs use the 27/35/43-channel observable actor contract. Hidden state stores both
+Inputs use the 27/35/43/51-channel observable actor contract. Hidden state stores both
 histories as [2, layers, batch, hidden]; reflecting a history swaps its branches.
 Enabled explicitly by the --mirror-policy training option.
 """
@@ -89,7 +89,7 @@ class SharedMirrorActor(nn.Module):
 
 
 class CriticMirror(ActorMirror):
-    """52/62/72-channel privileged contract with BODY velocity at indices 3 and 4.
+    """52/62/72/82-channel privileged contract with BODY velocity at indices 3 and 4.
 
     Never apply this mapping to legacy world-velocity critic observations.
     """
