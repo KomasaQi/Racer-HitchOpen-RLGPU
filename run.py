@@ -281,6 +281,25 @@ parser.add_argument("--drift-spawn-spin-frac", type=float, default=1.0,
                     help="curriculum rear pre-spin fraction; final physical task/eval must use 0")
 parser.add_argument("--drift-spawn-trim-frac", type=float, default=1.0,
                     help="curriculum installed countersteer/throttle fraction; final entry task uses 0")
+# Stable experiment defaults apply only to continuous-task training. Explicit CLI
+# arguments override the profile; --profile legacy preserves historical CLI defaults.
+parser.add_argument("--profile", choices=["ppo9", "legacy"], default=None)
+_profile_probe = argparse.ArgumentParser(add_help=False)
+_profile_probe.add_argument("--profile", choices=["ppo9", "legacy"])
+_profile_choice, _ = _profile_probe.parse_known_args()
+_profile_name = _profile_choice.profile or (
+    "ppo9" if sys.argv[1:3] == ["train", "continuous_drift_iwd"] else "legacy")
+if _profile_name == "ppo9":
+    import json
+    with open(os.path.join(file_path, "profiles", "ppo9.json"), encoding="utf-8") as _handle:
+        _defaults = json.load(_handle)
+    _known = {action.dest for action in parser._actions}
+    if not set(_defaults).issubset(_known):
+        parser.error("Unknown PPO9 profile keys: " + str(set(_defaults) - _known))
+    _defaults["run_root"] = os.path.abspath(os.path.join(file_path, "..", "training_runs"))
+    parser.set_defaults(**_defaults)
+parser.set_defaults(profile=_profile_name)
+
 args = parser.parse_args()
 
 if args.train_or_test == "test":

@@ -1,7 +1,7 @@
 # FastPlant — full-size RWD EV vehicle model
 
 `xcar-simulation/fast_plant.py` is the plant used for RL training. It keeps the
-simplicity of XCAR (one isotropic combined-slip Pacejka curve, planar body,
+simplicity of XCAR (simplified combined-slip Pacejka curves with calibrated longitudinal/lateral coefficients, planar body,
 vectorized over tens of thousands of environments on one GPU) and adds the
 intermediate modules needed to line the interface up with CarSim.
 

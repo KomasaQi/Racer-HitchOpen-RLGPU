@@ -1,195 +1,27 @@
-# Current project status
+# 当前状态 — 2026-11-18
 
-Updated 2026-11-17 evening. The old DSH queue stopped on a Windows state-file
-replacement PermissionError; the user explicitly chose not to restore that queue.
-Its completed results and incomplete PPO9 seed2 (logged through epoch88) remain.
+默认配置：PPO9，见 profiles/ppo9.json。新训练从零200轮；不恢复已停止的旧队列。尚未启动下一轮参数搜索。
 
-FastPlant and mirror PPO execution acceleration are validated. Current execution
-defaults: eligible CUDA FastPlant graph replay, actor/critic CUDA graph replay,
-FP32 actor rollout. Existing PPO AMP updates are unchanged. FP16 actor inference
-is optional and not promoted after the sensitive medium-grip figure-eight test.
-No new formal150-epoch experiment has been launched; smoke/profile runs are separate.
-The sustained drift/tracking objective and100% robustness remain unachieved.
+## 200轮CarSim结果
 
-Latest implementation/measurement report and precision comparison:
-`../Network_Optimization_20261117/`. Source backups and original simulator artifacts
-are retained. See PERFORMANCE.md for execution flags, guarantees and limits.
+以下为29工况等权汇总，去掉每条前10秒；均值不是严格的共同存活窗口比较。PPO7 seed1有一条提前退出，须联合成功数看待误差。只有两个训练种子，不能推断总体100%成功率。
 
-The following dated entries are historical records, not active-run instructions.
+|策略|完成120秒|平均绝对误差m|误差时序标准差m（逐工况平均）|平均速度m/s|转向指令步进RMS度|
+|---|---:|---:|---:|---:|---:|
+|PPO7 seed1|28/29|0.934|0.812|15.704|2.758|
+|PPO7 seed2|29/29|0.433|0.356|15.737|1.770|
+|PPO9 seed1|29/29|0.562|0.344|15.010|0.950|
+|PPO9 seed2|29/29|0.448|0.273|17.816|1.429|
 
+采用PPO9是综合稳定性和漂移保持的选择，不是每一项都击败PPO7。PPO7 seed2部分误差更小，但8字漂移保持较弱。PPO9 seed2高速直线摆动仍明显，高附seed20261115的稳态平均速度120.9km/h、|转角|95分位12.57°、|β|95分位6.83°。其低附椭圆需求段漂移占比98.5%，中附椭圆同指标为0%，需要结合需求窗口长度、阈值和原始轨迹复核，不能称全程漂移。
 
-Updated 2026-11-17. Formal 150-epoch comparison is prepared, not launched by Codex.
-The sustained FastPlant-to-CarSim drift objective remains unachieved, especially
-continuous power drift through medium-grip figure-eight transitions.
+105→150→200仍有能力变化，200轮还不能严谨称性能天花板；没有200轮之后的数据。不得仅按训练reward选策略，先查持续漂移/跟踪/摆动/速度。
 
-Current experiment default: beta feedback (stop-gradient), 7 time previews,
-uncapped speed reward, tracking width 1.5 m, smooth coefficient 0.1, original
-streaming path distribution, observation delay/dropout 0, full other DR.
-9-point PPO adds .75 and 1.25 s without extending the 3 s horizon. Actor remains
-real-observation bypass + mirrored GRU128 +256/124/64; critic is privileged.
-Explicit commands/configurations in the external plan are authoritative; a bare
-run.py command does not select this full experimental preset.
+## 可恢复资料（本机项目父目录）
 
-External plan, backups, smoke evidence, DSH handoff and live-view launchers:
-`../DSH_Day_2026-11-17/`. All fresh, planned checkpoints 105 and150, fixed seeds;
-PPO/DSAC epoch-equivalent is 1,310,720 collected transitions. New recurrent,
-asymmetric DSAC-T adapter follows the official DSAC-v2 loss, with approximate
-burn-in replay state reconstruction. It is not an unchanged SB3/SBX baseline.
-Comparison requires both sample-matched and wall-time results, not epoch names
-or training reward alone. No algorithm or new policy has been promoted.
+- DSH_Accelerated_200_2026-11-17：冻结配置、4组训练、408份历史评测、回放入口 Open_CarSim_Replays.cmd、TensorBoard入口 Open_TensorBoard_200.cmd（6020）。保留原始封印，不修改已结束实验。
+- PPO9_Review_20261118：汇总CSV、比较图、直线诊断、下一轮候选计划、清理前完整源码ZIP。
+- FastPlant_Optimization_20261117 / Network_Optimization_20261117：加速与数值一致性证据。
+- codex-before-ppo9-default-20261118：本次整理前Git标签。
 
-Repository changes also support 9-point mirror/deployment contracts and tanh
-DSAC checkpoint actions. Common reward logs use the actual returned reward
-(after clipping), not the sum of pre-clipping shaping components.
-
-Below are historical dated records; their active-run headings are historical.
-
-
-Updated 2026-11-14. The sustained FastPlant-to-CarSim drift objective is **not achieved**.
-
-## Active run
-
-v11: `audit_repaired_gru128_v11_resume_v9ep60_sensor50ms`,32768 environments,
-full DR, streaming random paths, horizon40, sequence10, minibatch81920.
-Resumes the CarSim-validated v9 checkpoint60, including actor, independent
-critic, normalizers, optimizer states and counters. Source checkpoint unchanged.
-User clarified that only degraded checkpoints are prohibited from continuation.
-Fresh v10 was stopped and retained. Observation latency0..50ms; dropout hold off.
-Exact CPU restore comparison and a post-restore PPO update passed.
-Actor: observable bypass + shared GRU128 +256/124/64 mirrored-history calls;
-beta head antisymmetric. Independent privileged critic uses body-frame velocity.
-
-Adaptive actor learning rate is now actually bounded to 3e-5..3e-4.
-Installed rl_games ignored previous YAML minimum and used 1e-6..1e-2;
-v8 logged LR0.006667, KL94.85 and saturated actions. v8 was stopped after
-checkpoints65/70 failed all six CarSim fixtures with zero throttle/full brake.
-The LR defect is fixed; this does not prove future training cannot collapse.
-
-## Verified scope
-
-Mirror core, PPO sequence likelihood, paired recurrent resets, auxiliary and
-critic gradient updates, checkpoint deployment parity, legacy regressions,
-32768-environment GPU rollout/update, and short three-road CarSim interface
-smoke passed. These are infrastructure checks, not successful drift evidence.
-Initial v9 total training throughput is about47k-50k frames/s on this machine.
-
-## Evaluation and unresolved work
-
-Use fixed R15 circles in both directions and R12/R15 unequal-circle eight,
-with rest starts, known seeds, original CarSim scenarios, and archived native
-results copied to LastRun. Require actual drift persistence, tracking, speed,
-powered rear slip, pedal usage and steering smoothness; survival is insufficient.
-V11 checkpoint75 completes all nine60s circle/eight fixtures. The R12/R15
-unequal-circle eight also completes120s on all three roads for each of two
-seeds20261115/20261116. This is not general success: lowgrip ellipse30x20
-fails off-path at12.55s; mid/high ellipse survive120s but mid tracking and
-braking remain weak. Steering/beta oscillations are unresolved.
-FastPlant eight CPU8 tests complete30s for all24 samples, with mid/high
-braking weaknesses also present. Ellipse cross-plant diagnosis is running.
-See `v11_ep075_validation_update.json` and `v11_ep075_ellipse_diagnostic.png`.
-The original CarSim motor efficiency extrapolation defect and low-mu macro
-model mismatch remain unresolved; isolated calibration candidates are not adopted.
-
-Evaluation update: user-approved throttle threshold is now0.15 (previously0.35),
-for both FastPlant and CarSim powered-drift metrics. Reward is unchanged. New
-outputs record the threshold; historical CarSim recalculation is in
-`v9_metric_throttle015_recomputed.json`, preserving original result files.
-
-## Reproduction and offline records
-
-All run outputs, source snapshots and detailed decisions are outside this repo:
-`../Codex_Drift_Audit_2026-11-13/review_20261114/` and its sibling `training_runs/`.
-Start with `v11_launch.json`, `v11_resume_effective_check.json`, `mirror_integration_progress.json`,
-`v8_collapse_lr_finding.json`, and `v11_training.log`.
-Previous STATUS.md is archived as `repository_status_before_v9.md` there.
-
-Repository checks:
-- `experiments/continuous_drift_iwd/audit_mirror_contract.py --output PATH`
-- `experiments/continuous_drift_iwd/ppo_integration_check.py --mirror-policy ...`
-- `experiments/continuous_drift_iwd/audit_regressions.py --output PATH`
-
-The active experiment's source snapshot is authoritative for its implementation;
-subsequent test/documentation additions do not alter its running process.
-
-
-Optional streaming-reference controls are now wired through training and evaluation:
-`--reference-segments` (default2) and `--reference-transition-min-m` (default unset).
-Short spans bound their curvature change by the configured derivative limit.
-Initialization, reset and continuation were checked; the default generator is
-bitwise equal to the previous implementation. V11 remains on its original
-source snapshot/config. The candidate is not proven to improve training.
-Evidence: `optional_reference_config_checks.json`, `optional_reference_eval_cli.json`.
-
-## Active continuation comparisons (2026-11-14)
-
-Main v11 training was stopped at the user's request; epoch175 is preserved.
-Do not assume the latest checkpoint is best: high-grip eight speed fell and
-braking/steering oscillation increased. Healthy v11 epoch105 is the common
-starting point for matched continuation experiments; degraded checkpoints
-must not be resumed.
-
-`--adaptive-speed-coupling` now supports `precision` (unchanged default),
-`independent_position` (speed term independent of position error, retaining
-course alignment), and `corridor` (broad smooth position/course gates).
-Only the performance reward changes; drift-quality precision gates remain.
-The independent-position and precision comparison uses frozen external source,
-16384 environments per branch, full DR, identical seeds and20 updates.
-Neither candidate is accepted based on reward or survival alone.
-
-Detailed source hashes, configuration comparison and validation are in
-`../Codex_Drift_Audit_2026-11-13/review_20261114/reward_speed_pair/`,
-`speed_coupling_candidate_source/validation.json`, and
-`speed_coupling_integration.json`. Path-sampling pilot results are separate in
-`path_sampling_training_pair/`. Steering reversal shaping is still an offline
-prototype, not an active training reward.
-
-
-## 2026-11-14 experiment drain before user pause
-
-User requested completion of already-running experiments then a stop. All launched training/evaluation jobs have now exited; final training exit codes are zero and checkpoint epoch/frame budgets and SHA256 were verified. No new experiment is queued. Details: `../Codex_Drift_Audit_2026-11-13/review_20261114/drain_before_user_pause.json` and `drain_training_completion_verified.json` in that directory.
-
-Reward smooth03/tight10 reached ep125 (13,107,200 added frames each); path baseline/short reached ep145 (6,553,600 each). Final followup and short-path checkpoints remain unvalidated in CarSim; their final evaluations were not launched during drain. No candidate was adopted. Speed-position decoupling improved ep125 high-grip eight speed in two evaluation seeds, but tracking/braking gains were inconsistent and mid-grip circle tracking worsened. Early smoothness/tracking-only changes did not resolve high-grip straight oscillation. Low-grip ellipse failures remain. Overall transfer goal is NOT achieved. Wait for user to resume before further experiments.
-
-
-## Final checkpoint evaluation requested while training remains paused
-
-Completed 27 additional CarSim rollouts; all eight evaluation jobs exited zero. Followup ep125 and short-path ep145 now evaluated. Results, aligned beta metrics, plots and qualified decisions: `../Codex_Drift_Audit_2026-11-13/review_20261114/final_checkpoint_requested_tests/decision.json`. Tight tracking improved circle/eight error but did not improve speed; smooth03 reduced straight oscillation amplitude with substantial speed loss; short-path145 improved high-grip performance but had low/mid-grip regressions. Low-grip ellipse remains unsolved. No checkpoint adopted, no training resumed, no delay/control-period change made.
-
-
-## Frozen DSH overnight matrix prepared (2026-11-14)
-
-User authorized implementation and one-epoch smoke tests only before reviewing the night plan. Long-running training remains paused. New CLI train/eval defaults: zero artificial observation delay, tracking scale 1.0 m, four streaming reference segments with 15 m minimum transition, steering smoothness weight 0.2. Physical motor/pedal dynamics and full training DR remain.
-
-Optional interventions: detached predicted beta feedback, uncapped speed credit, curvature-dependent steering smoothness, second steering difference, and 5 time previews (actor35/critic62). Existing 3-point checkpoints retain exact default physics/observation/reward parity. Architecture-changing branches train fresh against a matched fresh baseline; compatible branches resume healthy v11 epoch105, never a degraded checkpoint.
-
-Fixed scheduler/evaluator/collector: `experiments/continuous_drift_iwd/night_*.py`. External plan, input checkpoints, smoke evidence, backups and Chinese DSH handoff are in `../DSH_Night_2026-11-14/`. The scheduler verifies a frozen commit/file seal, limits GPU training to two workers, serializes CarSim, archives native output and updates LastRun, and records failures/budget skips without tuning or promotion. Main matrix: 11 branches, 675 updates; optional second seed within a 9.5 h wall limit. This is experiment infrastructure, not evidence of improved driving performance.
-
-
-## 2026-11-16 stability-first default and frozen experiment preparation
-
-User requested restoring streaming reference distribution to 2 segments/120 m
-with automatic 56.25 m minimum transition, smoothness weight 0.1, retaining
-1.0 m tracking scale and zero artificial observation delay. CLI batch defaults
-restore 32768 environments / 81920 minibatch; the frozen experiment explicitly
-sets horizon40, sequence10, four mini-epochs, fresh105 (137625600 frames).
-Full dynamics/sensor DR, mirror GRU actor and privileged critic remain.
-These are requested experimental defaults, not an accepted performance claim.
-
-External frozen orchestration, one-epoch smokes, backups and DSH handoff:
-`../DSH_Stability_Night_2026-11-16/`. All evaluation configurations override
-training sensor delay to zero; training-only delay arms use at most one 50ms
-control step. Absolute deadline: 2026-11-17 09:00 Asia/Shanghai. No full
-training was launched during preparation. The prior night seal refers to its
-old commit and must not be used to launch this new matrix.
-
-Historical audit and 60 additional CarSim rollouts:
-`../Default_Stability_Audit_2026-11-16/REPORT.html`. Matched path-distribution
-weights show low/mid-grip stability regressions; smoothness increase is a
-secondary risk, with observation-seed sensitivity also present. Pedal switch
-count is diagnostic only, assessed jointly with amplitudes and tracking
-oscillation. No checkpoint has passed all stability requirements.
-
-Optional seven-point time preview now accepts actor43/critic72 dimensions;
-mirror mappings and network sizes derive from preview count. Three/five-point
-computation is unchanged. Full one-epoch and deployment smokes are required
-in the external frozen handoff before optional seven-point jobs may launch.
+今后策略评测只用CarSim，移除FastPlant策略评测队列；FastPlant仅用于训练和物理解算器必要回归。保持参数化实验接口，暂不实现新的网络/奖励候选，等待讨论。

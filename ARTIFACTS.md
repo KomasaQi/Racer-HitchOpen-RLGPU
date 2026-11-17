@@ -20,3 +20,7 @@ Formal training commands pass `--run-root ../Codex_Drift_Audit_2026-11-13/traini
 ad-hoc use; repository-local run output is ignored by Git and must not be committed.
 Evaluation environments do not write reference trajectories implicitly. A caller that
 needs one must pass an explicit external `trajectory_output_dir`.
+
+## 2026-11-18整理
+
+PPO9_Review_20261118/repository_before_cleanup/tracked_source.zip 为整理前完整跟踪文件备份；retired_orchestration/ 保留过期night调度器。完成的加速实验和封印worktree均留在仓库外，不删除历史策略。今后策略评测仅CarSim，所有输出使用外部路径。默认PPO9训练输出为 ../training_runs。
