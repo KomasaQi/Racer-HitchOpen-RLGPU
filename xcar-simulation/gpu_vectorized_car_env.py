@@ -150,6 +150,11 @@ class GPUVectorizedCarEnv:
                     dtype=np.float32)
                 self.cast_action = lambda u: u
             self.plant = FastRacerPlant(self.preset, self.n, device=self.device)
+            solver_backend = kwargs.get("implicit_solver_backend")
+            if solver_backend is not None:
+                if solver_backend == "cuda_graph" and torch.device(self.device).type != "cuda":
+                    solver_backend = "cached"  # CPU deployment/evaluation uses the same equations.
+                self.plant.configure_implicit_solver(solver_backend)
             grip = kwargs.get("grip_scale", None)
             if grip is not None:
                 # uniform tyre friction multiplier (road/tyre grip level)

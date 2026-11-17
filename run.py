@@ -35,6 +35,9 @@ parser.add_argument("--plant", type=str, default="fast", choices=["fast", "iwd"]
 parser.add_argument("--control-mode", type=str, default="pedals", choices=["pedals", "wheel_speed"])
 parser.add_argument("--dt", type=float, default=None,
                     help="control period; default 0.05 s (20 Hz) for the fast plant, 0.01 s for iwd")
+parser.add_argument("--fastplant-solver", choices=["original", "cached", "cuda_graph"],
+                    default=os.environ.get("FASTPLANT_IMPLICIT_SOLVER", "cached"),
+                    help="equivalent implicit wheel solver execution backend; keeps physics accuracy")
 parser.add_argument("--physics-dt", type=float, default=0.01, help="physics step of the fast plant (100 Hz)")
 parser.add_argument("--rnn", action='store_true')
 parser.add_argument("--observable-gru", action="store_true",
@@ -300,6 +303,7 @@ default_env_config = {
     "plant": args.plant,
     "control_mode": args.control_mode,
     "physics_dt": args.physics_dt,
+    "implicit_solver_backend": args.fastplant_solver,
     "beta_scale": args.beta_scale,
     "beta_weight": args.beta_weight,
     "pos_weight": args.pos_weight,

@@ -463,6 +463,11 @@ class FastRacerPlant:
         self._alpha_relaxed = torch.zeros((self.n, 4), device=self.device, dtype=self.dtype)
         self._relax_initialized = torch.zeros(self.n, device=self.device, dtype=torch.bool)
 
+        solver_backend = os.environ.get("FASTPLANT_IMPLICIT_SOLVER", params.get("implicit_solver_backend", "cached"))
+        if solver_backend == "cuda_graph" and self.device.type != "cuda":
+            solver_backend = "cached"
+        self.configure_implicit_solver(solver_backend)
+
     # -- helpers ----------------------------------------------------------
     def col(self, key: str) -> torch.Tensor:
         """Per-env column of a tensor parameter, shape (n,)."""
@@ -1245,6 +1250,104 @@ class FastRacerPlant:
         return deriv, extras
 
     # -- integration ------------------------------------------------------
+    def configure_implicit_solver(self, backend="cached"):
+        """Select equivalent wheel residual evaluation, retaining all integration settings.
+
+        original: full diagnostic force evaluation, reference implementation.
+        cached: eager Fx-only evaluation with frozen-substep invariants.
+        cuda_graph: cached evaluation plus exact-operation graph replay of refinement.
+        Call before rollouts; compilation/capture cost belongs to the first step.
+        """
+        if backend not in ("original", "cached", "cuda_graph"):
+            raise ValueError("unknown implicit solver backend: " + backend)
+        self.implicit_fx_optimized = backend != "original"
+        if hasattr(self, "compiled_refine"):
+            del self.compiled_refine
+        if backend == "cuda_graph":
+            if self.device.type != "cuda":
+                raise ValueError("cuda_graph requires CUDA")
+            if self.combined_slip_model != "compact_transition" or self.tire_relaxation or self.drivetrain not in ("rwd", "iwd"):
+                raise ValueError("cuda_graph supports non-relaxed compact-transition RWD/IWD only")
+            self.compiled_refine = torch.compile(self._refine_implicit, fullgraph=True, backend="cudagraphs")
+        self.implicit_solver_backend = backend
+
+    def _refine_implicit(self, lo, hi, locked, context, j_w, w_old, h, resist, command):
+        for _ in range(self.wheel_solver_bisection_iters):
+            mid = 0.5 * (lo + hi)
+            go_right = self._implicit_residual(mid,context,j_w,w_old,h,resist,command) < 0.0
+            lo = torch.where(go_right, mid, lo)
+            hi = torch.where(go_right, hi, mid)
+        omega_new = torch.where(locked, torch.zeros_like(w_old), 0.5 * (lo + hi))
+        # Independent bisection brackets are only approximate when rear
+        # motor/LSD torques couple both wheels. Correct the JOINT residual
+        # with a projected 2x2 Newton solve (front wheels remain scalar).
+        for _ in range(getattr(self, "wheel_solver_correction_iters", 2)):
+            residual = self._implicit_residual(omega_new,context,j_w,w_old,h,resist,command)
+            eps = 0.05
+            left = omega_new.clone()
+            right = omega_new.clone()
+            left[:, (0, 2)] += eps
+            right[:, (1, 3)] += eps
+            jl = (self._implicit_residual(left,context,j_w,w_old,h,resist,command) - residual) / eps
+            jr = (self._implicit_residual(right,context,j_w,w_old,h,resist,command) - residual) / eps
+            correction = torch.zeros_like(omega_new)
+            correction[:, 0] = residual[:, 0] / jl[:, 0].clamp_min(1e-4)
+            correction[:, 1] = residual[:, 1] / jr[:, 1].clamp_min(1e-4)
+            a, b, c, d = jl[:, 2], jr[:, 2], jl[:, 3], jr[:, 3]
+            det = (a * d - b * c).clamp_min(1e-4)
+            correction[:, 2] = (d * residual[:, 2] - b * residual[:, 3]) / det
+            correction[:, 3] = (a * residual[:, 3] - c * residual[:, 2]) / det
+            omega_new = (omega_new - correction.clamp(-5.0, 5.0)).clamp_min(0.0)
+        return omega_new
+
+    def _implicit_residual(self, omega, context, inertia, old, h, resist, command):
+        pair = omega[:,2:4]
+        axle, _, _ = self._motor_torque(pair, command[:,1], command[:,2])
+        tl, tr, _ = self._lsd(axle,pair)
+        drive = torch.stack((torch.zeros_like(tl),torch.zeros_like(tl),tl,tr),1)
+        return inertia*(omega-old)-h*(drive-resist-context[2]*self._implicit_fx(omega,context))
+
+    def _prepare_implicit_fx(self, s, delta, fz, geometry):
+        """Frozen-substep tire invariants; only wheel omega changes in G(omega)."""
+        vx, vy, _, _ = self._wheel_kinematics(s, delta, geometry)
+        radius = geometry[2]
+        denom = torch.maximum(vx.abs(), self.col("slip_v_floor").unsqueeze(1))
+        sy = vy / torch.maximum(vx.abs(), self.col("slip_alpha_v_floor").unsqueeze(1))
+        alpha = torch.atan(sy)
+        scale = torch.where(self.wheel_is_front.unsqueeze(0) > .5,
+                            self.col("tyre_scale_front").unsqueeze(1),
+                            self.col("tyre_scale_rear").unsqueeze(1))
+        surface = self.col("D").unsqueeze(1) * scale * self.tyre_scale
+        static = (self.col("m") * self.col("g") * .25).unsqueeze(1)
+        front, rear = self.col("fz_ref_front").unsqueeze(1), self.col("fz_ref_rear").unsqueeze(1)
+        ref = torch.cat([front,front,rear,rear],1)
+        ref = torch.where(ref > 0,ref,static.expand(-1,4)).clamp(min=1.)
+        sens = self.col("load_sensitivity").unsqueeze(1)
+        if self.load_sensitivity_model == "power":
+            effective = surface * torch.clamp(fz/ref,min=.1,max=4.).pow(-sens)
+        else:
+            effective = surface * torch.clamp(1.-sens*(fz/ref-1.),.4,1.4)
+        ratio = torch.clamp(surface/self.col("tire_mu_reference").unsqueeze(1).clamp(min=1e-3),.15,2.)
+        bx = self.col("bx").unsqueeze(1) * ratio.pow(-self.col("tire_stiffness_grip_exponent_x").unsqueeze(1))
+        return vx,denom,radius,sy,alpha,bx,self.col("cx").unsqueeze(1),self.col("ex").unsqueeze(1),effective,fz,self.col("combined_slip_blend").unsqueeze(1).clamp(0.,1.)
+
+    def _implicit_fx(self, omega, context):
+        vx,denom,radius,sy,alpha,bx,cx,ex,peak,fz,blend = context
+        sx = (vx-omega*radius)/denom
+        ax = sx.abs()
+        zx = ax/max(self.kappa_peak,1e-6)
+        zy = alpha.abs()/max(self.alpha_peak,1e-6)
+        rn = torch.hypot(zx,zy).clamp(min=1e-9)
+        xn = torch.clamp(rn*self.kappa_peak,max=self.slip_force_plateau)
+        rt = torch.hypot(ax,sy.abs()).clamp(min=1e-9)
+        xt = torch.clamp(rt,max=self.slip_force_plateau)
+        def shape(x):
+            t=bx*x
+            return torch.sin(cx*torch.atan(t-ex*(t-torch.atan(t))))
+        fn = -torch.sign(sx)*peak*fz*shape(xn)*zx/rn
+        ft = -torch.sign(sx)*peak*fz*shape(xt)*ax/rt
+        return (1.-blend)*fn+blend*ft
+
     def step(self, s: torch.Tensor, command: torch.Tensor, dt: float,
              substeps: int = 1, mode: str = "pedals", keep_wheel_sign: bool = True):
         """Advance the plant.
@@ -1324,7 +1427,17 @@ class FastRacerPlant:
                     out[:, 3] = tr_i * 0.5
                 return out
 
+            optimized_fx = (getattr(self, "implicit_fx_optimized", True)
+                            and self.combined_slip_model == "compact_transition"
+                            and not self.tire_relaxation)
+            context = self._prepare_implicit_fx(s, delta_w, fz_w, geom) if optimized_fx else None
+
             def g_of(omega):
+                if optimized_fx and mode == "pedals" and self.drivetrain in ("rwd", "iwd"):
+                    return self._implicit_residual(omega,context,j_w,w_old,h,resist,command)
+                if optimized_fx:
+                    fx = self._implicit_fx(omega, context)
+                    return j_w * (omega-w_old) - h * (drive_of(omega)-resist-radius_w*fx)
                 trial = s.clone()
                 trial[:, 6:10] = omega
                 f = self._wheel_forces(trial, delta_w, fz_w, geom)
@@ -1342,32 +1455,35 @@ class FastRacerPlant:
                 if not bool(need.any()):
                     break
                 hi = torch.where(need, 2.0 * hi + 10.0, hi)
-            for _ in range(self.wheel_solver_bisection_iters):
-                mid = 0.5 * (lo + hi)
-                go_right = g_of(mid) < 0.0
-                lo = torch.where(go_right, mid, lo)
-                hi = torch.where(go_right, hi, mid)
-            omega_new = torch.where(locked, torch.zeros_like(w_old), 0.5 * (lo + hi))
-            # Independent bisection brackets are only approximate when rear
-            # motor/LSD torques couple both wheels. Correct the JOINT residual
-            # with a projected 2x2 Newton solve (front wheels remain scalar).
-            for _ in range(getattr(self, "wheel_solver_correction_iters", 2)):
-                residual = g_of(omega_new)
-                eps = 0.05
-                left = omega_new.clone()
-                right = omega_new.clone()
-                left[:, (0, 2)] += eps
-                right[:, (1, 3)] += eps
-                jl = (g_of(left) - residual) / eps
-                jr = (g_of(right) - residual) / eps
-                correction = torch.zeros_like(omega_new)
-                correction[:, 0] = residual[:, 0] / jl[:, 0].clamp_min(1e-4)
-                correction[:, 1] = residual[:, 1] / jr[:, 1].clamp_min(1e-4)
-                a, b, c, d = jl[:, 2], jr[:, 2], jl[:, 3], jr[:, 3]
-                det = (a * d - b * c).clamp_min(1e-4)
-                correction[:, 2] = (d * residual[:, 2] - b * residual[:, 3]) / det
-                correction[:, 3] = (a * residual[:, 3] - c * residual[:, 2]) / det
-                omega_new = (omega_new - correction.clamp(-5.0, 5.0)).clamp_min(0.0)
+            if optimized_fx and mode == "pedals" and self.drivetrain in ("rwd", "iwd") and hasattr(self, "compiled_refine"):
+                omega_new = self.compiled_refine(lo,hi,locked,context,j_w,w_old,h,resist,command).clone()
+            else:
+                for _ in range(self.wheel_solver_bisection_iters):
+                    mid = 0.5 * (lo + hi)
+                    go_right = g_of(mid) < 0.0
+                    lo = torch.where(go_right, mid, lo)
+                    hi = torch.where(go_right, hi, mid)
+                omega_new = torch.where(locked, torch.zeros_like(w_old), 0.5 * (lo + hi))
+                # Independent bisection brackets are only approximate when rear
+                # motor/LSD torques couple both wheels. Correct the JOINT residual
+                # with a projected 2x2 Newton solve (front wheels remain scalar).
+                for _ in range(getattr(self, "wheel_solver_correction_iters", 2)):
+                    residual = g_of(omega_new)
+                    eps = 0.05
+                    left = omega_new.clone()
+                    right = omega_new.clone()
+                    left[:, (0, 2)] += eps
+                    right[:, (1, 3)] += eps
+                    jl = (g_of(left) - residual) / eps
+                    jr = (g_of(right) - residual) / eps
+                    correction = torch.zeros_like(omega_new)
+                    correction[:, 0] = residual[:, 0] / jl[:, 0].clamp_min(1e-4)
+                    correction[:, 1] = residual[:, 1] / jr[:, 1].clamp_min(1e-4)
+                    a, b, c, d = jl[:, 2], jr[:, 2], jl[:, 3], jr[:, 3]
+                    det = (a * d - b * c).clamp_min(1e-4)
+                    correction[:, 2] = (d * residual[:, 2] - b * residual[:, 3]) / det
+                    correction[:, 3] = (a * residual[:, 3] - c * residual[:, 2]) / det
+                    omega_new = (omega_new - correction.clamp(-5.0, 5.0)).clamp_min(0.0)
             if getattr(self, "audit_wheel_solver", False):
                 residual = g_of(omega_new)
                 # At a locked wheel complementarity permits G >= 0.
