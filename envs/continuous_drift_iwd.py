@@ -77,6 +77,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         self.adaptive_tracking = float(kwargs.get("adaptive_tracking", 1.00))
         self.adaptive_performance = float(kwargs.get("adaptive_performance", 3.00))
         self.adaptive_drift = float(kwargs.get("adaptive_drift", 1.00))
+        self.straight_stability_weight=float(kwargs.get("straight_stability_weight",0.))
+        self.progress_speed_credit=bool(kwargs.get("progress_speed_credit",False))
+        self.precision_bonus_weight=float(kwargs.get("precision_bonus_weight",0.))
         self.adaptive_smooth = float(kwargs.get("adaptive_smooth", 0.10))
         self.speed_reward_uncapped = bool(kwargs.get("speed_reward_uncapped", False))
         self.smooth_curve_extra = float(kwargs.get("smooth_curve_extra", 0.0))
@@ -1589,6 +1592,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                     _overspeed_safe = torch.ones_like(_speed_ratio)
                 _performance = _track_joint * _speed_use * _overspeed_safe
                 _speed_credit = _speed_ratio.clamp_min(0.) if self.speed_reward_uncapped else _speed_use
+                if self.progress_speed_credit:
+                    _speed_credit=_speed_credit*torch.cos(angle_diff).clamp_min(0.)
                 # Only the speed component is decoupled. Drift quality keeps
                 # its original precision gate; default checkpoint semantics stay exact.
                 _speed_performance = _track_joint * _speed_credit * _overspeed_safe
@@ -1687,6 +1692,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                     "optional_drift": self.adaptive_drift * _drift_quality * live,
                     "guidance": self.adaptive_guidance * _guidance_gate * live,
                     "smooth": smooth_weight * _smooth_gate * live,
+                    "straight_stability": -self.straight_stability_weight*torch.exp(-math.log(2.)*(curve/.025).square())*(v/20.).square().clamp(max=4.)*(delta/.1).square()/(1.+(delta/.1).square())*live,
+                    "precision_bonus": self.precision_bonus_weight/(1.+(signed_pos_diff/.5).square())*_course_gate*_task_factor*live,
                     "steer_second": -self.steer_second_weight * second_cost * live,
                     "raw_steer_change": -0.05 * _raw_change_cost * live,
                     # Retain brake for approaching a tighter/slower segment or

@@ -42,7 +42,7 @@ class _ActorCall(nn.Module):
             return mu,ls.clone(),beta,h
 
 def actor_graph_call(core,obs,mean,var,hidden,done):
-    if hidden is None:hidden=obs.new_zeros(2,1,obs.shape[1],128)
+    if hidden is None:hidden=obs.new_zeros(2,1,obs.shape[1],core.hidden_size)
     if done is None:done=torch.zeros(obs.shape[:2],dtype=torch.bool,device=obs.device)
     if mean is None:mean=obs.new_zeros(obs.shape[-1]);var=obs.new_ones(obs.shape[-1]);normalize=False
     else:normalize=True

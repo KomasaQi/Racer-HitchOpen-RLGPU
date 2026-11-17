@@ -300,7 +300,20 @@ if _profile_name == "ppo9":
     parser.set_defaults(**_defaults)
 parser.set_defaults(profile=_profile_name)
 
+parser.add_argument("--gru-hidden",type=int,default=128)
+parser.add_argument("--actor-units",default="256,124,64")
+parser.add_argument("--road-encoder",choices=["none","point_mlp","attention"],default="none")
+parser.add_argument("--straight-stability-weight",type=float,default=0.)
+parser.add_argument("--progress-speed-credit",action="store_true")
+parser.add_argument("--precision-bonus-weight",type=float,default=0.)
 args = parser.parse_args()
+try:
+    _actor_units=[int(x) for x in args.actor_units.split(',')]
+except ValueError:
+    parser.error('--actor-units requires three positive integers')
+if args.gru_hidden<=0 or len(_actor_units)!=3 or min(_actor_units)<=0:
+    parser.error('--gru-hidden must be positive and --actor-units must have three positive integers')
+
 
 if args.train_or_test == "test":
     # Turn off disturbance and randomization when testing
@@ -383,6 +396,9 @@ default_env_config = {
     "smooth_curve_extra": args.smooth_curve_extra,
     "smooth_curve_half_kappa": args.smooth_curve_half_kappa,
     "steer_second_weight": args.steer_second_weight,
+    "gru_hidden":args.gru_hidden,"actor_units":args.actor_units,"road_encoder":args.road_encoder,
+    "straight_stability_weight":args.straight_stability_weight,"progress_speed_credit":args.progress_speed_credit,
+    "precision_bonus_weight":args.precision_bonus_weight,
     "critic_velocity_frame": "body" if args.mirror_policy else "world",
     "yaw_scale": args.yaw_scale,
     "spawn_mode": args.spawn_mode,
@@ -727,7 +743,7 @@ if args.observable_gru:
     runner_config["params"]["network"]["name"] = "drift_observable"
     runner_config["params"]["network"]["mlp"]["units"] = [256, 124, 64]
     runner_config["params"]["network"]["rnn"] = {
-        "units": 128, "layers": 1, "name": "gru",
+        "units": args.gru_hidden, "layers": 1, "name": "gru",
         "before_mlp": True, "concat_output": True}
     runner_config["params"]["network"]["beta_aux_weight"] = args.beta_aux_weight
     runner_config["params"]["network"]["beta_feedback"] = args.beta_feedback
@@ -742,6 +758,7 @@ if args.observable_gru:
         runner_config["params"]["network"]["initial_action_mean"] = initial_mean
     # Validate the eager path first; compile is a later throughput optimisation.
     if args.mirror_policy:
+        runner_config["params"]["network"].update(gru_hidden=args.gru_hidden,actor_units=[int(x) for x in args.actor_units.split(',')],road_encoder=args.road_encoder)
         runner_config["params"]["network"]["execution_backend"] = args.network_execution
         runner_config["params"]["network"]["inference_precision"] = args.actor_inference_precision
         runner_config["params"]["config"]["central_value_config"]["network"]["execution_backend"] = args.network_execution

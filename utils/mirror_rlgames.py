@@ -36,7 +36,7 @@ class MirrorActorBuilder(network_builder.A2CBuilder):
             self.obs_width = int(kwargs["input_shape"][0])
             if self.obs_width not in (27,35,43,51) or kwargs["actions_num"] != 3:
                 raise ValueError("mirror actor requires 27, 35, 43 or 51 observable inputs and 3 pedal actions")
-            self.core = SharedMirrorActor((self.obs_width-15)//4, params.get("beta_feedback", False))
+            self.core = SharedMirrorActor((self.obs_width-15)//4, params.get("beta_feedback", False), params.get("gru_hidden",128), params.get("actor_units",[256,124,64]), params.get("road_encoder","none"))
             self.core.execution_backend = params.get("execution_backend", "reference")
             self.core.inference_precision = params.get("inference_precision", "float32")
             self.num_seqs = kwargs.get("num_seqs", 1)
@@ -59,7 +59,7 @@ class MirrorActorBuilder(network_builder.A2CBuilder):
         def is_separate_critic(self): return False
         def get_value_layer(self): return self.value
         def get_default_rnn_state(self):
-            return tuple(torch.zeros(1, self.num_seqs, 128) for _ in range(2))
+            return tuple(torch.zeros(1, self.num_seqs, self.core.hidden_size) for _ in range(2))
 
         def forward(self, data):
             obs = data["obs"]

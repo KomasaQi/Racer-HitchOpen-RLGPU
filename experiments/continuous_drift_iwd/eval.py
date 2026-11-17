@@ -48,8 +48,12 @@ class Policy:
         if "a2c_network.core.gru.weight_ih_l0" in w:
             from utils.mirror_policy import SharedMirrorActor
             width = w["a2c_network.core.gru.weight_ih_l0"].shape[1]
-            feedback = w["a2c_network.core.mlp.0.weight"].shape[1] == 128 + width + 1
-            self.mirror_core = SharedMirrorActor((width-15)//4, feedback).to(device)
+            hidden_size=w["a2c_network.core.gru.weight_hh_l0"].shape[1]
+            road_mode=("attention" if any(k.startswith("a2c_network.core.road.blocks.") for k in w) else "point_mlp") if "a2c_network.core.road.position" in w else "none"
+            road_width=64 if road_mode!="none" else 0
+            feedback = w["a2c_network.core.mlp.0.weight"].shape[1] == hidden_size + width + road_width + 1
+            units=[w[f"a2c_network.core.mlp.{i}.weight"].shape[0] for i in (0,2,4)]
+            self.mirror_core = SharedMirrorActor((width-15)//4, feedback,hidden_size,units,road_mode).to(device)
             prefix = "a2c_network.core."
             self.mirror_core.load_state_dict({k[len(prefix):]: v for k, v in w.items()
                                              if k.startswith(prefix)}, strict=True)

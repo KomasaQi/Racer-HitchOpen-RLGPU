@@ -45,18 +45,25 @@ class SharedMirrorActor(nn.Module):
     Fixed diagonal Gaussian log-std is mirror invariant; coupled samples use
     mirrored steering noise, while arbitrary samples are symmetric in law.
     """
-    def __init__(self, preview_count=3, beta_feedback=False):
+    def __init__(self, preview_count=3, beta_feedback=False, hidden_size=128, actor_units=(256,124,64), road_encoder="none"):
         super().__init__()
         self.beta_feedback = bool(beta_feedback)
         width = 15 + 4 * preview_count
         self.mirror = ActorMirror(preview_count)
-        self.gru = nn.GRU(width, 128)
-        self.mlp = nn.Sequential(nn.Linear(128 + width + int(beta_feedback), 256), nn.ELU(),
-                                 nn.Linear(256, 124), nn.ELU(),
-                                 nn.Linear(124, 64), nn.ELU())
-        self.mu = nn.Linear(64, 3)
-        self.beta = nn.Sequential(nn.Linear(128, 64), nn.ELU(), nn.Linear(64, 1))
-        self.logstd = nn.Parameter(torch.tensor([-.99, -.80, -1.39]))
+        self.hidden_size=int(hidden_size)
+        self.preview_count=preview_count
+        self.gru = nn.GRU(width, self.hidden_size)
+        units=tuple(actor_units);layers=[];previous=self.hidden_size+width+int(beta_feedback)+(64 if road_encoder!='none' else 0)
+        for unit in units:
+            layers.extend([nn.Linear(previous,unit),nn.ELU()]);previous=unit
+        self.mlp=nn.Sequential(*layers)
+        self.mu=nn.Linear(units[-1],3)
+        self.beta=nn.Sequential(nn.Linear(self.hidden_size,64),nn.ELU(),nn.Linear(64,1))
+        self.logstd=nn.Parameter(torch.tensor([-.99,-.80,-1.39]))
+        self.road=None
+        if road_encoder!='none':
+            from utils.road_encoder import RoadEncoder
+            self.road=RoadEncoder(preview_count,road_encoder)
 
     def forward(self, obs, mean, variance, hidden=None, done_before=None):
         precision=getattr(self,"inference_precision","float32")
@@ -81,7 +88,7 @@ class SharedMirrorActor(nn.Module):
             raise ValueError("expected [time,batch,observation_width]")
         batch = obs.shape[1]
         if hidden is None:
-            hidden = obs.new_zeros(2, 1, batch, 128)
+            hidden = obs.new_zeros(2, 1, batch, self.hidden_size)
         outputs, betas = [], []
         for t in range(obs.shape[0]):
             if done_before is not None:
@@ -95,6 +102,7 @@ class SharedMirrorActor(nn.Module):
             recurrent = recurrent[0]
             beta_raw = self.beta(recurrent)
             features = [recurrent, pair]
+            if self.road is not None:features.append(self.road(pair[:,15:].reshape(-1,self.preview_count,4)))
             if self.beta_feedback:
                 b0, b1 = beta_raw.split(batch, dim=0)
                 estimate = ((b0 - b1) * .5).detach()
