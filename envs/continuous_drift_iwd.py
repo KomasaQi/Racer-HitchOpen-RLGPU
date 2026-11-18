@@ -1319,6 +1319,15 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         return (self.speed_margin * torch.sqrt(amplitude * self.plant.col("g") /
                                                 curvature)).clamp(2., self.speed_cap)
 
+    @property
+    def rew_stats(self):
+        """Materialize the latest reward diagnostics only when a caller reads them."""
+        terms = getattr(self, "_latest_reward_terms", None)
+        if not terms:
+            return {}
+        means = torch.stack([term.detach().mean() for term in terms.values()])
+        return dict(zip(terms, means.tolist()))
+
     def reward(self):
         now, prev = self._now, self._prev
         beta = now["beta"]
@@ -1687,8 +1696,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                 # shaping debt must never make deliberate failure profitable.
                 rew = live_rew.clamp_min(0.0) + adaptive_terms["terminal"]
                 with torch.no_grad():
-                    self.rew_stats = {k: float(t.detach().mean())
-                                      for k, t in adaptive_terms.items()}
+                    self._latest_reward_terms = adaptive_terms
                 return rew
             bounded_terms = {
                 "alive": self.bounded_alive * live,
@@ -1702,8 +1710,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             for term in bounded_terms.values():
                 rew = rew + term
             with torch.no_grad():
-                self.rew_stats = {k: float(t.detach().mean())
-                                  for k, t in bounded_terms.items()}
+                self._latest_reward_terms = bounded_terms
             return rew
 
         _drift_on = 1.0 if self.drift_mode else 0.0
@@ -1753,7 +1760,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             rew = rew + term
         # diagnostics: running mean of every reward component (read by eval.py)
         with torch.no_grad():
-            self.rew_stats = {k: float(t.detach().mean()) for k, t in terms.items()}
+            self._latest_reward_terms = terms
         return rew
 
     def done(self):

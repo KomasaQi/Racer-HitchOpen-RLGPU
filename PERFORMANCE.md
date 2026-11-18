@@ -9,3 +9,17 @@
 完整实验总wall time3小时34分47秒，包含串行CPU评测：372份CarSim、36份FastPlant（各8初态）。FastPlant评测造成队列拖尾，今后不再作为策略验收阶段。只保留必要的物理/数值回归。
 
 诊断接口仍保留 `--fastplant-solver original|cached|cuda_graph|auto` 和 `--network-execution reference|cuda_graph`；不维持两个正式训练默认。详细原始性能证据在父目录 FastPlant_Optimization_20261117、Network_Optimization_20261117、DSH_Accelerated_200_2026-11-17。
+
+### Windows 全量 PPO9 训练
+
+在 RTX 5070 Laptop、PyTorch 2.7.1+cu128、cuDNN 9.7.1 上，可在启动训练的 PowerShell 中设置以下选项。CUDA Toolkit 12 的安装目录通过 `CUDA_PATH` 提供。续训时在同一命令后添加 `--resume` 和已有 checkpoint 路径。
+
+```powershell
+$env:RACER_NATIVE_WHEEL_SOLVER = '1'
+$env:RACER_NATIVE_GRU = '1'
+python run.py train continuous_drift_iwd --profile ppo9 --fastplant-solver plant_cached_graph
+```
+
+原生轮速核执行完整的隐式轮速求解。GRU 加速用于 32,768 环境、九点预瞄、128 维隐状态的 FP32 采样，沿用原有镜像分支和 checkpoint 格式。梯度更新继续走现有 PPO 训练路径。两个选项可独立启用。
+
+全量配对基准从同一第 265 轮 checkpoint 训练至第 280 轮，每轮 1,310,720 帧。两组各自完成首轮预热后，后 14 轮 TensorBoard 墙钟耗时为 148.01 秒和 65.62 秒，端到端加速 2.26×。第 270、275、280 轮的 actor、独立 critic、两套 Adam 和固定输入动作逐元素相同。该数据对应上述设备及回合区间。

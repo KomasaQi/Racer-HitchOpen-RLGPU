@@ -53,6 +53,7 @@ class SharedMirrorActor(nn.Module):
         self.hidden_size=int(hidden_size)
         self.preview_count=preview_count
         self.gru = nn.GRU(width, self.hidden_size)
+        self.native_rollout_gru = os.name == "nt" and os.environ.get("RACER_NATIVE_GRU") == "1"
         units=tuple(actor_units);layers=[];previous=self.hidden_size+width+int(beta_feedback)+(64 if road_encoder!='none' else 0)
         for unit in units:
             layers.extend([nn.Linear(previous,unit),nn.ELU()]);previous=unit
@@ -97,7 +98,15 @@ class SharedMirrorActor(nn.Module):
                  self.mirror.normalize(obs[t], mean, variance))
             pair = torch.cat((x, self.mirror(x)), dim=0)
             h = torch.cat((hidden[0], hidden[1]), dim=1)
-            recurrent, h = self.gru(pair.unsqueeze(0), h)
+            if (self.native_rollout_gru and not self.training and not torch.is_grad_enabled()
+                    and pair.is_cuda and pair.dtype == torch.float32 and pair.shape == (65536, 51)
+                    and self.hidden_size == 128 and torch.backends.cudnn.allow_tf32
+                    and torch.backends.cudnn.version() == 90701
+                    and torch.cuda.get_device_capability(pair.device) == (12, 0)):
+                from win_gru_step import recurrent_step
+                recurrent, h = recurrent_step(self.gru, pair, h)
+            else:
+                recurrent, h = self.gru(pair.unsqueeze(0), h)
             hidden = torch.stack(h.split(batch, dim=1), dim=0)
             recurrent = recurrent[0]
             beta_raw = self.beta(recurrent)

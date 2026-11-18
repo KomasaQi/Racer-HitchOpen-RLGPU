@@ -1307,6 +1307,8 @@ class FastRacerPlant:
         return lo, hi
 
     def _refine_implicit(self, lo, hi, locked, context, j_w, w_old, h, resist, command):
+        if getattr(self, "_native_wheel_solve", None) is not None:
+            return self._native_wheel_solve(self, lo, hi, locked, context, j_w, w_old, h, resist, command)
         if getattr(self, "_compiled_interval", None) is not None:
             for expand, count in ((True, self.wheel_solver_bracket_iters), (False, self.wheel_solver_bisection_iters)):
                 exact = 0 if expand else self._interval_exact_tail
@@ -1452,6 +1454,13 @@ class FastRacerPlant:
             static_command = command.clone()
             inputs = {name: getattr(self, name).clone() for name in names}
             import os
+            if (os.name == "nt" and os.environ.get("RACER_NATIVE_WHEEL_SOLVER") == "1"
+                    and self.implicit_solver_backend == "plant_cached_graph"
+                    and self.use_battery_torque_envelope
+                    and self.lsd_model in ("power_law", "generalized_viscous")
+                    and state.dtype == torch.float32):
+                from win_native_wheel import solve
+                plant._native_wheel_solve = solve
             if os.environ.get("RACER_COMPILE_WHEEL_INTERVAL") == "1" and self.implicit_solver_backend == "plant_cached_graph":
                 plant._interval_block_size = int(os.environ.get("RACER_INTERVAL_BLOCK", "1"))
                 if plant._interval_block_size < 1:
