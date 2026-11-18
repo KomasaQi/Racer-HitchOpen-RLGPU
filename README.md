@@ -11,7 +11,7 @@ CarSim规模后驱电动车的持续漂移与路径跟踪。基于XCAR的GPU并�
 ```powershell
 python run.py train continuous_drift_iwd
 # 显式覆盖示例；输出默认在仓库外 ../training_runs
-python run.py train continuous_drift_iwd --seed 20261114 --epochs 200
+python run.py train continuous_drift_iwd --seed 20261115 --epochs 400
 ```
 
 默认配置集中在 [profiles/ppo9.json](profiles/ppo9.json)，命令行显式选项优先。仅continuous_drift_iwd训练自动应用PPO9；其他任务和test保持旧接口。`--profile legacy`恢复历史CLI默认，供对照实验；这不代表推荐历史训练方案。PPO7可覆盖 `--preview-time .25,.5,1,1.5,2,2.5,3`。
