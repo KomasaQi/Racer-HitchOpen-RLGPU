@@ -791,9 +791,11 @@ class FastRacerPlant:
         # to saturate laterally before the front, and the measured behaviour was a 0.4 rad
         # sideslip decaying to zero within 3 s precisely because the rear had MORE lateral
         # grip than the front (the 1.40 rear longitudinal scale was bleeding into it).
-        _ratio = torch.tensor([self.mu_y_ratio, self.mu_y_ratio,
-                               self.mu_y_ratio_rear, self.mu_y_ratio_rear],
-                              dtype=d_eff.dtype, device=d_eff.device)
+        _ratio = getattr(self, "_captured_mu_y_ratio", None)
+        if _ratio is None:
+            _ratio = torch.tensor([self.mu_y_ratio, self.mu_y_ratio,
+                                   self.mu_y_ratio_rear, self.mu_y_ratio_rear],
+                                  dtype=d_eff.dtype, device=d_eff.device)
         muy_peak = d_eff * _ratio             # lateral peak relative to longitudinal
         _fx0 = -torch.sign(sx) * mux_peak * fz * _shape_x
         _fy0 = -torch.sign(sy) * muy_peak * fz * _shape_y
@@ -1257,28 +1259,31 @@ class FastRacerPlant:
         cached: eager Fx-only evaluation with frozen-substep invariants.
         cuda_graph: cached evaluation plus exact-operation graph replay of refinement.
         bracket_cuda_graph: experimental exact-operation GPU bracket expansion.
+        plant_cuda_graph: experimental replay of the complete control step.
         fx_inductor/fx_strict: experimental force fusion; NOT approved defaults.
         Call before rollouts; compilation/capture cost belongs to the first step.
         """
         if backend == "auto":
             backend = "cuda_graph" if (self.device.type=="cuda" and self.combined_slip_model=="compact_transition" and not self.tire_relaxation and self.drivetrain in ("rwd","iwd")) else "cached"
-        if backend not in ("original", "cached", "cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict"):
+        if backend not in ("original", "cached", "cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph"):
             raise ValueError("unknown implicit solver backend: " + backend)
         # Deployment/CarSim evaluation on CPU retains the validated cached equations.
-        if backend in ("fx_inductor","bracket_cuda_graph","fx_strict") and self.device.type != "cuda":
+        if backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph") and self.device.type != "cuda":
             backend = "cached"
+        self._step_capture = None
         self.implicit_fx_optimized = backend != "original"
         if hasattr(self, "compiled_refine"):
             del self.compiled_refine
         self.fused_fx_enabled = backend in ("fx_inductor", "fx_strict")
         self.strict_fx_enabled = backend == "fx_strict"
-        self.graph_bracket_enabled = backend in ("fx_inductor","bracket_cuda_graph","fx_strict")
-        if backend in ("cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict"):
+        self.graph_bracket_enabled = backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph")
+        if backend in ("cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph"):
             if self.device.type != "cuda":
                 raise ValueError("cuda_graph requires CUDA")
             if self.combined_slip_model != "compact_transition" or self.tire_relaxation or self.drivetrain not in ("rwd", "iwd"):
                 raise ValueError("cuda_graph supports non-relaxed compact-transition RWD/IWD only")
-            self.compiled_refine = torch.compile(self._refine_implicit, fullgraph=True, backend="cudagraphs")
+            if backend != "plant_cuda_graph":
+                self.compiled_refine = torch.compile(self._refine_implicit, fullgraph=True, backend="cudagraphs")
         self.implicit_solver_backend = backend
 
     def _refine_implicit(self, lo, hi, locked, context, j_w, w_old, h, resist, command):
@@ -1302,8 +1307,12 @@ class FastRacerPlant:
             eps = 0.05
             left = omega_new.clone()
             right = omega_new.clone()
-            left[:, (0, 2)] += eps
-            right[:, (1, 3)] += eps
+            if self.implicit_solver_backend == "plant_cuda_graph":
+                left[:, ::2] += eps
+                right[:, 1::2] += eps
+            else:
+                left[:, (0, 2)] += eps
+                right[:, (1, 3)] += eps
             jl = (self._implicit_residual(left,context,j_w,w_old,h,resist,command) - residual) / eps
             jr = (self._implicit_residual(right,context,j_w,w_old,h,resist,command) - residual) / eps
             correction = torch.zeros_like(omega_new)
@@ -1370,6 +1379,57 @@ class FastRacerPlant:
         return (1.-blend)*fn+blend*ft
 
     def step(self, s: torch.Tensor, command: torch.Tensor, dt: float,
+             substeps: int = 1, mode: str = "pedals", keep_wheel_sign: bool = True):
+        if (getattr(self, "implicit_solver_backend", None) == "plant_cuda_graph"
+                and mode == "pedals" and not torch.is_grad_enabled()
+                and not getattr(self, "audit_wheel_solver", False)):
+            return self._captured_step(s, command, dt, substeps, mode, keep_wheel_sign)
+        return self._step_impl(s, command, dt, substeps, mode, keep_wheel_sign)
+
+    def _captured_step(self, state, command, dt, substeps, mode, keep_wheel_sign):
+        import copy
+
+        key = (dt, substeps, keep_wheel_sign, state.shape, command.shape,
+               state.dtype, command.dtype, self.p.data_ptr(),
+               self.mu_y_ratio, self.mu_y_ratio_rear)
+        # The graph reads live parameters, but its recurrent inputs need stable addresses.
+        names = ("_ax_guess", "_ay_guess", "_motor_torque_state")
+        if self._step_capture is None or self._step_capture[0] != key:
+            plant = copy.copy(self)
+            plant._step_capture = None
+            plant._captured_mu_y_ratio = state.new_tensor([
+                self.mu_y_ratio, self.mu_y_ratio, self.mu_y_ratio_rear, self.mu_y_ratio_rear])
+            static_state = state.clone()
+            static_command = command.clone()
+            inputs = {name: getattr(self, name).clone() for name in names}
+            warmup = torch.cuda.Stream(device=self.device)
+            warmup.wait_stream(torch.cuda.current_stream(self.device))
+            with torch.cuda.stream(warmup):
+                for name in names:
+                    setattr(plant, name, inputs[name].clone())
+                plant._step_impl(static_state.clone(), static_command, dt, substeps,
+                                 mode, keep_wheel_sign)
+            torch.cuda.current_stream(self.device).wait_stream(warmup)
+            for name in names:
+                setattr(plant, name, inputs[name])
+            graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(graph):
+                output = plant._step_impl(static_state, static_command, dt, substeps,
+                                          mode, keep_wheel_sign)
+            self._step_capture = key, graph, static_state, static_command, inputs, plant, output
+
+        _, graph, static_state, static_command, inputs, plant, output = self._step_capture
+        static_state.copy_(state)
+        static_command.copy_(command)
+        for name, tensor in inputs.items():
+            tensor.copy_(getattr(self, name))
+        graph.replay()
+        state.copy_(output[0])
+        for name in names:
+            getattr(self, name).copy_(getattr(plant, name))
+        return state, {name: value.clone() for name, value in output[1].items()}
+
+    def _step_impl(self, s: torch.Tensor, command: torch.Tensor, dt: float,
              substeps: int = 1, mode: str = "pedals", keep_wheel_sign: bool = True):
         """Advance the plant.
 
@@ -1470,8 +1530,8 @@ class FastRacerPlant:
             locked = g_lo >= 0.0
             lo = torch.zeros_like(w_old)
             hi = (2.0 * w_old + 10.0).clamp(min=10.0)
-            capture_bracket=(getattr(self,"graph_bracket_enabled",False) and mode=="pedals"
-                             and self.drivetrain in ("rwd","iwd") and hasattr(self,"compiled_refine"))
+            capture_bracket=(optimized_fx and getattr(self,"graph_bracket_enabled",False) and mode=="pedals"
+                             and self.drivetrain in ("rwd","iwd"))
             if not capture_bracket:
                 for _ in range(self.wheel_solver_bracket_iters):
                     g_hi = g_of(hi)
@@ -1481,6 +1541,8 @@ class FastRacerPlant:
                     hi = torch.where(need, 2.0 * hi + 10.0, hi)
             if optimized_fx and mode == "pedals" and self.drivetrain in ("rwd", "iwd") and hasattr(self, "compiled_refine"):
                 omega_new = self.compiled_refine(lo,hi,locked,context,j_w,w_old,h,resist,command).clone()
+            elif optimized_fx and capture_bracket:
+                omega_new = self._refine_implicit(lo, hi, locked, context, j_w, w_old, h, resist, command)
             else:
                 for _ in range(self.wheel_solver_bisection_iters):
                     mid = 0.5 * (lo + hi)
