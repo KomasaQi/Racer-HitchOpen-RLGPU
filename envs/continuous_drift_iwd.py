@@ -777,16 +777,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         else:
             ind = ind.clamp_(0, self.num_waypoints - 1)
         waypoints_filtered = self.waypoints_at(ind)
-        # four reference channels: [x, y, veldir, kappa]; the nearest point is
-        # chosen on position only, so ``beta`` is not part of the comparison
-        current = torch.stack((x, y, veldir, kappa), dim=1)
-        diff = current.unsqueeze(1) - waypoints_filtered
-        # wrap angle diff to (-pi, pi)
-        angle_diff = torch.atan2(torch.sin(diff[:, :, 2]), torch.cos(diff[:, :, 2]))
-        pos_diff = torch.hypot(diff[:, :, 0], diff[:, :, 1])
-        # the path no longer carries a beta column: column 3 is the curvature
-        beta_diff = torch.zeros_like(diff[:, :, 0])
-        kappa_diff = diff[:, :, 3]
+        # Only position is needed over the search window. Evaluate heading
+        # and curvature after selecting the closest waypoint.
+        delta_xy = torch.stack((x, y), dim=1).unsqueeze(1) - waypoints_filtered[:, :, :2]
+        pos_diff = torch.hypot(delta_xy[:, :, 0], delta_xy[:, :, 1])
         best = torch.argmin(pos_diff, 1)
         bidx = best.unsqueeze(1)
         self.step_progress = (advance + best - self.win_back).to(torch.int16)
@@ -817,26 +811,25 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         reached = moved >= self.stall_move_min
         if getattr(self, "_physics_advanced", False):
             self._stall_anchor = torch.where(reached.unsqueeze(1), pos_now, self._stall_anchor)
-            self.no_progress_count[reached] = 0
-            self.no_progress_count[~reached] += 1
+            self.no_progress_count = torch.where(
+                reached, 0, self.no_progress_count + 1)
 
         # u = vector from nearest waypoint to current pos; v = velocity direction at nearest waypoint
         # theta = angle from u to v
         # theta > 0 means current pos is to the right of waypoint
-        best = self.step_progress.unsqueeze(1)
-        ux = diff[:, :, 0].gather(1, bidx).squeeze(1)
-        uy = diff[:, :, 1].gather(1, bidx).squeeze(1)
+        ux, uy = delta_xy.gather(1, bidx[:, :, None].expand(-1, -1, 2)).squeeze(1).unbind(dim=1)
+        closest = waypoints_filtered.gather(1, bidx[:, :, None].expand(-1, -1, 4)).squeeze(1)
+        v_angle = closest[:, 2]
         u_angle = torch.atan2(uy, ux)
-        v_angle = waypoints_filtered[:, :, 2].gather(1, bidx).squeeze(1)
         theta = v_angle - u_angle
         theta = torch.atan2(torch.sin(theta), torch.cos(theta))
-        pos_diff_sign = torch.sign(theta)
-        self.angle_diff = angle_diff.gather(1, bidx).squeeze(1)
-        self.signed_pos_diff = pos_diff_sign * pos_diff.gather(1, bidx).squeeze(1)
-        self.beta_diff = beta_diff.gather(1, bidx).squeeze(1)
-        self.beta_ref = torch.zeros_like(self.beta_diff)   # set from the curvature map later
-        self.kappa_diff = kappa_diff.gather(1, bidx).squeeze(1)
-        self.kappa_ref = waypoints_filtered[:, :, 3].gather(1, bidx).squeeze(1)
+        heading_error = veldir - v_angle
+        self.angle_diff = torch.atan2(torch.sin(heading_error), torch.cos(heading_error))
+        self.signed_pos_diff = torch.sign(theta) * best_dist
+        self.beta_diff = torch.zeros_like(best_dist)
+        self.beta_ref = torch.zeros_like(self.beta_diff)
+        self.kappa_ref = closest[:, 3]
+        self.kappa_diff = kappa - self.kappa_ref
         for name, old in saved.items():
             value = getattr(self, name)
             select = mask.view(-1, *([1] * (value.ndim - 1)))
@@ -1066,7 +1059,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         xd = self.s[:, 3]
         yd = self.s[:, 4]
         veldir = torch.atan2(yd, xd)
-        veldir[torch.hypot(xd, yd) < 0.01] = psi[torch.hypot(xd, yd) < 0.01]
+        veldir = torch.where(torch.hypot(xd, yd) < 0.01, psi, veldir)
 
         self._v_hint = v
         # obs() runs once per control step in training but is called again by the
@@ -1117,7 +1110,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             inds = self.progress[:, None] + offs
             inds = (inds.remainder(self.num_waypoints) if self._cyclic_reference
                     else inds.clamp(0, self.num_waypoints - 1))
-            la_inds = [inds[:, k:k+1] for k in range(self.preview_count)]
+            la_inds = inds
         elif self.preview_time is not None:
             ds_wp = (self._path_ds[self.path_generation, self.path_id].unsqueeze(1)
                      if self._cyclic_reference else self.waypoint_ds)
@@ -1130,26 +1123,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # into waypoint selection; true translational speed is never used.
             offs = (preview_speed.unsqueeze(1) * self.preview_time.unsqueeze(0) / ds_wp).round().long()
             offs = offs.clamp(min=1, max=self.num_waypoints - 1)
-            if self._cyclic_reference:
-                la_inds = [((self.progress.unsqueeze(1) + offs[:, k:k + 1]) % self.num_waypoints)
-                           for k in range(self.preview_count)]
-            else:
-                la_inds = [(self.progress.unsqueeze(1) + offs[:, k:k + 1]).clamp(0, self.num_waypoints - 1)
-                           for k in range(self.preview_count)]
-        elif not self._cyclic_reference:
-            la_inds = [(self.progress + i).unsqueeze(-1)
-                       for i in (int(200 * self.preview_scale), int(400 * self.preview_scale),
-                                 int(600 * self.preview_scale))]
-            for la_ind in la_inds:
-                la_ind[la_ind >= self.num_waypoints] = self.num_waypoints - 1
+            inds = self.progress[:, None] + offs
+            la_inds = (inds.remainder(self.num_waypoints) if self._cyclic_reference
+                       else inds.clamp(0, self.num_waypoints - 1))
         else:
-            la_inds = [(self.progress + i).unsqueeze(-1) % self.num_waypoints
-                       for i in (int(200 * self.preview_scale), int(400 * self.preview_scale),
-                                 int(600 * self.preview_scale))]
+            offsets = (int(200 * self.preview_scale), int(400 * self.preview_scale),
+                       int(600 * self.preview_scale))
+            la_inds = torch.stack([self.progress + offset for offset in offsets], dim=1)
+            la_inds = (la_inds.remainder(self.num_waypoints) if self._cyclic_reference
+                       else la_inds.clamp(max=self.num_waypoints - 1))
 
-        la = [self.waypoints_at(la_ind).squeeze(1) for la_ind in la_inds]
-        # curvature at the preview points, used by the friction-limit speed target
-        self.kappa_preview = torch.stack([w[:, 3] for w in la], dim=1)
+        la = self.waypoints_at(la_inds)
+        self.kappa_preview = la[:, :, 3]
         if self.reward_mode == "adaptive_envelope" and self.beta_ref_mode in ("adaptive_drift", "geometry_drift"):
             self.beta_ref = self._reference_beta(
                 self.kappa_ref[:, None], self._reference_speed()).squeeze(1)
@@ -1158,26 +1143,18 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             beta_ref, beta_diff = self.beta_ref, self.beta_diff
 
 
-        def convert(waypoints):
-            """Cast a waypoint into the measured body-heading frame."""
-            x1 = waypoints[:, 0]
-            y1 = waypoints[:, 1]
-            veldir1 = waypoints[:, 2]
-            kappa1 = waypoints[:, 3]
-            theta = torch.atan2(y1 - y, x1 - x) - psi
-            l = torch.hypot(y1 - y, x1 - x)
-            x2 = l * torch.cos(theta)
-            y2 = l * torch.sin(theta)
-            veldir2 = veldir1 - psi
-            veldir2 = torch.atan2(torch.sin(veldir2), torch.cos(veldir2))
-            kappa2 = kappa1 * self.length_scale          # O(1) normalisation
-            x2, y2, veldir2, kappa2 = map(lambda t: torch.unsqueeze(t, 1),
-                                                 [x2, y2, veldir2, kappa2])
-            # reference sideslip is NOT observable to the actor: it belongs to the reward and to the critic only.  kappa_ref is kept because it is the
-            # geometric cue from which the required sideslip can be inferred.
-            return torch.cat([x2, y2, veldir2, kappa2], 1)
-
-        la_converted = [convert(waypoints) for waypoints in la]
+        # Transform all preview points with the same body-frame arithmetic.
+        dx = la[:, :, 0] - x[:, None]
+        dy = la[:, :, 1] - y[:, None]
+        theta = torch.atan2(dy, dx) - psi[:, None]
+        distance = torch.hypot(dy, dx)
+        relative_heading = la[:, :, 2] - psi[:, None]
+        la_converted = torch.stack((
+            distance * torch.cos(theta),
+            distance * torch.sin(theta),
+            torch.atan2(torch.sin(relative_heading), torch.cos(relative_heading)),
+            self.kappa_preview * self.length_scale,
+        ), dim=2).unbind(dim=1)
 
         # Pure pursuit steering for the middle preview point: delta_pp is the
         # steering angle that would put the car on a circular arc through that
@@ -1212,8 +1189,8 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             succeeded = (self.step_count >= self.max_steps)
         # a failure on the final step must not be overwritten by the time-out
         succeeded = succeeded & ~failed
-        self.is_done[failed] = 1
-        self.is_done[succeeded] = 2
+        self.is_done.masked_fill_(failed, 1)
+        self.is_done.masked_fill_(succeeded, 2)
         # exclusive first-failure attribution, read by eval.py after the respawn
         self._term_reason = torch.where(
             succeeded, torch.full_like(self.step_count, 3),
