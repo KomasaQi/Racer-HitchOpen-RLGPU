@@ -1,0 +1,15 @@
+{
+  "source_archive": "Racer-HitchOpen-RLGPU-main.zip",
+  "source_archive_sha256": "469dc3cb7394d071eb2c3ddccd2985731cdba55684d6664d130f33a36b775178",
+  "profile": "PPO9 defaults with no CLI overrides",
+  "source_files": {
+    "profiles/ppo9.json": "6b22eabdeec961e00cb0c5fc32c640989ba8e25570d38ad97b009ea1f930d28c",
+    "run.py": "64a3fc3ad1b59743538cdb2f8b424403a886ff6cec55bc0627696fc791508e3f",
+    "utils/mirror_policy.py": "65676878f46eeaf2869268b37c39b69b8e897782cb5fe3c8abbbac7339a4d44e",
+    "utils/mirror_rlgames.py": "1f4ca8069f8a76235289fff771722b12d6ee9eccca0d7a8e32cbc7098105f65f",
+    "utils/drift_network.py": "8f6e824e036454f80d292250b204111b97969c7da3c38f21ca24ffaf03632f51",
+    "envs/continuous_drift_iwd.py": "d523037d1f0282056e57c28f7b599fa36bba557d8f47a0068d7cea020cb29970",
+    "xcar-simulation/gpu_vectorized_car_env.py": "2e8ae6b3439de5ada959d17c58968cd7fa7c0a64bd247f2476680235ebf09f2c"
+  },
+  "verification": "Static source inspection and vector-render visual QA; no model training or vehicle test executed."
+}

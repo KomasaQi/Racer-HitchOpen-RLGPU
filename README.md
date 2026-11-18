@@ -5,6 +5,9 @@ CarSim规模后驱电动车的持续漂移与路径跟踪。基于XCAR的GPU并�
 
 ## 当前默认：PPO9
 
+![Overview](assets/fig/PPO9_Architecture_Figures/PPO9_Overview.png)
+
+![network](assets/fig/PPO9_Architecture_Figures/PPO9_Network_Expanded.png)
 ```powershell
 python run.py train continuous_drift_iwd
 # 显式覆盖示例；输出默认在仓库外 ../training_runs
@@ -19,6 +22,8 @@ python run.py train continuous_drift_iwd --seed 20261114 --epochs 200
 - 跟踪宽度1.5m、平滑权重0.1、uncapped速度奖励；原有随机路径分布，持续任务。
 - 20Hz控制、100Hz物理；32768环境、horizon40、BPTT片段10、minibatch81920、4次mini-epochs、200 epochs。默认seed20261115，需多种子评估。
 - CUDA图物理和网络更新；FP32 actor推理、既有AMP更新。物理子步/求解精度不削减。
+
+
 
 ## 安装与运行
 
