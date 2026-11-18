@@ -1260,12 +1260,16 @@ class FastRacerPlant:
         """
         if backend == "auto":
             backend = "cuda_graph" if (self.device.type=="cuda" and self.combined_slip_model=="compact_transition" and not self.tire_relaxation and self.drivetrain in ("rwd","iwd")) else "cached"
-        if backend not in ("original", "cached", "cuda_graph"):
+        if backend not in ("original", "cached", "cuda_graph", "fx_inductor"):
             raise ValueError("unknown implicit solver backend: " + backend)
+        # Deployment/CarSim evaluation on CPU retains the validated cached equations.
+        if backend == "fx_inductor" and self.device.type != "cuda":
+            backend = "cached"
         self.implicit_fx_optimized = backend != "original"
         if hasattr(self, "compiled_refine"):
             del self.compiled_refine
-        if backend == "cuda_graph":
+        self.fused_fx_enabled = backend == "fx_inductor"
+        if backend in ("cuda_graph", "fx_inductor"):
             if self.device.type != "cuda":
                 raise ValueError("cuda_graph requires CUDA")
             if self.combined_slip_model != "compact_transition" or self.tire_relaxation or self.drivetrain not in ("rwd", "iwd"):
@@ -1334,6 +1338,9 @@ class FastRacerPlant:
         return vx,denom,radius,sy,alpha,bx,self.col("cx").unsqueeze(1),self.col("ex").unsqueeze(1),effective,fz,self.col("combined_slip_blend").unsqueeze(1).clamp(0.,1.)
 
     def _implicit_fx(self, omega, context):
+        if getattr(self,"fused_fx_enabled",False):
+            from fused_fx import fused_fx
+            return fused_fx(omega,list(context),max(self.kappa_peak,1e-6),max(self.alpha_peak,1e-6),float(self.slip_force_plateau))
         vx,denom,radius,sy,alpha,bx,cx,ex,peak,fz,blend = context
         sx = (vx-omega*radius)/denom
         ax = sx.abs()
