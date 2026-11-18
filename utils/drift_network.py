@@ -86,6 +86,29 @@ class DriftAgent(A2CAgent):
             print(f"Effective adaptive actor LR bounds: [{low:g}, {high:g}]")
 
 
+    def set_full_state_weights(self, weights, set_epoch=True):
+        super().set_full_state_weights(weights, set_epoch=set_epoch)
+        # rl_games restores Adam but leaves the adaptive scheduler at the CLI initial LR.
+        self.last_lr = float(self.optimizer.param_groups[0]["lr"])
+
+    def train_epoch(self):
+        import math, os
+        spec = os.environ.get("DRIFT_ACTOR_LR_ANNEAL")
+        if spec:
+            start, end, initial, final = map(float, spec.split(","))
+            progress = min(1., max(0., (self.epoch_num - start) / (end - start)))
+            cap = final + (initial - final) * (1. + math.cos(math.pi * progress)) * .5
+            self.scheduler.max_lr = cap
+            self.last_lr = min(float(self.optimizer.param_groups[0]["lr"]), cap)
+            self.update_lr(self.last_lr)
+            self.writer.add_scalar("anneal/actor_cap", cap, self.epoch_num)
+        result = super().train_epoch()
+        if spec:
+            actual = float(self.optimizer.param_groups[0]["lr"])
+            self.writer.add_scalar("anneal/actor_actual", actual, self.epoch_num)
+            self.writer.add_scalar("anneal/at_cap", float(actual >= cap * .99999), self.epoch_num)
+        return result
+
     def prepare_dataset(self, batch_dict):
         super().prepare_dataset(batch_dict)
         # These are pre-normalisation critic states stored at the SAME time

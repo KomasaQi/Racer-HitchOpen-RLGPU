@@ -55,6 +55,8 @@ parser.add_argument("--epochs", type=int, default=150)
 parser.add_argument("--num-parallel", type=int, default=32768)
 parser.add_argument("--minibatch", type=int, default=81920,
                     help="PPO minibatch size; capped at num_parallel*horizon")
+parser.add_argument("--increment-gain",type=float,default=0.,help="Normalized steer to rad/s, zero for absolute steering")
+parser.add_argument("--return-tau",type=float,default=0.,help="Incremental steering recentering time constant in seconds")
 parser.add_argument("--lr-schedule", type=str, default="adaptive")
 parser.add_argument("--mini-epochs", type=int, default=5)
 parser.add_argument("--mlp-size-last", type=int, default=64)
@@ -525,6 +527,8 @@ default_env_config = {
     "steer_actuator_profile": args.steer_actuator_profile,
     "steer_actuator_tau": args.steer_actuator_tau,
     "steer_rate_limit": args.steer_rate_limit,
+    "increment_gain": args.increment_gain,
+    "return_tau": args.return_tau,
     "smooth_weight": args.smooth_weight,
     "continuing_task": args.continuing_task,
     "reward_mode": args.reward_mode,

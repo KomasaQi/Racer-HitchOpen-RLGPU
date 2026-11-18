@@ -39,6 +39,10 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # emit done.  Open random paths require a streaming reference and are
         # rejected below until one is available; clamping at the last waypoint
         # would silently turn the task into straight-line holding.
+        self.increment_gain = float(kwargs.get("increment_gain", 0.0))
+        self.return_tau = float(kwargs.get("return_tau", 0.0))
+        if self.increment_gain < 0 or self.return_tau < 0 or (self.return_tau and not self.increment_gain):
+            raise ValueError("invalid incremental steering configuration")
         self.continuing_task = bool(kwargs.get("continuing_task", False))
         self.critic_velocity_frame = kwargs.get("critic_velocity_frame", "world")
         if self.critic_velocity_frame not in ("world", "body"):
@@ -2243,6 +2247,14 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             self.plant._motor_torque_state.copy_(torch.as_tensor(
                 sc["motor_torque"], device=self.device, dtype=self.s.dtype))
         return self.obs()
+
+    def decode_physical_action(self, action):
+        if not self.increment_gain:
+            return action
+        previous = torch.where(self.step_count > 0, self.u_cmd[:, 0], 0.)
+        retention = math.exp(-self.dt / self.return_tau) if self.return_tau else 1.
+        steer = previous * retention + action[:, 0] * (self.dt * self.increment_gain / self.max_steer)
+        return torch.cat((steer.clamp(-self.max_steer, self.max_steer)[:, None], action[:, 1:]), dim=1)
 
     def step(self, action, **kwargs):
         self._raw_action = action.detach().clone()

@@ -69,7 +69,8 @@ class RLGPUEnv(vecenv.IVecEnv):
         self.env = env_configurations.configurations[config_name]['env_creator'](**kwargs)
 
     def step(self, actions):
-        return self.env.step(actions)
+        decode = getattr(self.env, "decode_physical_action", None)
+        return self.env.step(decode(actions) if decode else actions)
 
     def reset(self):
         return self.env.reset()

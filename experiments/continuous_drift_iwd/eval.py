@@ -147,7 +147,9 @@ def physical_action(raw, env):
     raw = raw.clamp(-1.0, 1.0)
     low = torch.as_tensor(env.action_space.low, device=raw.device, dtype=raw.dtype)
     high = torch.as_tensor(env.action_space.high, device=raw.device, dtype=raw.dtype)
-    return low + 0.5 * (raw + 1.0) * (high - low)
+    actions = low + 0.5 * (raw + 1.0) * (high - low)
+    decode = getattr(env, "decode_physical_action", None)
+    return decode(actions) if decode else actions
 
 
 def explicit_cli_dests(parser, argv):
