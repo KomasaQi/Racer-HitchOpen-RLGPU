@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """FastPlant: GPU-vectorized planar full-size RWD EV plant.
 
 The plant keeps XCAR's compact analytic Pacejka philosophy.  It supports the
@@ -1294,18 +1294,38 @@ class FastRacerPlant:
                 self.compiled_refine = torch.compile(self._refine_implicit, fullgraph=True, backend="cudagraphs")
         self.implicit_solver_backend = backend
 
+    def _interval_iteration(self, lo, hi, context, inertia, old, h, resist, command, expand):
+        candidate = hi if expand else 0.5 * (lo + hi)
+        needs_increase = self._implicit_residual(candidate, context, inertia, old, h, resist, command) < 0.0
+        if expand:
+            return lo, torch.where(needs_increase, 2.0 * hi + 10.0, hi)
+        return torch.where(needs_increase, candidate, lo), torch.where(needs_increase, hi, candidate)
+
+    def _interval_block(self, lo, hi, context, inertia, old, h, resist, command, expand):
+        for _ in range(self._interval_block_size):
+            lo, hi = self._interval_iteration(lo, hi, context, inertia, old, h, resist, command, expand)
+        return lo, hi
+
     def _refine_implicit(self, lo, hi, locked, context, j_w, w_old, h, resist, command):
-        if getattr(self,"graph_bracket_enabled",False):
-            # Equivalent to the early-break loop: once every need is false,
-            # all remaining updates are no-ops. Keep expansion on the GPU.
-            for _ in range(self.wheel_solver_bracket_iters):
-                need=self._implicit_residual(hi,context,j_w,w_old,h,resist,command)<0.
-                hi=torch.where(need,2.*hi+10.,hi)
-        for _ in range(self.wheel_solver_bisection_iters):
-            mid = 0.5 * (lo + hi)
-            go_right = self._implicit_residual(mid,context,j_w,w_old,h,resist,command) < 0.0
-            lo = torch.where(go_right, mid, lo)
-            hi = torch.where(go_right, hi, mid)
+        if getattr(self, "_compiled_interval", None) is not None:
+            for expand, count in ((True, self.wheel_solver_bracket_iters), (False, self.wheel_solver_bisection_iters)):
+                exact = 0 if expand else self._interval_exact_tail
+                for _ in range((count - exact) // self._interval_block_size):
+                    lo, hi = self._compiled_interval(lo, hi, context, j_w, w_old, h, resist, command, expand)
+                for _ in range(exact):
+                    lo, hi = self._interval_iteration(lo, hi, context, j_w, w_old, h, resist, command, expand)
+        else:
+            if getattr(self,"graph_bracket_enabled",False):
+                # Equivalent to the early-break loop: once every need is false,
+                # all remaining updates are no-ops. Keep expansion on the GPU.
+                for _ in range(self.wheel_solver_bracket_iters):
+                    need=self._implicit_residual(hi,context,j_w,w_old,h,resist,command)<0.
+                    hi=torch.where(need,2.*hi+10.,hi)
+            for _ in range(self.wheel_solver_bisection_iters):
+                mid = 0.5 * (lo + hi)
+                go_right = self._implicit_residual(mid,context,j_w,w_old,h,resist,command) < 0.0
+                lo = torch.where(go_right, mid, lo)
+                hi = torch.where(go_right, hi, mid)
         omega_new = torch.where(locked, torch.zeros_like(w_old), 0.5 * (lo + hi))
         # Independent bisection brackets are only approximate when rear
         # motor/LSD torques couple both wheels. Correct the JOINT residual
@@ -1431,6 +1451,21 @@ class FastRacerPlant:
             static_state = state.clone()
             static_command = command.clone()
             inputs = {name: getattr(self, name).clone() for name in names}
+            import os
+            if os.environ.get("RACER_COMPILE_WHEEL_INTERVAL") == "1" and self.implicit_solver_backend == "plant_cached_graph":
+                plant._interval_block_size = int(os.environ.get("RACER_INTERVAL_BLOCK", "1"))
+                if plant._interval_block_size < 1:
+                    raise ValueError("Interval block size must be positive")
+                plant._interval_exact_tail = int(os.environ.get("RACER_INTERVAL_EXACT_TAIL", str(min(8, plant.wheel_solver_bisection_iters))))
+                if not 0 <= plant._interval_exact_tail <= plant.wheel_solver_bisection_iters or plant._interval_exact_tail % plant._interval_block_size:
+                    raise ValueError("Invalid exact bisection tail length")
+                if any(count % plant._interval_block_size for count in (plant.wheel_solver_bracket_iters, plant.wheel_solver_bisection_iters)):
+                    raise ValueError("Interval block size must divide both iteration counts")
+                plant._compiled_interval = torch.compile(
+                    plant._interval_block, fullgraph=True, dynamic=False,
+                    options={"triton.cudagraphs": False, "use_mixed_mm": False,
+                             "cuda.use_fast_math": False},
+                )
             warmup = torch.cuda.Stream(device=self.device)
             warmup.wait_stream(torch.cuda.current_stream(self.device))
             with torch.cuda.stream(warmup):
