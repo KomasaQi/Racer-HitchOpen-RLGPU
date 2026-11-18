@@ -1256,20 +1256,24 @@ class FastRacerPlant:
         original: full diagnostic force evaluation, reference implementation.
         cached: eager Fx-only evaluation with frozen-substep invariants.
         cuda_graph: cached evaluation plus exact-operation graph replay of refinement.
+        bracket_cuda_graph: experimental exact-operation GPU bracket expansion.
+        fx_inductor/fx_strict: experimental force fusion; NOT approved defaults.
         Call before rollouts; compilation/capture cost belongs to the first step.
         """
         if backend == "auto":
             backend = "cuda_graph" if (self.device.type=="cuda" and self.combined_slip_model=="compact_transition" and not self.tire_relaxation and self.drivetrain in ("rwd","iwd")) else "cached"
-        if backend not in ("original", "cached", "cuda_graph", "fx_inductor"):
+        if backend not in ("original", "cached", "cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict"):
             raise ValueError("unknown implicit solver backend: " + backend)
         # Deployment/CarSim evaluation on CPU retains the validated cached equations.
-        if backend == "fx_inductor" and self.device.type != "cuda":
+        if backend in ("fx_inductor","bracket_cuda_graph","fx_strict") and self.device.type != "cuda":
             backend = "cached"
         self.implicit_fx_optimized = backend != "original"
         if hasattr(self, "compiled_refine"):
             del self.compiled_refine
-        self.fused_fx_enabled = backend == "fx_inductor"
-        if backend in ("cuda_graph", "fx_inductor"):
+        self.fused_fx_enabled = backend in ("fx_inductor", "fx_strict")
+        self.strict_fx_enabled = backend == "fx_strict"
+        self.graph_bracket_enabled = backend in ("fx_inductor","bracket_cuda_graph","fx_strict")
+        if backend in ("cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict"):
             if self.device.type != "cuda":
                 raise ValueError("cuda_graph requires CUDA")
             if self.combined_slip_model != "compact_transition" or self.tire_relaxation or self.drivetrain not in ("rwd", "iwd"):
@@ -1278,6 +1282,12 @@ class FastRacerPlant:
         self.implicit_solver_backend = backend
 
     def _refine_implicit(self, lo, hi, locked, context, j_w, w_old, h, resist, command):
+        if getattr(self,"graph_bracket_enabled",False):
+            # Equivalent to the early-break loop: once every need is false,
+            # all remaining updates are no-ops. Keep expansion on the GPU.
+            for _ in range(self.wheel_solver_bracket_iters):
+                need=self._implicit_residual(hi,context,j_w,w_old,h,resist,command)<0.
+                hi=torch.where(need,2.*hi+10.,hi)
         for _ in range(self.wheel_solver_bisection_iters):
             mid = 0.5 * (lo + hi)
             go_right = self._implicit_residual(mid,context,j_w,w_old,h,resist,command) < 0.0
@@ -1340,6 +1350,8 @@ class FastRacerPlant:
     def _implicit_fx(self, omega, context):
         if getattr(self,"fused_fx_enabled",False):
             from fused_fx import fused_fx
+            if getattr(self,"strict_fx_enabled",False):
+                from fused_fx_strict import fused_fx_strict as fused_fx
             return fused_fx(omega,list(context),max(self.kappa_peak,1e-6),max(self.alpha_peak,1e-6),float(self.slip_force_plateau))
         vx,denom,radius,sy,alpha,bx,cx,ex,peak,fz,blend = context
         sx = (vx-omega*radius)/denom
@@ -1458,12 +1470,15 @@ class FastRacerPlant:
             locked = g_lo >= 0.0
             lo = torch.zeros_like(w_old)
             hi = (2.0 * w_old + 10.0).clamp(min=10.0)
-            for _ in range(self.wheel_solver_bracket_iters):
-                g_hi = g_of(hi)
-                need = g_hi < 0.0
-                if not bool(need.any()):
-                    break
-                hi = torch.where(need, 2.0 * hi + 10.0, hi)
+            capture_bracket=(getattr(self,"graph_bracket_enabled",False) and mode=="pedals"
+                             and self.drivetrain in ("rwd","iwd") and hasattr(self,"compiled_refine"))
+            if not capture_bracket:
+                for _ in range(self.wheel_solver_bracket_iters):
+                    g_hi = g_of(hi)
+                    need = g_hi < 0.0
+                    if not bool(need.any()):
+                        break
+                    hi = torch.where(need, 2.0 * hi + 10.0, hi)
             if optimized_fx and mode == "pedals" and self.drivetrain in ("rwd", "iwd") and hasattr(self, "compiled_refine"):
                 omega_new = self.compiled_refine(lo,hi,locked,context,j_w,w_old,h,resist,command).clone()
             else:
