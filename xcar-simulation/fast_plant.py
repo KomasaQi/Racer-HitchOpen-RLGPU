@@ -1056,22 +1056,7 @@ class FastRacerPlant:
         scale = (p_battery_max / p_nominal) * self.col("motor_efficiency")
         return torch.minimum(requested, ceiling * scale.clamp(0.25, 2.0))
 
-    def _motor_torque(self, omega_pair, throttle, brake):
-        """Axle torque from the pedals (total for the axle seen by the differential)."""
-        gear = self.col("gear_ratio")
-        diff_eff = self.col("drive_efficiency")
-        wm = 0.5 * gear * (omega_pair[:, 0] + omega_pair[:, 1])
-        rpm = wm.abs() * (60.0 / (2.0 * math.pi))
-
-        idx = torch.bucketize(rpm, self.motor_rpm)
-        idx = torch.clamp(idx, 1, self.motor_rpm.numel() - 1)
-        r0 = self.motor_rpm[idx - 1]
-        r1 = self.motor_rpm[idx]
-        t0 = self.motor_torque[idx - 1]
-        t1 = self.motor_torque[idx]
-        t_map = t0 + (t1 - t0) * (rpm - r0) / torch.clamp(r1 - r0, min=1e-6)
-        t_map = torch.where(rpm > self.motor_rpm_max, torch.zeros_like(t_map), t_map)
-
+    def _prepare_motor_inputs(self, throttle, brake):
         p_max = self.col("max_power_w")
 
         # CarSim's pedal table is driver DEMAND POWER
@@ -1090,20 +1075,43 @@ class FastRacerPlant:
         # under-delivered 15--60 % torque in the powered-slide range and made
         # rear Kappa collapse.  Example: q=.8 at 3723 rpm commands about 788 Nm
         # (=307.2 kW/omega) even though CarSim reports efficiency about .375.
-        t_power_demand = q * p_max / torch.clamp(wm.abs(), min=1.0)
-        t_motor = torch.minimum(t_map, t_power_demand)
-        if self.use_battery_torque_envelope:
-            t_motor = self._battery_limited_motor_torque(rpm, wm.abs(), t_motor)
+        alpha_motor = None
         if self._motor_step_h is not None:
             tau_motor = self.col("motor_tau")
             alpha_motor = torch.where(tau_motor > 0,
                 -torch.expm1(-self._motor_step_h / tau_motor.clamp_min(1e-6)),
                 torch.ones_like(tau_motor))
+        coast_scale = self.col("coast_torque_nm") * (1.0 - torch.clamp(throttle + brake, max=1.0))
+        return q * p_max, alpha_motor, coast_scale
+
+    def _motor_torque(self, omega_pair, throttle, brake, motor_inputs=None):
+        """Axle torque from the pedals (total for the axle seen by the differential)."""
+        gear = self.col("gear_ratio")
+        diff_eff = self.col("drive_efficiency")
+        wm = 0.5 * gear * (omega_pair[:, 0] + omega_pair[:, 1])
+        rpm = wm.abs() * (60.0 / (2.0 * math.pi))
+
+        idx = torch.bucketize(rpm, self.motor_rpm)
+        idx = torch.clamp(idx, 1, self.motor_rpm.numel() - 1)
+        r0 = self.motor_rpm[idx - 1]
+        r1 = self.motor_rpm[idx]
+        t0 = self.motor_torque[idx - 1]
+        t1 = self.motor_torque[idx]
+        t_map = t0 + (t1 - t0) * (rpm - r0) / torch.clamp(r1 - r0, min=1e-6)
+        t_map = torch.where(rpm > self.motor_rpm_max, torch.zeros_like(t_map), t_map)
+
+        if motor_inputs is None:
+            motor_inputs = self._prepare_motor_inputs(throttle, brake)
+        demand_power, alpha_motor, coast_scale = motor_inputs
+        t_power_demand = demand_power / torch.clamp(wm.abs(), min=1.0)
+        t_motor = torch.minimum(t_map, t_power_demand)
+        if self.use_battery_torque_envelope:
+            t_motor = self._battery_limited_motor_torque(rpm, wm.abs(), t_motor)
+        if alpha_motor is not None:
             t_motor = self._motor_torque_state + alpha_motor * (
                 t_motor - self._motor_torque_state)
         # zero-pedal driveline drag (EV regen / in-gear coast), axle total
-        coast = self.col("coast_torque_nm") * (1.0 - torch.clamp(throttle + brake, max=1.0)) \
-            * torch.tanh(gear * wm / 30.0)
+        coast = coast_scale * torch.tanh(gear * wm / 30.0)
         # MMOTOR_MAX is mechanical output torque and must not be reduced by the
         # electrical efficiency carpet.  Final-drive loss applies downstream.
         axle = (t_motor - coast) * gear * diff_eff
@@ -1265,10 +1273,10 @@ class FastRacerPlant:
         """
         if backend == "auto":
             backend = "cuda_graph" if (self.device.type=="cuda" and self.combined_slip_model=="compact_transition" and not self.tire_relaxation and self.drivetrain in ("rwd","iwd")) else "cached"
-        if backend not in ("original", "cached", "cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph"):
+        if backend not in ("original", "cached", "cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph", "plant_cached_graph"):
             raise ValueError("unknown implicit solver backend: " + backend)
         # Deployment/CarSim evaluation on CPU retains the validated cached equations.
-        if backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph") and self.device.type != "cuda":
+        if backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph", "plant_cached_graph") and self.device.type != "cuda":
             backend = "cached"
         self._step_capture = None
         self.implicit_fx_optimized = backend != "original"
@@ -1276,13 +1284,13 @@ class FastRacerPlant:
             del self.compiled_refine
         self.fused_fx_enabled = backend in ("fx_inductor", "fx_strict")
         self.strict_fx_enabled = backend == "fx_strict"
-        self.graph_bracket_enabled = backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph")
-        if backend in ("cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph"):
+        self.graph_bracket_enabled = backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph", "plant_cached_graph")
+        if backend in ("cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph", "plant_cached_graph"):
             if self.device.type != "cuda":
                 raise ValueError("cuda_graph requires CUDA")
             if self.combined_slip_model != "compact_transition" or self.tire_relaxation or self.drivetrain not in ("rwd", "iwd"):
                 raise ValueError("cuda_graph supports non-relaxed compact-transition RWD/IWD only")
-            if backend != "plant_cuda_graph":
+            if backend not in ("plant_cuda_graph", "plant_cached_graph"):
                 self.compiled_refine = torch.compile(self._refine_implicit, fullgraph=True, backend="cudagraphs")
         self.implicit_solver_backend = backend
 
@@ -1307,7 +1315,7 @@ class FastRacerPlant:
             eps = 0.05
             left = omega_new.clone()
             right = omega_new.clone()
-            if self.implicit_solver_backend == "plant_cuda_graph":
+            if self.implicit_solver_backend in ("plant_cuda_graph", "plant_cached_graph"):
                 left[:, ::2] += eps
                 right[:, 1::2] += eps
             else:
@@ -1327,7 +1335,8 @@ class FastRacerPlant:
 
     def _implicit_residual(self, omega, context, inertia, old, h, resist, command):
         pair = omega[:,2:4]
-        axle, _, _ = self._motor_torque(pair, command[:,1], command[:,2])
+        motor_inputs = context[11] if len(context) > 11 else None
+        axle, _, _ = self._motor_torque(pair, command[:,1], command[:,2], motor_inputs)
         tl, tr, _ = self._lsd(axle,pair)
         drive = torch.stack((torch.zeros_like(tl),torch.zeros_like(tl),tl,tr),1)
         return inertia*(omega-old)-h*(drive-resist-context[2]*self._implicit_fx(omega,context))
@@ -1362,25 +1371,29 @@ class FastRacerPlant:
             if getattr(self,"strict_fx_enabled",False):
                 from fused_fx_strict import fused_fx_strict as fused_fx
             return fused_fx(omega,list(context),max(self.kappa_peak,1e-6),max(self.alpha_peak,1e-6),float(self.slip_force_plateau))
-        vx,denom,radius,sy,alpha,bx,cx,ex,peak,fz,blend = context
+        vx,denom,radius,sy,alpha,bx,cx,ex,peak,fz,blend = context[:11]
         sx = (vx-omega*radius)/denom
         ax = sx.abs()
         zx = ax/max(self.kappa_peak,1e-6)
-        zy = alpha.abs()/max(self.alpha_peak,1e-6)
+        if len(context) > 11:
+            zy, sy_abs, complement = context[12:]
+        else:
+            zy = alpha.abs()/max(self.alpha_peak,1e-6)
+            sy_abs, complement = sy.abs(), 1.-blend
         rn = torch.hypot(zx,zy).clamp(min=1e-9)
         xn = torch.clamp(rn*self.kappa_peak,max=self.slip_force_plateau)
-        rt = torch.hypot(ax,sy.abs()).clamp(min=1e-9)
+        rt = torch.hypot(ax,sy_abs).clamp(min=1e-9)
         xt = torch.clamp(rt,max=self.slip_force_plateau)
         def shape(x):
             t=bx*x
             return torch.sin(cx*torch.atan(t-ex*(t-torch.atan(t))))
         fn = -torch.sign(sx)*peak*fz*shape(xn)*zx/rn
         ft = -torch.sign(sx)*peak*fz*shape(xt)*ax/rt
-        return (1.-blend)*fn+blend*ft
+        return complement*fn+blend*ft
 
     def step(self, s: torch.Tensor, command: torch.Tensor, dt: float,
              substeps: int = 1, mode: str = "pedals", keep_wheel_sign: bool = True):
-        if (getattr(self, "implicit_solver_backend", None) == "plant_cuda_graph"
+        if (getattr(self, "implicit_solver_backend", None) in ("plant_cuda_graph", "plant_cached_graph")
                 and mode == "pedals" and not torch.is_grad_enabled()
                 and not getattr(self, "audit_wheel_solver", False)):
             return self._captured_step(s, command, dt, substeps, mode, keep_wheel_sign)
@@ -1512,6 +1525,11 @@ class FastRacerPlant:
                             and self.combined_slip_model == "compact_transition"
                             and not self.tire_relaxation)
             context = self._prepare_implicit_fx(s, delta_w, fz_w, geom) if optimized_fx else None
+            if context is not None and mode == "pedals" and self.implicit_solver_backend == "plant_cached_graph":
+                context += (self._prepare_motor_inputs(command[:, 1], command[:, 2]),
+                            context[4].abs() / max(self.alpha_peak, 1e-6),
+                            context[3].abs(), 1.0 - context[10])
+
 
             def g_of(omega):
                 if optimized_fx and mode == "pedals" and self.drivetrain in ("rwd", "iwd"):
