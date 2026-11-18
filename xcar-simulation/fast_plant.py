@@ -1273,24 +1273,24 @@ class FastRacerPlant:
         """
         if backend == "auto":
             backend = "cuda_graph" if (self.device.type=="cuda" and self.combined_slip_model=="compact_transition" and not self.tire_relaxation and self.drivetrain in ("rwd","iwd")) else "cached"
-        if backend not in ("original", "cached", "cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph", "plant_cached_graph"):
+        if backend not in ("original", "cached", "cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph", "plant_cached_graph", "plant_fused_graph", "plant_pair_graph"):
             raise ValueError("unknown implicit solver backend: " + backend)
         # Deployment/CarSim evaluation on CPU retains the validated cached equations.
-        if backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph", "plant_cached_graph") and self.device.type != "cuda":
+        if backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph", "plant_cached_graph", "plant_fused_graph", "plant_pair_graph") and self.device.type != "cuda":
             backend = "cached"
         self._step_capture = None
         self.implicit_fx_optimized = backend != "original"
         if hasattr(self, "compiled_refine"):
             del self.compiled_refine
-        self.fused_fx_enabled = backend in ("fx_inductor", "fx_strict")
+        self.fused_fx_enabled = backend in ("fx_inductor", "fx_strict", "plant_fused_graph")
         self.strict_fx_enabled = backend == "fx_strict"
-        self.graph_bracket_enabled = backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph", "plant_cached_graph")
-        if backend in ("cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph", "plant_cached_graph"):
+        self.graph_bracket_enabled = backend in ("fx_inductor","bracket_cuda_graph","fx_strict","plant_cuda_graph", "plant_cached_graph", "plant_fused_graph", "plant_pair_graph")
+        if backend in ("cuda_graph", "fx_inductor", "bracket_cuda_graph", "fx_strict", "plant_cuda_graph", "plant_cached_graph", "plant_fused_graph", "plant_pair_graph"):
             if self.device.type != "cuda":
                 raise ValueError("cuda_graph requires CUDA")
             if self.combined_slip_model != "compact_transition" or self.tire_relaxation or self.drivetrain not in ("rwd", "iwd"):
                 raise ValueError("cuda_graph supports non-relaxed compact-transition RWD/IWD only")
-            if backend not in ("plant_cuda_graph", "plant_cached_graph"):
+            if backend not in ("plant_cuda_graph", "plant_cached_graph", "plant_fused_graph", "plant_pair_graph"):
                 self.compiled_refine = torch.compile(self._refine_implicit, fullgraph=True, backend="cudagraphs")
         self.implicit_solver_backend = backend
 
@@ -1315,7 +1315,7 @@ class FastRacerPlant:
             eps = 0.05
             left = omega_new.clone()
             right = omega_new.clone()
-            if self.implicit_solver_backend in ("plant_cuda_graph", "plant_cached_graph"):
+            if self.implicit_solver_backend in ("plant_cuda_graph", "plant_cached_graph", "plant_fused_graph", "plant_pair_graph"):
                 left[:, ::2] += eps
                 right[:, 1::2] += eps
             else:
@@ -1368,9 +1368,11 @@ class FastRacerPlant:
     def _implicit_fx(self, omega, context):
         if getattr(self,"fused_fx_enabled",False):
             from fused_fx import fused_fx
-            if getattr(self,"strict_fx_enabled",False):
+            if self.implicit_solver_backend == "plant_fused_graph":
+                from fused_fx_rounded import fused_fx_rounded as fused_fx
+            elif getattr(self,"strict_fx_enabled",False):
                 from fused_fx_strict import fused_fx_strict as fused_fx
-            return fused_fx(omega,list(context),max(self.kappa_peak,1e-6),max(self.alpha_peak,1e-6),float(self.slip_force_plateau))
+            return fused_fx(omega,list(context[:11]),max(self.kappa_peak,1e-6),max(self.alpha_peak,1e-6),float(self.slip_force_plateau))
         vx,denom,radius,sy,alpha,bx,cx,ex,peak,fz,blend = context[:11]
         sx = (vx-omega*radius)/denom
         ax = sx.abs()
@@ -1380,6 +1382,20 @@ class FastRacerPlant:
         else:
             zy = alpha.abs()/max(self.alpha_peak,1e-6)
             sy_abs, complement = sy.abs(), 1.-blend
+        if getattr(self, "implicit_solver_backend", None) == "plant_pair_graph":
+            # Pack both independent tire curves for fewer kernel launches.
+            slip = torch.cat((zx, ax), dim=1)
+            lateral = torch.cat((zy, sy_abs), dim=1)
+            norm = torch.hypot(slip, lateral).clamp_min(1e-9)
+            normalized, raw = norm.chunk(2, dim=1)
+            curve_input = torch.cat((normalized * self.kappa_peak, raw), dim=1)
+            curve_input = curve_input.clamp_max(self.slip_force_plateau)
+            scaled = torch.cat((bx, bx), dim=1) * curve_input
+            shape = torch.sin(cx * torch.atan(scaled - ex * (scaled - torch.atan(scaled))))
+            scale = -torch.sign(sx) * peak * fz
+            force = torch.cat((scale, scale), dim=1) * shape * slip / norm
+            fn, ft = force.chunk(2, dim=1)
+            return complement * fn + blend * ft
         rn = torch.hypot(zx,zy).clamp(min=1e-9)
         xn = torch.clamp(rn*self.kappa_peak,max=self.slip_force_plateau)
         rt = torch.hypot(ax,sy_abs).clamp(min=1e-9)
@@ -1393,7 +1409,7 @@ class FastRacerPlant:
 
     def step(self, s: torch.Tensor, command: torch.Tensor, dt: float,
              substeps: int = 1, mode: str = "pedals", keep_wheel_sign: bool = True):
-        if (getattr(self, "implicit_solver_backend", None) in ("plant_cuda_graph", "plant_cached_graph")
+        if (getattr(self, "implicit_solver_backend", None) in ("plant_cuda_graph", "plant_cached_graph", "plant_fused_graph", "plant_pair_graph")
                 and mode == "pedals" and not torch.is_grad_enabled()
                 and not getattr(self, "audit_wheel_solver", False)):
             return self._captured_step(s, command, dt, substeps, mode, keep_wheel_sign)
@@ -1525,7 +1541,7 @@ class FastRacerPlant:
                             and self.combined_slip_model == "compact_transition"
                             and not self.tire_relaxation)
             context = self._prepare_implicit_fx(s, delta_w, fz_w, geom) if optimized_fx else None
-            if context is not None and mode == "pedals" and self.implicit_solver_backend == "plant_cached_graph":
+            if context is not None and mode == "pedals" and self.implicit_solver_backend in ("plant_cached_graph", "plant_fused_graph", "plant_pair_graph"):
                 context += (self._prepare_motor_inputs(command[:, 1], command[:, 2]),
                             context[4].abs() / max(self.alpha_peak, 1e-6),
                             context[3].abs(), 1.0 - context[10])
