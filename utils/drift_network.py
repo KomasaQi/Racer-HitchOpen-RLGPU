@@ -98,6 +98,7 @@ class DriftAgent(A2CAgent):
             start, end, initial, final = map(float, spec.split(","))
             progress = min(1., max(0., (self.epoch_num - start) / (end - start)))
             cap = final + (initial - final) * (1. + math.cos(math.pi * progress)) * .5
+            self.scheduler.min_lr = min(self.scheduler.min_lr, cap)
             self.scheduler.max_lr = cap
             self.last_lr = min(float(self.optimizer.param_groups[0]["lr"]), cap)
             self.update_lr(self.last_lr)
