@@ -32,6 +32,12 @@ class DriftObjective:
         assert e.speed_reward_uncapped and e.adaptive_speed_penalty=='none' and not e.progress_speed_credit
         assert not any([e.adaptive_guidance,e.precision_bonus_weight,e.straight_stability_weight,e.steer_second_weight,e.smooth_curve_extra])
         self.e=e
+        self.weights=e.priv_scale.new_tensor((.15,.10,.40,.35))
+
+    def failure_probability(self,f):
+        e=self.e
+        margins=torch.stack((f[:,0].abs()*e.adaptive_path_scale_m/e.offpath_limit,f[:,1].abs(),f[:,12]),1)
+        return (1-(1-torch.sigmoid((margins-1)*18)).prod(1))*torch.sigmoid((f[:,13]-1.05)*20)
 
     def __call__(self,f,failed=None):
         e=self.e
@@ -41,8 +47,7 @@ class DriftObjective:
             return x.square()*(3-2*x)
         # Smooth analogues of the same three FastPlant termination margins and grace period.
         if failed is None:
-            margins=torch.stack((pos.abs()*e.adaptive_path_scale_m/e.offpath_limit,course.abs(),stalled),1)
-            fail=(1-(1-torch.sigmoid((margins-1)*18)).prod(1))*torch.sigmoid((age-1.05)*20)
+            fail=self.failure_probability(f)
         else:fail=failed
         demand=sigmoid_curve(ref.abs()/.15)
         path=1/(1+pos.square())
@@ -55,8 +60,8 @@ class DriftObjective:
         gate_slip=sigmoid_curve(slip)
         gate_counter=sigmoid_curve(counter)*((curv.abs()*.05-.02)/.02).clamp(0,1)
         strict=gate_slip*sigmoid_curve(thr/e.drift_throttle_gate)*e._dense_target_gate(beta,ref,.30)*gate_counter
-        dense=e._weighted_drift_progress(torch.stack((slip.clamp(0,1),(thr/e.drift_throttle_gate).clamp(0,1),
-            e._xcar_target_improvement(aligned,target),counter.clamp(-1,1)),1))
+        dense=(self.weights*torch.stack((slip.clamp(0,1),(thr/e.drift_throttle_gate).clamp(0,1),
+            e._xcar_target_improvement(aligned,target),counter.clamp(-1,1)),1)).sum(1)
         drift=.5*demand*use*(path*dense+joint*strict)
         quality=1-.75*demand*(1-sigmoid_curve(aligned/target)*gate_slip)
         live=(e.adaptive_alive+joint*quality*(e.adaptive_tracking+e.adaptive_performance*ratio.clamp_min(0))
