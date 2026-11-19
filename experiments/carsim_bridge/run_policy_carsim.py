@@ -63,6 +63,8 @@ def prepare_task_config(raw):
     for key in ("plant", "control_mode", "train", "ref_mode_cli",
                 "disturbance_param", "randomize_param", "quiet", "num_paths"):
         cfg.pop(key, None)
+    if cfg.get("implicit_solver_backend") == "plant_cached_graph":
+        cfg["implicit_solver_backend"] = "cuda_graph"  # CPU parent initialization before the CarSim solver takes over.
     cfg["ref_mode"] = ref_mode
     return cfg
 

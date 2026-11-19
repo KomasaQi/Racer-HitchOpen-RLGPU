@@ -3,6 +3,26 @@
 
 CarSim规模后驱电动车的持续漂移与路径跟踪。基于XCAR的GPU并行仿真和PPO范式，使用可观测actor、独立特权critic及域随机化。训练使用FastPlant，策略验收直接使用CarSim。
 
+## 预训练策略下载
+
+当前推荐用于 CarSim 闭环评测的权重为 **PPO9 seed2 cap ep600**。此策略在三种附着、29 个固定工况的测试中全部完成 120 秒。训练默认仍为 PPO9。ZIP 内附对应的环境配置和文件 SHA-256。
+
+|用途|下载|
+|---|---|
+|推荐闭环策略|[C_continue_seed2_cap ep600](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fcheckpoints%2FC_continue_seed2_cap_ep600_f8609fab7277.zip&dl=1)|
+|seq40 + 油门探索 0.60 的 400 轮续训起点|[A_seq40_sigma060 ep400](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fcheckpoints%2FA_seq40_sigma060_ep400_b28b36a23b83.zip&dl=1)|
+|seq40 退火对照|[C_seq40_continue_cap ep600](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fcheckpoints%2FC_seq40_continue_cap_ep600_4e0d3fd84bd0.zip&dl=1)|
+|世界模型微调（500 次 actor 更新，推理权重及世界模型）|[E_world_bptt ep500](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fcheckpoints%2FE_world_bptt_ep500_0f0bb9e7d79b.zip&dl=1)|
+|PPO9 seed2 历史基线|[continue_seed2 ep400](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fcheckpoints%2Fcontinue_seed2_ep400_b85ecc353098.zip&dl=1)|
+|世界模型微调的 PPO 父策略|[throttle060_continue ep400](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fcheckpoints%2Fthrottle060_continue_ep400_b5b3545fd7f1.zip&dl=1)|
+|seq40 历史基线|[seq40_continue ep400](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fcheckpoints%2Fseq40_continue_ep400_9dcc6f7a7c0c.zip&dl=1)|
+
+解压后将 policy.pth 放入同级 nn 子目录，并保留根目录的 env_config.json。在已配置 CarSim 的工作站上，例如：
+
+```powershell
+python -m experiments.carsim_bridge.run_policy_carsim .\nn\policy.pth --config .\env_config.json --scenarios flat_mu075 --steps 2400 --device cpu
+```
+
 ## 当前默认：PPO9
 
 ![Overview](assets/fig/PPO9_Architecture_Figures/PPO9_Overview.png)
