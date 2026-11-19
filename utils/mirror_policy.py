@@ -97,7 +97,7 @@ class SharedMirrorActor(nn.Module):
             x = (obs[t] if mean is None else
                  self.mirror.normalize(obs[t], mean, variance))
             pair = torch.cat((x, self.mirror(x)), dim=0)
-            h = torch.cat((hidden[0], hidden[1]), dim=1)
+            h = hidden.reshape(1, 2 * batch, self.hidden_size)
             if (self.native_rollout_gru and not self.training and not torch.is_grad_enabled()
                     and pair.is_cuda and pair.dtype == torch.float32 and pair.shape == (65536, 51)
                     and self.hidden_size == 128 and torch.backends.cudnn.allow_tf32
@@ -107,7 +107,7 @@ class SharedMirrorActor(nn.Module):
                 recurrent, h = recurrent_step(self.gru, pair, h)
             else:
                 recurrent, h = self.gru(pair.unsqueeze(0), h)
-            hidden = torch.stack(h.split(batch, dim=1), dim=0)
+            hidden = h.reshape(2, 1, batch, self.hidden_size)
             recurrent = recurrent[0]
             beta_raw = self.beta(recurrent)
             features = [recurrent, pair]

@@ -951,13 +951,6 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # against l_R*kappa = 0.0996, and 0.040 at 10 m/s.  The old expression added a
         # PEAK slip angle on top and then faded it UP with speed, both backwards: it
         # asked 0.220 rad where 0.074 was attainable, so the penalty was permanent.
-        beta_geo = torch.clamp(self.beta_scale * lr * kap, max=self.beta_max)
-        util = (speed.square() * kap / (mu * gg)).clamp(0.0, 1.0)
-        # the attainable sideslip FALLS as the car uses more grip (trim: 0.087 at
-        # util 0.21, 0.074 at 0.42, 0.040 at 0.85 as a fraction of l_R*kappa), so the
-        # fade has to go DOWN with utilisation -- the old one went up, which is why
-        # the reference was worst exactly at the operating point
-        factor = (1.05 - 0.75 * util).clamp(0.35, 1.0)
         # A car at standstill has NO sideslip, so the reference must fade to zero with
         # speed as well.  Without this the very first observation of a rest start said
         # "you are 0.356 rad off target" (measured in CarSim: e_beta = -0.3559 at v = 0),
@@ -975,14 +968,12 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
                     x = x.clamp(0.0, 1.0)
                     return x * x * (3.0 - 2.0 * x)
 
-                util_gate = _smooth_gate(
-                    (util - self.drift_util_lo) /
-                    max(self.drift_util_hi - self.drift_util_lo, 1e-6))
-                if self.beta_ref_mode == "geometry_drift":
-                    # A path reference should not oscillate with the ratio of
-                    # local curvature to the most demanding preview point.
-                    # Geometry/grip gates below still suppress unsuitable bends.
-                    util_gate = torch.ones_like(util_gate)
+                util_gate = 1.0
+                if self.beta_ref_mode == "adaptive_drift":
+                    util = (speed.square() * kap / (mu * gg)).clamp(0.0, 1.0)
+                    util_gate = _smooth_gate(
+                        (util - self.drift_util_lo) /
+                        max(self.drift_util_hi - self.drift_util_lo, 1e-6))
                 curve = lr * kap
                 curve_gate = _smooth_gate(
                     (curve - self.drift_curve_lo) /
@@ -1022,6 +1013,13 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
             # therefore -sign(kappa)*target.
             _tgt = torch.full_like(kappa, self.drift_beta_target)
             return -torch.sign(kappa) * _tgt * (speed / 2.0).clamp(0.0, 1.0)
+        beta_geo = torch.clamp(self.beta_scale * lr * kap, max=self.beta_max)
+        util = (speed.square() * kap / (mu * gg)).clamp(0.0, 1.0)
+        # the attainable sideslip FALLS as the car uses more grip (trim: 0.087 at
+        # util 0.21, 0.074 at 0.42, 0.040 at 0.85 as a fraction of l_R*kappa), so the
+        # fade has to go DOWN with utilisation -- the old one went up, which is why
+        # the reference was worst exactly at the operating point
+        factor = (1.05 - 0.75 * util).clamp(0.35, 1.0)
         return -torch.sign(kappa) * beta_geo * factor * speed_fade
 
     def obs(self):
@@ -1088,7 +1086,9 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
         # during training while reset_done_envs() spawned from a nonzero
         # adaptive target.  That made the reset distribution and reward demand
         # contradictory and disabled the drift-opportunity gate entirely.
-        if self.beta_ref_mode in ("physics", "constant", "adaptive_drift", "geometry_drift"):
+        preview_beta_target = (self.reward_mode == "adaptive_envelope" and
+                               self.beta_ref_mode in ("adaptive_drift", "geometry_drift"))
+        if not preview_beta_target and self.beta_ref_mode in ("physics", "constant", "adaptive_drift", "geometry_drift"):
             self.beta_ref = self._reference_beta(self.kappa_ref.unsqueeze(1), v).squeeze(1)
             self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),
                                          torch.cos(beta - self.beta_ref))
@@ -1139,7 +1139,7 @@ class ContinuousDriftIWDEnv(GPUVectorizedCarEnv):
 
         la = self.waypoints_at(la_inds)
         self.kappa_preview = la[:, :, 3]
-        if self.reward_mode == "adaptive_envelope" and self.beta_ref_mode in ("adaptive_drift", "geometry_drift"):
+        if preview_beta_target:
             self.beta_ref = self._reference_beta(
                 self.kappa_ref[:, None], self._reference_speed()).squeeze(1)
             self.beta_diff = torch.atan2(torch.sin(beta - self.beta_ref),

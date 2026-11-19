@@ -2,7 +2,7 @@
 
 This repository contains source code, compact configuration, contract tests and concise technical documentation only. Checkpoints, rollout CSV files, rendered media, profiler output and large scenario snapshots are intentionally stored outside Git.
 
-Local project artifact root:
+Historical calibration and audit root:
 
 `../Codex_Drift_Audit_2026-11-13/`
 
@@ -16,8 +16,7 @@ Locations:
 Every promoted policy must be accompanied outside the repository by its checkpoint, `env_config.json`, `train_args.json`, evaluation outputs and a checksum manifest. No script may silently select a checkpoint by modification time; evaluators require an explicit checkpoint and its matching configuration.
 
 Formal training commands pass `--run-root ../Codex_Drift_Audit_2026-11-13/training_runs`
-(normally as an absolute path). The default remains `runs` only for upstream-compatible
-ad-hoc use; repository-local run output is ignored by Git and must not be committed.
+(normally as an absolute path). The PPO9 profile defaults to the sibling `training_runs` directory. Legacy CLI runs use `runs` unless overridden.
 Evaluation environments do not write reference trajectories implicitly. A caller that
 needs one must pass an explicit external `trajectory_output_dir`.
 

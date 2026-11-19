@@ -65,7 +65,7 @@ python experiments/carsim_bridge/evaluate_checkpoint.py --checkpoint CHECKPOINT.
 
 ## 结果与工程说明
 
-200轮PPO9两个训练种子均完成29/29项120秒CarSim测试；该结果不是任意轨迹、任意初态的100%保证。中附8字漂移连续性、高速直线摆动及跨种子速度差异仍需改善。
+200 轮 PPO9 两个训练种子均完成 29/29 项 120 秒 CarSim 测试。当前部署选择 seed2 cap ep600；评测时同时关注中附 8 字漂移连续性、高速直线转向和跨种子差异。
 
 [当前状态与结果](STATUS.md) · [性能实测](PERFORMANCE.md) · [物理模型](PLANT.md) · [数据与备份](ARTIFACTS.md)
 
