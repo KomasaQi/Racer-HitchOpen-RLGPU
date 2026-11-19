@@ -54,7 +54,14 @@ conda env create -f environment.yml
 conda activate racer-env
 ```
 
-CarSim路径入口见 `experiments/carsim_bridge/carsim_run.py` 与桥接环境配置；迁移机器时应更新数据库、求解器与simfile路径。
+### CarSim 2024.1 资源与首次启动（Windows）
+
+1. 安装与项目数据库匹配的 CarSim 2024.1。[软件安装包（提取码 `87wi`）](https://pan.baidu.com/s/1Ic1xZPpR4KLdFyxpDYpTfA?pwd=87wi) · [对应版本安装教程](https://zhuanlan.zhihu.com/p/2055247708110300416)
+2. 将 `CarSim2024_1_Full_Database.zip` 解压到 `D:/`，启动 CarSim 时选择 `D:/CarSim2024_1_Full_Database` 作为数据库。[项目完整数据库（提取码 `3qfe`）](https://pan.baidu.com/s/1kkE4yIQ017qppivEHwc0AQ?pwd=3qfe)
+3. 将 `carsim_wm_py.zip` 解压到 `D:/`。确认工作区路径形如 `D:/carsim_wm_py/flat_mu050/simfile.sim`，避免解压时多嵌套一层目录。[CarSim 工作区下载](https://cloud.tsinghua.edu.cn/d/031adfcf3fa24bf0a643/files/?p=%2Fdata%2Fcarsim_wm_py.zip&dl=1)
+4. 在 CarSim GUI 的 **Dataset → Autonomous Racing** 下逐个打开场景，分别点击 **Generate Files for this Run**。首次使用三附着评测前，确认 `flat_mu050`、`flat_mu075`、`flat_mu100` 均已生成运行文件，再执行下方闭环评测命令。
+
+迁移机器或修改盘符时，请同步更新 CarSim 桥接的数据库、求解器和 simfile 路径。仓库入口见 [carsim_run.py](experiments/carsim_bridge/carsim_run.py)。
 
 ```powershell
 # 明确checkpoint、匹配配置和参考路径，直接CarSim评测（无FastPlant评测队列）
